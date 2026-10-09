@@ -47,4 +47,24 @@ public sealed class StartupOptionsTests
 
         Assert.Null(options.CreateAccountEmail);
     }
+
+    [Fact]
+    public void Parse_MigrateOnlyFlag_SetsMigrateOnly_WithoutImplyingOtherModes()
+    {
+        var options = StartupOptions.Parse(new[] { "--migrate-only" });
+
+        Assert.True(options.MigrateOnly);
+        Assert.False(options.SelfTest);
+        Assert.False(options.AutoMigrate);
+    }
+
+    [Fact]
+    public void Parse_NoMigrateOnlyFlag_DefaultsToFalse()
+    {
+        var options = StartupOptions.Parse(new[] { "--auto-migrate", "--self-test" });
+
+        Assert.False(options.MigrateOnly);
+        Assert.True(options.AutoMigrate);
+        Assert.True(options.SelfTest);
+    }
 }

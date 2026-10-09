@@ -76,7 +76,24 @@ public static class IdentityDbSetup
         }
     }
 
-    private static async Task ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate)
+    /// <summary>
+    /// Migration-only entry point (--migrate-only); see DbSetup.MigrateAsync.
+    /// </summary>
+    public static async Task<bool> MigrateAsync(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var contextFactory = serviceProvider.GetRequiredService<IDbContextFactory<AthenaIdentityDbContext>>();
+            return await ApplyMigrationsWithRetry(() => contextFactory.CreateDbContext(), autoMigrate: true);
+        }
+        catch (Exception ex)
+        {
+            LoginLogger.Error($"Identity DB: migration failed ({ex.Message}).");
+            return false;
+        }
+    }
+
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
@@ -107,7 +124,7 @@ public static class IdentityDbSetup
                 if (canConnect)
                 {
                     LoginLogger.Status("Identity DB: connected.");
-                    return;
+                    return true;
                 }
 
                 lastError = new InvalidOperationException("Identity database not reachable.");
@@ -132,5 +149,7 @@ public static class IdentityDbSetup
         {
             LoginLogger.Error($"Identity DB: last error ({lastError.Message}).");
         }
+
+        return false;
     }
 }

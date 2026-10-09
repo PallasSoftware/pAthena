@@ -69,7 +69,26 @@ public static class DbSetup
         }
     }
 
-    private static async Task ApplyMigrationsWithRetry(Func<LoginDbContext> factory, bool autoMigrate)
+    /// <summary>
+    /// Migration-only entry point (--migrate-only): applies pending migrations through
+    /// the same retry loop as --auto-migrate, but reports failure to the caller
+    /// instead of degrading to a null db factory.
+    /// </summary>
+    public static async Task<bool> MigrateAsync(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var contextFactory = serviceProvider.GetRequiredService<IDbContextFactory<LoginDbContext>>();
+            return await ApplyMigrationsWithRetry(() => contextFactory.CreateDbContext(), autoMigrate: true);
+        }
+        catch (Exception ex)
+        {
+            LoginLogger.Error($"DB: migration failed ({ex.Message}).");
+            return false;
+        }
+    }
+
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<LoginDbContext> factory, bool autoMigrate)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
@@ -100,7 +119,7 @@ public static class DbSetup
                 if (canConnect)
                 {
                     LoginLogger.Status("DB: connected.");
-                    return;
+                    return true;
                 }
 
                 lastError = new InvalidOperationException("Database not reachable.");
@@ -125,6 +144,8 @@ public static class DbSetup
         {
             LoginLogger.Error($"DB: last error ({lastError.Message}).");
         }
+
+        return false;
     }
 
     /// <summary>
