@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Athena.Net.LoginServer.Config;
 using Athena.Net.LoginServer.Db;
 using Athena.Net.LoginServer.Logging;
+using Athena.Net.LoginServer.Startup;
 
 namespace Athena.Net.LoginServer.Runtime;
 
@@ -79,7 +80,17 @@ public static class DbSetup
         try
         {
             var contextFactory = serviceProvider.GetRequiredService<IDbContextFactory<LoginDbContext>>();
-            return await ApplyMigrationsWithRetry(() => contextFactory.CreateDbContext(), autoMigrate: true);
+            Func<LoginDbContext> factory = () => contextFactory.CreateDbContext();
+
+            await using (var probe = factory())
+            {
+                if (!MigrateOnlyMode.HasMigrations(probe, "DB"))
+                {
+                    return false;
+                }
+            }
+
+            return await ApplyMigrationsWithRetry(factory, autoMigrate: true);
         }
         catch (Exception ex)
         {

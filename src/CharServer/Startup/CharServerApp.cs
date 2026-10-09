@@ -30,6 +30,11 @@ public static class CharServerApp
             HotkeyTable = interConfig.HotkeyTable,
             QuestTable = interConfig.QuestTable,
         };
+        if (options.MigrateOnly)
+        {
+            return await MigrateOnlyMode.RunAsync(() => Runtime.DbSetup.MigrateAsync(interConfig, secrets, tableNames));
+        }
+
         var dbFactory = Runtime.DbSetup.Configure(interConfig, secrets, tableNames, options.AutoMigrate);
 
         CharLogger.Status($"Char server starting (PACKETVER {PacketConstants.PacketVer})");

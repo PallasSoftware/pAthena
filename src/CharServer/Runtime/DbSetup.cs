@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Athena.Net.CharServer.Config;
 using Athena.Net.CharServer.Db;
 using Athena.Net.CharServer.Logging;
+using Athena.Net.CharServer.Startup;
 
 namespace Athena.Net.CharServer.Runtime;
 
@@ -10,33 +11,13 @@ public static class DbSetup
 {
     public static Func<CharDbContext?> Configure(InterConfig interConfig, SecretConfig secrets, CharDbTableNames tableNames, bool autoMigrate)
     {
-        var connectionString = ResolveConnectionString(interConfig, secrets);
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            CharLogger.Error("DB: no connection string configured (check conf/inter_athena.conf). ");
-            return () => null;
-        }
-
-        var dbProvider = ResolveDbProvider(interConfig, secrets, connectionString);
         try
         {
-            var optionsBuilder = new DbContextOptionsBuilder<CharDbContext>();
-            if (dbProvider == "sqlserver")
+            var factory = TryBuildFactory(interConfig, secrets, tableNames);
+            if (factory is null)
             {
-                optionsBuilder.UseSqlServer(connectionString, sql =>
-                    sql.EnableRetryOnFailure());
-            }
-            else
-            {
-                CharLogger.Error($"DB: unsupported provider '{dbProvider}'. CharServer is SQL Server only.");
                 return () => null;
             }
-
-            optionsBuilder.ConfigureWarnings(warnings =>
-                warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
-
-            var options = optionsBuilder.Options;
-            var factory = () => new CharDbContext(options, tableNames);
 
             ApplyMigrationsWithRetry(factory, autoMigrate).GetAwaiter().GetResult();
 
@@ -49,7 +30,65 @@ public static class DbSetup
         }
     }
 
-    private static async Task ApplyMigrationsWithRetry(Func<CharDbContext> factory, bool autoMigrate)
+    /// <summary>
+    /// Migration-only entry point (--migrate-only): applies pending migrations through
+    /// the same retry loop as --auto-migrate, but reports failure instead of degrading
+    /// to a null db factory, and never falls back to EnsureCreated.
+    /// </summary>
+    public static async Task<bool> MigrateAsync(InterConfig interConfig, SecretConfig secrets, CharDbTableNames tableNames)
+    {
+        try
+        {
+            var factory = TryBuildFactory(interConfig, secrets, tableNames);
+            if (factory is null)
+            {
+                return false;
+            }
+
+            await using (var probe = factory())
+            {
+                if (!MigrateOnlyMode.HasMigrations(probe, "DB"))
+                {
+                    return false;
+                }
+            }
+
+            return await ApplyMigrationsWithRetry(factory, autoMigrate: true);
+        }
+        catch (Exception ex)
+        {
+            CharLogger.Error($"DB: migration failed ({ex.GetType().Name}: {ex.Message}).");
+            return false;
+        }
+    }
+
+    private static Func<CharDbContext>? TryBuildFactory(InterConfig interConfig, SecretConfig secrets, CharDbTableNames tableNames)
+    {
+        var connectionString = ResolveConnectionString(interConfig, secrets);
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            CharLogger.Error("DB: no connection string configured (check conf/inter_athena.conf). ");
+            return null;
+        }
+
+        var dbProvider = ResolveDbProvider(interConfig, secrets, connectionString);
+        if (dbProvider != "sqlserver")
+        {
+            CharLogger.Error($"DB: unsupported provider '{dbProvider}'. CharServer is SQL Server only.");
+            return null;
+        }
+
+        var optionsBuilder = new DbContextOptionsBuilder<CharDbContext>();
+        optionsBuilder.UseSqlServer(connectionString, sql =>
+            sql.EnableRetryOnFailure());
+        optionsBuilder.ConfigureWarnings(warnings =>
+            warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
+
+        var options = optionsBuilder.Options;
+        return () => new CharDbContext(options, tableNames);
+    }
+
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<CharDbContext> factory, bool autoMigrate)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
@@ -97,7 +136,7 @@ public static class DbSetup
             }
 
             CharLogger.Status("DB: connected.");
-            return;
+            return true;
         }
 
         CharLogger.Error("DB: unable to connect.");
@@ -105,6 +144,8 @@ public static class DbSetup
         {
             CharLogger.Error($"DB: last error ({lastError.Message}).");
         }
+
+        return false;
     }
 
     private static string ResolveConnectionString(InterConfig interConfig, SecretConfig secrets)

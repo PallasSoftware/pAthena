@@ -30,6 +30,33 @@ LoginServer also applies any pending migrations for both contexts
 automatically on startup (with retry), so this script is only needed to
 apply migrations ahead of time or outside of running the server.
 
+## Automatic migrations and migration-only mode
+
+LoginServer and CharServer (the servers that own an EF Core schema) share the same options:
+
+| Mode | LoginServer | CharServer | Default |
+| --- | --- | --- | --- |
+| Migrate at startup, then run | `--auto-migrate` or `ATHENA_NET_LOGIN_DB_AUTOMIGRATE=true` | `--auto-migrate` or `ATHENA_NET_CHAR_DB_AUTOMIGRATE=true` | off |
+| Migrate and exit | `--migrate-only` | `--migrate-only` | off |
+
+Nothing migrates implicitly: with neither option the server starts against whatever schema exists.
+
+`--migrate-only` applies pending EF Core migrations (LoginServer: `LoginDbContext` then `AthenaIdentityDbContext`; CharServer: `CharDbContext`) and exits. It starts no listeners, background services, LoginServer connection, self-test or account provisioning, and takes precedence over `--self-test` and `--create-account-username`. Unlike `--auto-migrate` it never falls back to `EnsureCreated`: a context with no registered migrations is an error.
+
+Connection string: resolved exactly as for normal startup (`ConnectionStrings__LoginDb` / `ATHENA_NET_LOGIN_DB_CONNECTION` for LoginServer, `ConnectionStrings__CharDb` / `ATHENA_NET_CHAR_DB_CONNECTION` for CharServer, then `secret.json`, then `conf/inter_athena.conf`). SQL Server only. The login must be allowed to alter the schema. Connection strings and passwords are not logged. The database is retried for about two minutes (60 x 2s) while it starts. CharServer expects the database itself to exist already; LoginServer creates it if the login may.
+
+Exit codes: `0` all migrations applied (or nothing pending); `1` database not configured or unsupported provider, no migrations registered, database unreachable after retries, or a migration failed.
+
+Re-running is safe: with nothing pending it changes nothing. LoginServer uses EF Core 10, which holds a database migration lock, so overlapping runs are serialized. CharServer uses EF Core 9, which does not lock: do not run two CharServer migrators against the same database at once (for example, use a single replica or a deployment strategy that never overlaps).
+
+```bash
+# Local, Docker Compose or CI: run once, check the exit code
+dotnet run --project src/LoginServer -- --migrate-only
+dotnet run --project src/CharServer  -- --migrate-only
+```
+
+In a container platform, run the same image with `--migrate-only` as a one-shot step (for example a Docker Compose service with `restart: "no"` that the server `depends_on` with `service_completed_successfully`, or a Kubernetes initContainer), and start the server without `--auto-migrate`.
+
 ## Adding a new migration
 
 ```bash
