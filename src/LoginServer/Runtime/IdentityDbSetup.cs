@@ -95,7 +95,7 @@ public static class IdentityDbSetup
                 }
             }
 
-            return await ApplyMigrationsWithRetry(factory, autoMigrate: true);
+            return await ApplyMigrationsWithRetry(factory, autoMigrate: true, MigrateOnlyMode.MaxWait);
         }
         catch (Exception ex)
         {
@@ -104,13 +104,16 @@ public static class IdentityDbSetup
         }
     }
 
-    private static async Task<bool> ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate)
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate, TimeSpan? maxWait = null)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
         Exception? lastError = null;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
 
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        // maxWait (migrate-only) bounds the total time: a single attempt can itself take
+        // a minute (e.g. rejected credentials), so the attempt count alone is no bound.
+        for (var attempt = 1; attempt <= maxAttempts && (maxWait is null || elapsed.Elapsed < maxWait); attempt++)
         {
             try
             {

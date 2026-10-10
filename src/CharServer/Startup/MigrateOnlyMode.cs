@@ -9,13 +9,16 @@ namespace Athena.Net.CharServer.Startup;
 /// any background work. Suitable for any one-shot migration step (local, Docker
 /// Compose, a CI job, a Kubernetes initContainer, ...).
 /// <para>
-/// Idempotent: MigrateAsync is a no-op when nothing is pending. EF Core 9 (used
-/// here) does not take a database-level migration lock, so do not run two
-/// migrators against the same database concurrently.
+/// Idempotent: MigrateAsync is a no-op when nothing is pending, and EF Core 10
+/// takes a database-level lock while migrating, so a repeated or overlapping run
+/// is safe.
 /// </para>
 /// </summary>
 public static class MigrateOnlyMode
 {
+    /// <summary>Upper bound on time spent waiting for the database before failing.</summary>
+    public static readonly TimeSpan MaxWait = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// Migration-only mode uses EF Core migrations exclusively: a context with none
     /// registered is an error, never an EnsureCreated schema that bypasses the

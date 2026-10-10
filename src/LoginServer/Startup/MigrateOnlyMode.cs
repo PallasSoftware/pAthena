@@ -16,6 +16,9 @@ namespace Athena.Net.LoginServer.Startup;
 /// </summary>
 public static class MigrateOnlyMode
 {
+    /// <summary>Upper bound on time spent waiting for the database before failing.</summary>
+    public static readonly TimeSpan MaxWait = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// Migration-only mode uses EF Core migrations exclusively: a context with none
     /// registered is an error, never an EnsureCreated schema that bypasses the
