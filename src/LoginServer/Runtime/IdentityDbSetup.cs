@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Athena.Net.LoginServer.Config;
 using Athena.Net.LoginServer.Db.Identity;
 using Athena.Net.LoginServer.Logging;
+using Athena.Net.LoginServer.Startup;
 
 namespace Athena.Net.LoginServer.Runtime;
 
@@ -76,13 +77,43 @@ public static class IdentityDbSetup
         }
     }
 
-    private static async Task ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate)
+    /// <summary>
+    /// Migration-only entry point (--migrate-only); see DbSetup.MigrateAsync.
+    /// </summary>
+    public static async Task<bool> MigrateAsync(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var contextFactory = serviceProvider.GetRequiredService<IDbContextFactory<AthenaIdentityDbContext>>();
+            Func<AthenaIdentityDbContext> factory = () => contextFactory.CreateDbContext();
+
+            await using (var probe = factory())
+            {
+                if (!MigrateOnlyMode.HasMigrations(probe, "Identity DB"))
+                {
+                    return false;
+                }
+            }
+
+            return await ApplyMigrationsWithRetry(factory, autoMigrate: true, MigrateOnlyMode.MaxWait);
+        }
+        catch (Exception ex)
+        {
+            LoginLogger.Error($"Identity DB: migration failed ({ex.Message}).");
+            return false;
+        }
+    }
+
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<AthenaIdentityDbContext> factory, bool autoMigrate, TimeSpan? maxWait = null)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
         Exception? lastError = null;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
 
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        // maxWait (migrate-only) bounds the total time: a single attempt can itself take
+        // a minute (e.g. rejected credentials), so the attempt count alone is no bound.
+        for (var attempt = 1; attempt <= maxAttempts && (maxWait is null || elapsed.Elapsed < maxWait); attempt++)
         {
             try
             {
@@ -107,7 +138,7 @@ public static class IdentityDbSetup
                 if (canConnect)
                 {
                     LoginLogger.Status("Identity DB: connected.");
-                    return;
+                    return true;
                 }
 
                 lastError = new InvalidOperationException("Identity database not reachable.");
@@ -132,5 +163,7 @@ public static class IdentityDbSetup
         {
             LoginLogger.Error($"Identity DB: last error ({lastError.Message}).");
         }
+
+        return false;
     }
 }

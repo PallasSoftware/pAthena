@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Athena.Net.LoginServer.Config;
 using Athena.Net.LoginServer.Db;
 using Athena.Net.LoginServer.Logging;
+using Athena.Net.LoginServer.Startup;
 
 namespace Athena.Net.LoginServer.Runtime;
 
@@ -69,13 +70,45 @@ public static class DbSetup
         }
     }
 
-    private static async Task ApplyMigrationsWithRetry(Func<LoginDbContext> factory, bool autoMigrate)
+    /// <summary>
+    /// Migration-only entry point (--migrate-only): applies pending migrations through
+    /// the same retry loop as --auto-migrate, but reports failure to the caller
+    /// instead of degrading to a null db factory.
+    /// </summary>
+    public static async Task<bool> MigrateAsync(IServiceProvider serviceProvider)
+    {
+        try
+        {
+            var contextFactory = serviceProvider.GetRequiredService<IDbContextFactory<LoginDbContext>>();
+            Func<LoginDbContext> factory = () => contextFactory.CreateDbContext();
+
+            await using (var probe = factory())
+            {
+                if (!MigrateOnlyMode.HasMigrations(probe, "DB"))
+                {
+                    return false;
+                }
+            }
+
+            return await ApplyMigrationsWithRetry(factory, autoMigrate: true, MigrateOnlyMode.MaxWait);
+        }
+        catch (Exception ex)
+        {
+            LoginLogger.Error($"DB: migration failed ({ex.Message}).");
+            return false;
+        }
+    }
+
+    private static async Task<bool> ApplyMigrationsWithRetry(Func<LoginDbContext> factory, bool autoMigrate, TimeSpan? maxWait = null)
     {
         const int maxAttempts = 60;
         var delay = TimeSpan.FromSeconds(2);
         Exception? lastError = null;
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
 
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        // maxWait (migrate-only) bounds the total time: a single attempt can itself take
+        // a minute (e.g. rejected credentials), so the attempt count alone is no bound.
+        for (var attempt = 1; attempt <= maxAttempts && (maxWait is null || elapsed.Elapsed < maxWait); attempt++)
         {
             try
             {
@@ -100,7 +133,7 @@ public static class DbSetup
                 if (canConnect)
                 {
                     LoginLogger.Status("DB: connected.");
-                    return;
+                    return true;
                 }
 
                 lastError = new InvalidOperationException("Database not reachable.");
@@ -125,6 +158,8 @@ public static class DbSetup
         {
             LoginLogger.Error($"DB: last error ({lastError.Message}).");
         }
+
+        return false;
     }
 
     /// <summary>
