@@ -7,14 +7,20 @@ namespace Athena.Net.MapServer.Startup;
 /// <summary>
 /// Orleans' static client gateway list (<c>Orleans:Clustering:Gateways:N</c>, environment variable
 /// <c>Orleans__Clustering__Gateways__N</c>) only accepts IP literals: with a host name the client finds no gateway and
-/// MapServer never connects to the World. Kubernetes (and Docker networks) only offer a stable Service <em>name</em>, so this
-/// resolves every non-literal <c>host:port</c> entry to its IPv4 address once, at startup, and returns the replacement
-/// values for the configuration (the caller adds them as an in-memory override before building the Orleans client).
+/// MapServer never connects to the World. Kubernetes (and Docker networks) only offer a <em>name</em>, so this resolves every
+/// non-literal <c>host:port</c> entry to its IPv4 address once, at startup, and returns the replacement values for the
+/// configuration (the caller adds them as an in-memory override before building the Orleans client).
+/// <para>
+/// The name must resolve to <b>the address the silo advertises</b> (<c>Orleans__Endpoints__AdvertisedIPAddress</c>, which the silo
+/// also binds): a client that dials any other address in front of the same silo (a proxy, the virtual IP of a normal ClusterIP
+/// Service) connects but then times out fetching the cluster manifest. In Kubernetes the name is therefore a <em>headless</em>
+/// Service, which resolves to the WorldServer pod's own address. That address changes when the pod is replaced; resolving once is
+/// fine because <see cref="WorldConnectionWatchdog"/> ends MapServer when it loses the World and the orchestrator's restart
+/// resolves the name again.
+/// </para>
 /// <para>
 /// Fail closed: a name that cannot be resolved within <see cref="DefaultTimeout"/> throws, so MapServer does not run
-/// without a world instead of retrying a wrong address forever. The address is resolved once; a Service name
-/// that maps to a stable ClusterIP (the World's Service) keeps working across World restarts, while a headless name
-/// would not - point the gateway at a ClusterIP Service.
+/// without a world instead of retrying a wrong address forever (the restart policy tries again).
 /// </para>
 /// Entries that are already IP literals (<c>127.0.0.1:30000</c>, <c>[::1]:30000</c>) or Orleans URIs
 /// (<c>gwy.tcp://host:port/0</c>) are left exactly as they are, so existing local and Aspire configuration is unchanged.
