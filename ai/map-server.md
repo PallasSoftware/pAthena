@@ -2027,3 +2027,14 @@ zero failures after the fix (previously flaky under the same constraint before i
 No live stock-client acceptance is claimed for this fix - per this project's standing convention,
 that requires an actual retest against a stock client, which has not been performed in this
 session.
+
+## Orleans gateway address (containers, Kubernetes)
+
+MapServer reaches the World through Orleans' static client gateway list, configured as `Orleans:Clustering:Gateways:N`
+(environment variable `Orleans__Clustering__Gateways__N`, value `<host>:<port>`, World default gateway port `30000`). Orleans
+itself only accepts IP literals there, but orchestrators only offer a stable Service *name*. `OrleansGatewayResolver`
+(`src/MapServer/Startup/`) therefore resolves every entry whose host is not an IP literal to its IPv4 address once at
+startup (retrying for up to 60 s) and overrides the configuration with it; literals and `gwy.tcp://` URIs are untouched. A
+name that never resolves fails MapServer startup (fail closed). Resolution happens once: point the setting at a Service with
+a stable ClusterIP (a headless name would go stale when the World pod restarts). Tests:
+`OrleansGatewayResolverTests`.

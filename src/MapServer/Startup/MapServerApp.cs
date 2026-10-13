@@ -6,6 +6,7 @@ using Athena.Net.MapServer.Telemetry;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.GeneratedScripts;
 using Athena.Net.World.Contracts;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Orleans;
@@ -148,6 +149,20 @@ public static class MapServerApp
         //
         var hostBuilder =
             Host.CreateApplicationBuilder(args);
+
+        //
+        // Orleans only accepts IP literals as static gateway addresses; resolve a Service name such as
+        // "worldserver:30000" (Kubernetes, Docker networks) to its IPv4 address before the client is built.
+        //
+        var gatewayOverrides =
+            OrleansGatewayResolver.Resolve(
+                hostBuilder.Configuration,
+                log: MapLogger.Status);
+
+        if (gatewayOverrides.Count > 0)
+        {
+            hostBuilder.Configuration.AddInMemoryCollection(gatewayOverrides);
+        }
 
         hostBuilder.UseOrleansClient();
 
