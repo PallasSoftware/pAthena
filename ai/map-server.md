@@ -2040,5 +2040,13 @@ name that never resolves fails MapServer startup (fail closed). Tests: `OrleansG
 The resolved address must be **the address the silo advertises** (`Orleans__Endpoints__AdvertisedIPAddress`), which is also the
 address the silo binds: a client that dials any other address in front of the same silo (a proxy, a virtual Service IP) connects
 but then times out fetching the cluster manifest (checked with the real World and MapServer images). In Kubernetes the name
-therefore has to be a *headless* Service (it resolves to the pod address). Resolution happens once, so MapServer must be
-restarted after the World pod was replaced (which is also needed for the actor-id leases, see above).
+therefore has to be a *headless* Service (it resolves to the pod address).
+
+Resolution happens once, at startup, and what MapServer leased from the World (its NPC/warp actor-id block, from the World's
+in-memory `ActorIdBlockAuthorityGrain`) belongs to the World instance it talked to. `WorldConnectionWatchdog` therefore ends
+MapServer with **exit code 75** when it loses its last Orleans gateway after having been connected (the Orleans client's own
+reconnect is not enough: a replaced World has another address and an empty actor-id cursor). The orchestrator restarts the
+process (Kubernetes `restartPolicy: Always`, Docker `--restart on-failure`), which resolves the World again, leases a new block and
+registers with the CharServer again; while the World is still down the restarts simply retry (the resolver fails closed after 60 s).
+`ATHENA_NET_MAP_EXIT_ON_WORLD_LOSS=false` disables this for development. Tests: `WorldConnectionWatchdogTests`; checked
+end to end with a real World that was killed (MapServer ended within a second with exit code 75).

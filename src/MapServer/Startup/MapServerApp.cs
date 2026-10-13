@@ -164,7 +164,18 @@ public static class MapServerApp
             hostBuilder.Configuration.AddInMemoryCollection(gatewayOverrides);
         }
 
-        hostBuilder.UseOrleansClient();
+        //
+        // A World that disappears ends MapServer (exit code 75) so that it is restarted against the current World, see
+        // WorldConnectionWatchdog.
+        //
+        var worldWatchdog =
+            new WorldConnectionWatchdog(
+                MapLogger.Error,
+                WorldConnectionWatchdog.IsEnabledByEnvironment());
+
+        hostBuilder.UseOrleansClient(client =>
+            client.ConfigureServices(services =>
+                services.AddSingleton<IClusterConnectionStatusObserver>(worldWatchdog)));
 
         using var orleansHost =
             hostBuilder.Build();
@@ -185,6 +196,12 @@ public static class MapServerApp
         using var stoppingRegistration =
             applicationLifetime.ApplicationStopping.Register(
                 cts.Cancel);
+
+        _ = worldWatchdog.Lost.ContinueWith(
+            _ => applicationLifetime.StopApplication(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
         await orleansHost.StartAsync(cts.Token);
 
@@ -275,6 +292,6 @@ public static class MapServerApp
                 CancellationToken.None);
         }
 
-        return 0;
+        return worldWatchdog.WorldLost ? WorldConnectionWatchdog.ExitCode : 0;
     }
 }

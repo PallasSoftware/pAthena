@@ -1,3 +1,4 @@
 using Athena.Net.MapServer.Startup;
 
-await MapServerApp.RunAsync(args);
+// The exit code matters: 75 tells the orchestrator that the World connection was lost (see WorldConnectionWatchdog).
+return await MapServerApp.RunAsync(args);
