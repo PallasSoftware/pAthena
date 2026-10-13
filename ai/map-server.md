@@ -2032,9 +2032,13 @@ session.
 
 MapServer reaches the World through Orleans' static client gateway list, configured as `Orleans:Clustering:Gateways:N`
 (environment variable `Orleans__Clustering__Gateways__N`, value `<host>:<port>`, World default gateway port `30000`). Orleans
-itself only accepts IP literals there, but orchestrators only offer a stable Service *name*. `OrleansGatewayResolver`
+itself only accepts IP literals there, but orchestrators only offer a *name*. `OrleansGatewayResolver`
 (`src/MapServer/Startup/`) therefore resolves every entry whose host is not an IP literal to its IPv4 address once at
 startup (retrying for up to 60 s) and overrides the configuration with it; literals and `gwy.tcp://` URIs are untouched. A
-name that never resolves fails MapServer startup (fail closed). Resolution happens once: point the setting at a Service with
-a stable ClusterIP (a headless name would go stale when the World pod restarts). Tests:
-`OrleansGatewayResolverTests`.
+name that never resolves fails MapServer startup (fail closed). Tests: `OrleansGatewayResolverTests`.
+
+The resolved address must be **the address the silo advertises** (`Orleans__Endpoints__AdvertisedIPAddress`), which is also the
+address the silo binds: a client that dials any other address in front of the same silo (a proxy, a virtual Service IP) connects
+but then times out fetching the cluster manifest (checked with the real World and MapServer images). In Kubernetes the name
+therefore has to be a *headless* Service (it resolves to the pod address). Resolution happens once, so MapServer must be
+restarted after the World pod was replaced (which is also needed for the actor-id leases, see above).
