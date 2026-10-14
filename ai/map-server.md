@@ -2027,3 +2027,26 @@ zero failures after the fix (previously flaky under the same constraint before i
 No live stock-client acceptance is claimed for this fix - per this project's standing convention,
 that requires an actual retest against a stock client, which has not been performed in this
 session.
+
+## Orleans gateway address (containers, Kubernetes)
+
+MapServer reaches the World through Orleans' static client gateway list, configured as `Orleans:Clustering:Gateways:N`
+(environment variable `Orleans__Clustering__Gateways__N`, value `<host>:<port>`, World default gateway port `30000`). Orleans
+itself only accepts IP literals there, but orchestrators only offer a *name*. `OrleansGatewayResolver`
+(`src/MapServer/Startup/`) therefore resolves every entry whose host is not an IP literal to its IPv4 address once at
+startup (retrying for up to 60 s) and overrides the configuration with it; literals and `gwy.tcp://` URIs are untouched. A
+name that never resolves fails MapServer startup (fail closed). Tests: `OrleansGatewayResolverTests`.
+
+The resolved address must be **the address the silo advertises** (`Orleans__Endpoints__AdvertisedIPAddress`), which is also the
+address the silo binds: a client that dials any other address in front of the same silo (a proxy, a virtual Service IP) connects
+but then times out fetching the cluster manifest (checked with the real World and MapServer images). In Kubernetes the name
+therefore has to be a *headless* Service (it resolves to the pod address).
+
+Resolution happens once, at startup, and what MapServer leased from the World (its NPC/warp actor-id block, from the World's
+in-memory `ActorIdBlockAuthorityGrain`) belongs to the World instance it talked to. `WorldConnectionWatchdog` therefore ends
+MapServer with **exit code 75** when it loses its last Orleans gateway after having been connected (the Orleans client's own
+reconnect is not enough: a replaced World has another address and an empty actor-id cursor). The orchestrator restarts the
+process (Kubernetes `restartPolicy: Always`, Docker `--restart on-failure`), which resolves the World again, leases a new block and
+registers with the CharServer again; while the World is still down the restarts simply retry (the resolver fails closed after 60 s).
+`ATHENA_NET_MAP_EXIT_ON_WORLD_LOSS=false` disables this for development. Tests: `WorldConnectionWatchdogTests`; checked
+end to end with a real World that was killed (MapServer ended within a second with exit code 75).

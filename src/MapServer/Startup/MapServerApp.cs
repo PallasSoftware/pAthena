@@ -6,6 +6,7 @@ using Athena.Net.MapServer.Telemetry;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.GeneratedScripts;
 using Athena.Net.World.Contracts;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Orleans;
@@ -149,7 +150,32 @@ public static class MapServerApp
         var hostBuilder =
             Host.CreateApplicationBuilder(args);
 
-        hostBuilder.UseOrleansClient();
+        //
+        // Orleans only accepts IP literals as static gateway addresses; resolve a Service name such as
+        // "worldserver:30000" (Kubernetes, Docker networks) to its IPv4 address before the client is built.
+        //
+        var gatewayOverrides =
+            OrleansGatewayResolver.Resolve(
+                hostBuilder.Configuration,
+                log: MapLogger.Status);
+
+        if (gatewayOverrides.Count > 0)
+        {
+            hostBuilder.Configuration.AddInMemoryCollection(gatewayOverrides);
+        }
+
+        //
+        // A World that disappears ends MapServer (exit code 75) so that it is restarted against the current World, see
+        // WorldConnectionWatchdog.
+        //
+        var worldWatchdog =
+            new WorldConnectionWatchdog(
+                MapLogger.Error,
+                WorldConnectionWatchdog.IsEnabledByEnvironment());
+
+        hostBuilder.UseOrleansClient(client =>
+            client.ConfigureServices(services =>
+                services.AddSingleton<IClusterConnectionStatusObserver>(worldWatchdog)));
 
         using var orleansHost =
             hostBuilder.Build();
@@ -170,6 +196,12 @@ public static class MapServerApp
         using var stoppingRegistration =
             applicationLifetime.ApplicationStopping.Register(
                 cts.Cancel);
+
+        _ = worldWatchdog.Lost.ContinueWith(
+            _ => applicationLifetime.StopApplication(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
         await orleansHost.StartAsync(cts.Token);
 
@@ -260,6 +292,6 @@ public static class MapServerApp
                 CancellationToken.None);
         }
 
-        return 0;
+        return worldWatchdog.WorldLost ? WorldConnectionWatchdog.ExitCode : 0;
     }
 }
