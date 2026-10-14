@@ -663,6 +663,20 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 await HandlePacketAsync(packetType, packet, sessionToken);
             }
         }
+        catch (OperationCanceledException) when (_sessionCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // The session ended itself - a runtime loop found the client gone (EndSessionAfterClientDisconnectAsync) or something
+            // called StopAsync - while this read loop was waiting for the next packet. The caller did NOT cancel, so this is not a
+            // cancellation to report: RunAsync ends normally, exactly as it does when the read itself sees the connection close.
+            // (A cancellation requested by the caller, e.g. server shutdown, still propagates.)
+        }
+        catch (ClientDisconnectedException ex)
+        {
+            // The client vanished while a packet it sent was being answered (the read side already treats a reset as a normal
+            // end, see ReadExactAsync): the same ordinary disconnect, so RunAsync ends normally here as well, and the finally
+            // below tears the session down. (MapTcpServer swallowed this as an IOException anyway; direct callers no longer see it.)
+            MapLogger.Info($"[iRO MAP DEBUG] Client disconnected while a packet was being answered - ending this session: {ex.InnerException?.Message ?? ex.Message}");
+        }
         finally
         {
             // Disconnect/crash diagnostics (task requirement): whatever caused this loop to exit -
@@ -844,6 +858,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (ClientDisconnectedException ex)
+        {
+            // The client vanished while this loop was writing to it: an ordinary disconnect, see RunRepeatAttackLoopAsync.
+            await EndSessionAfterClientDisconnectAsync("status-expiration", ex);
+        }
     }
 
     // KNOWN FUTURE CONCURRENCY-HARDENING ITEM (not addressed here - CharacterStatusEffectState's
@@ -926,6 +945,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         }
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+        catch (ClientDisconnectedException ex)
+        {
+            // The client vanished while this loop was writing to it: an ordinary disconnect, see RunRepeatAttackLoopAsync.
+            await EndSessionAfterClientDisconnectAsync("movement", ex);
         }
     }
 
@@ -2063,6 +2087,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // branch that wakes always `continue`s and re-derives its decision from a FRESH snapshot and a
     // fresh `now >= dueAt` comparison at the top of the next iteration, regardless of which
     // awaitable actually completed.
+    // A write to the client failed because the client is gone (see ClientDisconnectedException). Ends the session the way a closed
+    // connection ends it: log, then cancel the session's own token, which RunAsync's read loop and every other runtime loop observe.
+    private async Task EndSessionAfterClientDisconnectAsync(string loop, ClientDisconnectedException exception)
+    {
+        MapLogger.Info($"[iRO MAP DEBUG] Client disconnected while the {loop} loop was writing - ending this session: {exception.InnerException?.Message ?? exception.Message}");
+        try { await _sessionCancellation.CancelAsync(); } catch (ObjectDisposedException) { }
+    }
+
     private async Task RunRepeatAttackLoopAsync(CancellationToken cancellationToken)
     {
         try
@@ -2169,6 +2201,15 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         }
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+        catch (ClientDisconnectedException ex)
+        {
+            // The client vanished while this loop was writing to it (a lethal hit being projected, an attack animation, ...). That is
+            // an ordinary disconnect and not a defect: end the session through the same linked cancellation that every other
+            // runtime loop and RunAsync's read loop already observe, and finish quietly. Everything else still falls through to the
+            // catch below (a real defect must stay loud); the World-side state of the attack is already authoritative, and the
+            // pending-attempt/lethal-in-flight cleanup happens in StopCoreAsync as for any disconnect.
+            await EndSessionAfterClientDisconnectAsync("repeat-attack", ex);
         }
         catch (Exception ex)
         {
@@ -5611,7 +5652,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var lockAcquiredAt = CombatTiming.Now();
         try
         {
-            await _stream.WriteAsync(payload, cancellationToken);
+            try
+            {
+                await _stream.WriteAsync(payload, cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or SocketException)
+            {
+                // This is the CLIENT's socket (and only it): the peer is gone. Say so, instead of letting a routine disconnect
+                // look like an unexpected failure to the background loops that were writing at that moment.
+                throw new ClientDisconnectedException(ex);
+            }
+
             var writtenAt = CombatTiming.Now();
             // Only reached if the write above did not throw - see this field's own doc comment.
             var packetId = payload.Length >= 2 ? BinaryPrimitives.ReadInt16LittleEndian(payload) : (short)-1;

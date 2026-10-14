@@ -2050,3 +2050,16 @@ process (Kubernetes `restartPolicy: Always`, Docker `--restart on-failure`), whi
 registers with the CharServer again; while the World is still down the restarts simply retry (the resolver fails closed after 60 s).
 `ATHENA_NET_MAP_EXIT_ON_WORLD_LOSS=false` disables this for development. Tests: `WorldConnectionWatchdogTests`; checked
 end to end with a real World that was killed (MapServer ended within a second with exit code 75).
+
+## A client that disappears while MapServer writes to it
+
+A failed write to the client's socket is an ordinary end of the session, not a defect. `MapClientSession.WriteAsync` (the only place
+that writes to the client's socket) wraps `IOException`/`SocketException` in `ClientDisconnectedException` (itself an `IOException`, so
+`MapTcpServer`'s existing "client disconnected" handling is unchanged). The three runtime loops (repeat-attack, movement,
+status-expiration) end the session quietly through the session's own cancellation when they see it, and `RunAsync` completes normally
+(also when the read loop is cancelled by the session ending itself). An `IOException` that is NOT a client write (the CharServer link,
+persistence, the World) is not wrapped and is not classified as a disconnect, and a real defect in a loop still faults it loudly
+(`MapClientSessionWorldRpcFailureClassificationTests`). Tests: `MapClientSessionTransientWorldRpcFailureTests` (the kill is held
+between World confirmation and projection, the client is reset, then the projection is released).
+Known, unchanged: a disconnect between the vanish write and the quest-drop tail of a lethal hit skips the quest drops (experience is
+persisted before the vanish write).

@@ -187,4 +187,52 @@ public sealed class MapClientSessionTransientWorldRpcFailureTests
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
+
+    // A client that disconnects while MapServer is still projecting a confirmed kill to it is an ordinary disconnect, not a defect.
+    //
+    // The repeat-attack loop used to treat the broken pipe of that write like any unexpected exception: it logged an
+    // "unclassified defect" error, and the IOException then surfaced out of StopCoreAsync and RunAsync (MapTcpServer swallows
+    // IOException as "client disconnected", so production only got the misleading error and the stack trace, but a direct caller -
+    // this project's tests - saw RunAsync fault). The sibling test above hit exactly this by timing: it closes the client as soon as
+    // the World has committed the death, which races the projection of the lethal hit. These two tests make the race deterministic:
+    // the session is held after the World confirmed the death and before anything is written, the client is reset (RST), and only
+    // then is the projection released into the dead connection.
+    private static async Task ResetClientBeforeTheProjectionAsync(FakeCombatWorldRuntime fakeWorld)
+    {
+        var (client, stream, session, run, _, world, mapId, epoch, actorId, incarnation) = await SetupAsync(StrongAttacker(), maxHp: 1, fakeWorld);
+        using var disposableClient = client;
+        var life = new WorldMonsterLifeReference(mapId, epoch, actorId, incarnation);
+
+        var reachedProjection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseProjection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        session.DebugBeforeLethalActionFanoutAsync = async () =>
+        {
+            reachedProjection.TrySetResult();
+            await releaseProjection.Task;
+        };
+
+        await stream.WriteAsync(AttackPacket(actorId));
+        await reachedProjection.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(0u, world.TryGetCurrentHp(life)); // the World's authoritative state: the monster is dead
+
+        // The client vanishes: an abortive close, so the server's next write fails at once.
+        client.LingerState = new LingerOption(true, 0);
+        client.Close();
+        releaseProjection.SetResult();
+
+        // The session ends like any disconnected session: RunAsync completes, it does not fault with the write failure.
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(run.IsCompletedSuccessfully, $"RunAsync should end normally after a client disconnect, but was {run.Status}: {run.Exception?.GetBaseException().Message}");
+    }
+
+    // The projection is written by the repeat-attack LOOP (the first attempt failed transiently and was retried by the loop):
+    // the path of the failure seen in CI.
+    [Fact]
+    public Task ClientResetBeforeTheLoopProjectsTheKill_EndsTheSessionCleanly() =>
+        ResetClientBeforeTheProjectionAsync(new FakeCombatWorldRuntime { ThrowTransientApplyMonsterDamageCount = 1 });
+
+    // The projection is written inline while RunAsync answers the attack packet.
+    [Fact]
+    public Task ClientResetBeforeTheInlineAttackProjectsTheKill_EndsTheSessionCleanly() =>
+        ResetClientBeforeTheProjectionAsync(new FakeCombatWorldRuntime());
 }
