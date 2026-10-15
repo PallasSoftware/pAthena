@@ -1,4 +1,5 @@
 using System.Net;
+using Athena.Shared.Net;
 
 namespace Athena.Net.CharServer.Config;
 
@@ -8,8 +9,10 @@ public sealed class CharConfig
         Environment.GetEnvironmentVariable("ATHENA_NET_CHAR_IRO_RENEWAL"),
         "false",
         StringComparison.OrdinalIgnoreCase);
-    public IPAddress IroAdvertisedMapIp { get; init; } = ParseIpEnvironment(
+    /// <summary>Public MapServer address for clients: ATHENA_NET_CHAR_IRO_MAP_IP, an IPv4 or a hostname resolved to IPv4.</summary>
+    public AdvertisedIpv4 IroAdvertisedMap { get; init; } = AdvertisedIpv4.FromEnvironment(
         "ATHENA_NET_CHAR_IRO_MAP_IP", "128.241.92.42");
+    public IPAddress IroAdvertisedMapIp => IroAdvertisedMap.Current;
     public int IroAdvertisedMapPort { get; init; } = ParseIntEnvironment(
         "ATHENA_NET_CHAR_IRO_MAP_PORT", 4501);
     /// <summary>Non-secret identifier CharServer presents to LoginServer's HMAC-SHA256 service authentication handshake (see Net.LoginServerConnector). Never a credential by itself - proof of possessing the shared ServiceToken is.</summary>
@@ -60,13 +63,6 @@ public sealed class CharConfig
     public int ConsoleSilent { get; init; }
     public string ConsoleLogFilePath { get; init; } = "./log/char-msg_log.log";
     public string TimestampFormat { get; init; } = string.Empty;
-
-    private static IPAddress ParseIpEnvironment(string name, string fallback)
-    {
-        return IPAddress.TryParse(Environment.GetEnvironmentVariable(name), out var value)
-            ? value
-            : IPAddress.Parse(fallback);
-    }
 
     private static int ParseIntEnvironment(string name, int fallback)
     {

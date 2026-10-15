@@ -7,6 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/Net/AdvertisedIpv4.cs" Link="Shared/Net/AdvertisedIpv4.cs" />
+    <Compile Include="../Shared/Net/ProxyProtocolV2.cs" Link="Shared/Net/ProxyProtocolV2.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!--
       EF Core is pinned to the 10.0.x line (matching the net10.0 TargetFramework)
       rather than 9.0.x: EF Core 9.0.0 transitively pulls in

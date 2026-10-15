@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/Net/AdvertisedIpv4.cs" Link="Shared/Net/AdvertisedIpv4.cs" />
     <Compile Include="../Shared/MapIdentity/CanonicalMapPolicy.cs" Link="Shared/MapIdentity/CanonicalMapPolicy.cs" />
     <Compile Include="../Shared/MapIdentity/Generated/GeneratedCanonicalMapAliases.cs" Link="Shared/MapIdentity/Generated/GeneratedCanonicalMapAliases.cs" />
   </ItemGroup>

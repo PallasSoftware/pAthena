@@ -102,7 +102,7 @@ public sealed class SecretConfig
         return new CharConfig
         {
             IroRenewalCompatibility = config.IroRenewalCompatibility,
-            IroAdvertisedMapIp = config.IroAdvertisedMapIp,
+            IroAdvertisedMap = config.IroAdvertisedMap,
             IroAdvertisedMapPort = config.IroAdvertisedMapPort,
             ServiceId = config.ServiceId,
             ServerName = config.ServerName,

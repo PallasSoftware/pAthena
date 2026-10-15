@@ -1,0 +1,87 @@
+name: release-version
+
+# Every push to main that passes validation gets the next version tag vMAJOR.MINOR.PATCH.
+#   MAJOR.MINOR  are set by hand in the VERSION file (a change starts the series at PATCH 0; the very first is 0.0.1).
+#   PATCH        is derived from the existing release tags, so no version commit is ever made.
+# The new tag starts release-images.yml (the official image release) explicitly: a tag pushed with GITHUB_TOKEN does not
+# start workflows by itself (which also rules out loops), a workflow_dispatch does. Pushing a v* tag by other means starts
+# release-images.yml directly. Pull requests only run the offline tests: they never tag or publish. Tags are never moved
+# or deleted. Nothing here deploys anything.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    paths:
+      - "VERSION"
+      - ".github/scripts/**"
+      - ".github/workflows/release-version.yml"
+      - ".github/workflows/release-images.yml"
+      - "src/*/Dockerfile"
+      - ".dockerignore"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Test the version and image decisions
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-ReleaseVersion.ps1
+          ./.github/scripts/Test-ReleaseImages.ps1
+      # The images are published only after the server tests pass on this very commit.
+      - uses: actions/setup-dotnet@v4
+        if: github.event_name != 'pull_request'
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test the servers
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') {
+            dotnet test "tests/$project.Tests/$project.Tests.csproj" --configuration Release
+            if ($LASTEXITCODE -ne 0) { throw "$project tests failed" }
+          }
+
+  version:
+    name: Tag the release
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the next version tag
+        id: tag
+        shell: pwsh
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./.github/scripts/New-ReleaseTag.ps1 -Commit $env:COMMIT
+      # Idempotent: a run of release-images.yml for a tag whose images exist only fills in what is missing.
+      - name: Start the image release of the tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh workflow run release-images.yml --ref "refs/tags/$env:TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'could not start release-images.yml' }
+
