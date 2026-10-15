@@ -1,0 +1,54 @@
+name: release-images
+
+# Publishes the four official server images (ghcr.io/pallassoftware/pathena-{loginserver,charserver,mapserver,worldserver})
+# when a release tag vMAJOR.MINOR.PATCH is pushed. Servers whose sources did not change since the previous release tag are
+# re-tagged (same digest, no rebuild). Pull requests only run the offline decision tests.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags: [ "v[0-9]+.[0-9]+.[0-9]+" ]
+  pull_request:
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/release-images.yml"
+      - "src/*/Dockerfile"
+      - ".dockerignore"
+
+jobs:
+  decisions:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the build/re-tag decisions
+        shell: pwsh
+        run: ./.github/scripts/Test-ReleaseImages.ps1
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check out the rAthena data the WorldServer image carries
+        run: git submodule update --init --depth 1 legacy/rathena
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Test the build/re-tag decisions
+        shell: pwsh
+        run: ./.github/scripts/Test-ReleaseImages.ps1
+      - name: Publish the images
+        shell: pwsh
+        run: ./.github/scripts/Publish-ReleaseImages.ps1 -Tag '${{ github.ref_name }}' -SourceUrl '${{ github.server_url }}/${{ github.repository }}'

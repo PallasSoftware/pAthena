@@ -1,11 +1,14 @@
 using System.Net;
+using Athena.Shared.Net;
 
 namespace Athena.Net.LoginServer.Config;
 
 public sealed class LoginConfig
 {
-    public IPAddress IroAdvertisedCharIp { get; init; } = ParseIpEnvironment(
+    /// <summary>Public CharServer address for clients: ATHENA_NET_LOGIN_IRO_CHAR_IP, an IPv4 or a hostname resolved to IPv4.</summary>
+    public AdvertisedIpv4 IroAdvertisedChar { get; init; } = AdvertisedIpv4.FromEnvironment(
         "ATHENA_NET_LOGIN_IRO_CHAR_IP", "128.241.92.43");
+    public IPAddress IroAdvertisedCharIp => IroAdvertisedChar.Current;
     public int IroAdvertisedCharPort { get; init; } = ParseIntEnvironment(
         "ATHENA_NET_LOGIN_IRO_CHAR_PORT", 4500);
     public IPAddress BindIp { get; init; } = IPAddress.Any;
@@ -42,13 +45,6 @@ public sealed class LoginConfig
     public int UsercountLow { get; init; } = 200;
     public int UsercountMedium { get; init; } = 500;
     public int UsercountHigh { get; init; } = 1000;
-
-    private static IPAddress ParseIpEnvironment(string name, string fallback)
-    {
-        return IPAddress.TryParse(Environment.GetEnvironmentVariable(name), out var value)
-            ? value
-            : IPAddress.Parse(fallback);
-    }
 
     private static int ParseIntEnvironment(string name, int fallback)
     {

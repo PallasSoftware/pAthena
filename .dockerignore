@@ -1,0 +1,14 @@
+# Keeps VCS data, local build output and secrets out of every image build context.
+.git
+.github
+**/bin
+**/obj
+**/.vs
+**/*.user
+**/.env
+**/.env.*
+**/secret.json
+solutionfiles
+tests
+tools
+docs
