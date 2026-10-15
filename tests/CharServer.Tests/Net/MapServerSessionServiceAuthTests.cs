@@ -27,6 +27,7 @@ namespace Athena.Net.CharServer.Tests.Net;
 /// this test need it).
 /// </para>
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class MapServerSessionServiceAuthTests : IDisposable
 {
     private const int NameLength = 24;

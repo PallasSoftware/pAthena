@@ -23,6 +23,29 @@ public static class LoginLogger
     private static bool _configured;
     private static Action<LogLevel>? _telemetrySink;
 
+    // A scope (see UseScope) redirects the output and the settings of the logging done within one async flow, so that tests can
+    // observe their own log lines without touching the process-wide Console.Out or the global configuration, which other
+    // tests running in parallel use too.
+    private sealed record Scope(TextWriter Output, int ConsoleSilentMask, int FileMask, string FilePath, string TimestampFormat);
+    private static readonly AsyncLocal<Scope?> CurrentScope = new();
+
+    /// <summary>
+    /// Sends everything logged within the current async flow (and the tasks it starts) to <paramref name="output"/> using the
+    /// settings of <paramref name="config"/>, and nothing else. Other flows keep using the console and the global configuration.
+    /// Dispose to leave the scope.
+    /// </summary>
+    public static IDisposable UseScope(TextWriter output, LoginConfig config)
+    {
+        var previous = CurrentScope.Value;
+        CurrentScope.Value = new Scope(output, config.ConsoleSilent, config.ConsoleMsgLog, config.ConsoleLogFilePath ?? string.Empty, config.TimestampFormat ?? string.Empty);
+        return new ScopeExit(previous);
+    }
+
+    private sealed class ScopeExit(Scope? previous) : IDisposable
+    {
+        public void Dispose() => CurrentScope.Value = previous;
+    }
+
     public static void SetTelemetrySink(Action<LogLevel>? sink)
     {
         _telemetrySink = sink;
@@ -48,22 +71,28 @@ public static class LoginLogger
     {
         _telemetrySink?.Invoke(level);
 
+        var scope = CurrentScope.Value;
+        var configured = scope is not null || _configured;
+        var silent = scope?.ConsoleSilentMask ?? _consoleSilentMask;
+        var fileMask = scope?.FileMask ?? _fileMask;
+        var filePath = scope?.FilePath ?? _filePath;
+
         var mask = MaskFor(level);
         var line = message;
-        var prefix = FormatTimestampPrefix();
+        var prefix = FormatTimestampPrefix(scope?.TimestampFormat ?? _timestampFormat);
         if (!string.IsNullOrEmpty(prefix))
         {
             line = $"{prefix} {message}";
         }
 
-        if (!_configured || (_consoleSilentMask & mask) == 0)
+        if (!configured || (silent & mask) == 0)
         {
-            Console.WriteLine(line);
+            (scope?.Output ?? Console.Out).WriteLine(line);
         }
 
-        if (_configured && (_fileMask & mask) != 0 && !string.IsNullOrWhiteSpace(_filePath))
+        if (configured && (fileMask & mask) != 0 && !string.IsNullOrWhiteSpace(filePath))
         {
-            AppendToFile(line);
+            AppendToFile(filePath, line);
         }
     }
 
@@ -81,11 +110,11 @@ public static class LoginLogger
         };
     }
 
-    private static void AppendToFile(string message)
+    private static void AppendToFile(string filePath, string message)
     {
         try
         {
-            var dir = Path.GetDirectoryName(_filePath);
+            var dir = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrWhiteSpace(dir))
             {
                 Directory.CreateDirectory(dir);
@@ -93,7 +122,7 @@ public static class LoginLogger
 
             lock (LockObj)
             {
-                File.AppendAllText(_filePath, message + Environment.NewLine);
+                File.AppendAllText(filePath, message + Environment.NewLine);
             }
         }
         catch (IOException)
@@ -106,14 +135,14 @@ public static class LoginLogger
         }
     }
 
-    private static string FormatTimestampPrefix()
+    private static string FormatTimestampPrefix(string timestampFormat)
     {
-        if (string.IsNullOrWhiteSpace(_timestampFormat))
+        if (string.IsNullOrWhiteSpace(timestampFormat))
         {
             return string.Empty;
         }
 
-        var format = ConvertTimestampFormat(_timestampFormat);
+        var format = ConvertTimestampFormat(timestampFormat);
         try
         {
             return DateTime.Now.ToString(format, CultureInfo.InvariantCulture);

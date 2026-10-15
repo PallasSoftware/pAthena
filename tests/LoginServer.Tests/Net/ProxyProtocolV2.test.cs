@@ -105,20 +105,13 @@ public sealed class ProxyProtocolV2Tests
 
 public sealed class ProxyListenerConfigTests
 {
-    private const string Name = "ATHENA_NET_LOGIN_PROXY_PORT";
-
     [Theory]
     [InlineData(null, 0)]
     [InlineData("", 0)]
     [InlineData("6901", 6901)]
-    public void ProxyPort_IsOffByDefault_AndReadFromTheEnvironment(string? value, int expected)
+    public void ProxyPort_IsOffByDefault_AndParsed(string? value, int expected)
     {
-        try
-        {
-            Environment.SetEnvironmentVariable(Name, value);
-            Assert.Equal(expected, new Athena.Net.LoginServer.Config.LoginConfig().ProxyProtocolPort);
-        }
-        finally { Environment.SetEnvironmentVariable(Name, null); }
+        Assert.Equal(expected, Athena.Net.LoginServer.Config.LoginConfig.ParseProxyPort(value));
     }
 
     [Theory]
@@ -127,11 +120,6 @@ public sealed class ProxyListenerConfigTests
     [InlineData("70000")]
     public void ProxyPort_InvalidValue_StopsStartup(string value)
     {
-        try
-        {
-            Environment.SetEnvironmentVariable(Name, value);
-            Assert.Throws<InvalidOperationException>(() => new Athena.Net.LoginServer.Config.LoginConfig());
-        }
-        finally { Environment.SetEnvironmentVariable(Name, null); }
+        Assert.Throws<InvalidOperationException>(() => Athena.Net.LoginServer.Config.LoginConfig.ParseProxyPort(value));
     }
 }
