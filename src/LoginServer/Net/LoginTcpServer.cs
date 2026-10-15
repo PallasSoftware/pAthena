@@ -7,6 +7,7 @@ using Athena.Net.LoginServer.Config;
 using Athena.Net.LoginServer.Db.Identity;
 using Athena.Net.LoginServer.Logging;
 using Athena.Net.LoginServer.Telemetry;
+using Athena.Shared.Net;
 
 namespace Athena.Net.LoginServer.Net;
 
@@ -79,7 +80,8 @@ public sealed class LoginTcpServer
 
     private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
     {
-        var endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+        var peer = client.Client.RemoteEndPoint as IPEndPoint;
+        var endpoint = peer;
 
         LoginTelemetry.ConnectionsAccepted.Add(1);
 
@@ -88,10 +90,7 @@ public sealed class LoginTcpServer
             ActivityKind.Server
         );
 
-        activity?.SetTag("net.peer.ip", endpoint?.Address.ToString());
-        activity?.SetTag("net.peer.port", endpoint?.Port);
-
-        LoginLogger.Info($"Client connected: {endpoint}");
+        LoginLogger.Info($"Client connected: {peer}");
 
         using (client)
         // A DI scope is created per TCP connection solely to resolve the
@@ -109,6 +108,21 @@ public sealed class LoginTcpServer
                 // SocketFlags.Peek means the bytes remain in the socket,
                 // so ClientSession will still receive the complete packet.
                 // ---------------------------------------------------------
+                // Behind a TCP load balancer the peer is the proxy: a trusted proxy's PROXY protocol v2 header carries the real
+                // client address (consumed here, before anything else reads the stream). Every other peer is a direct connection.
+                if (peer is not null)
+                {
+                    endpoint = await ProxyProtocolV2.ResolveClientAsync(
+                        client.GetStream(), peer, _configStore.Current.TrustedProxies, TimeSpan.FromSeconds(5), cancellationToken);
+                    if (!endpoint.Equals(peer))
+                    {
+                        LoginLogger.Info($"Client {endpoint} via proxy {peer.Address}");
+                    }
+                }
+
+                activity?.SetTag("net.peer.ip", endpoint?.Address.ToString());
+                activity?.SetTag("net.peer.port", endpoint?.Port);
+
                 await LogInitialPacketAsync(client, cancellationToken);
 
                 var playerAuth = scope.ServiceProvider.GetRequiredService<IPlayerAuthenticationService>();
@@ -127,9 +141,16 @@ public sealed class LoginTcpServer
                     playerAuth,
                     serviceAuth,
                     identityAccountService
-                );
+                )
+                {
+                    ClientEndPoint = endpoint,
+                };
 
                 await session.RunAsync(cancellationToken);
+            }
+            catch (ProxyProtocolException ex)
+            {
+                LoginLogger.Warning($"Rejected connection from {peer}: {ex.Message}");
             }
             catch (IOException)
             {

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="../Shared/Net/AdvertisedIpv4.cs" Link="Shared/Net/AdvertisedIpv4.cs" />
+    <Compile Include="../Shared/Net/ProxyProtocolV2.cs" Link="Shared/Net/ProxyProtocolV2.cs" />
   </ItemGroup>
 
   <ItemGroup>

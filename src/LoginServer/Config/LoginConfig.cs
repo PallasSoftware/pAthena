@@ -11,6 +11,12 @@ public sealed class LoginConfig
     public IPAddress IroAdvertisedCharIp => IroAdvertisedChar.Current;
     public int IroAdvertisedCharPort { get; init; } = ParseIntEnvironment(
         "ATHENA_NET_LOGIN_IRO_CHAR_PORT", 4500);
+    /// <summary>
+    /// ATHENA_NET_LOGIN_PROXY_PROTOCOL_TRUSTED: comma separated IPs/CIDRs of the load balancers allowed to send a PROXY protocol v2
+    /// header (real client IP). Empty (default) = off: every connection is direct. Connections from other addresses (internal
+    /// CharServer, health probes) are always direct.
+    /// </summary>
+    public TrustedProxies TrustedProxies { get; init; } = ParseTrustedProxies();
     public IPAddress BindIp { get; init; } = IPAddress.Any;
     public int LoginPort { get; init; } = 6900;
     public bool LogLogin { get; init; } = true;
@@ -45,6 +51,19 @@ public sealed class LoginConfig
     public int UsercountLow { get; init; } = 200;
     public int UsercountMedium { get; init; } = 500;
     public int UsercountHigh { get; init; } = 1000;
+
+    private static TrustedProxies ParseTrustedProxies()
+    {
+        const string name = "ATHENA_NET_LOGIN_PROXY_PROTOCOL_TRUSTED";
+        try
+        {
+            return TrustedProxies.Parse(Environment.GetEnvironmentVariable(name));
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException($"{name}: {ex.Message}", ex);
+        }
+    }
 
     private static int ParseIntEnvironment(string name, int fallback)
     {
