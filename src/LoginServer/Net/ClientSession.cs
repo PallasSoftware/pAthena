@@ -93,7 +93,11 @@ public sealed class ClientSession : IDisposable
         _identityAccountService = identityAccountService ?? new UnavailablePlayerIdentityAccountService();
         _serviceAuthTimeout = serviceAuthTimeout ?? TimeSpan.FromSeconds(30);
         _stream = client.GetStream();
+        ClientEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
     }
+
+    /// <summary>The real client address: the TCP peer, or the address a trusted proxy reported in its PROXY protocol header.</summary>
+    public IPEndPoint? ClientEndPoint { get; init; }
 
     /// <summary>
     /// Runs the packet loop for this connection's lifetime. A per-connection
@@ -442,7 +446,7 @@ public sealed class ClientSession : IDisposable
 
     private async Task HandleLoginAsync(LoginRequest request, CancellationToken cancellationToken)
     {
-        var remoteIp = (_client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "0.0.0.0";
+        var remoteIp = ClientEndPoint?.Address.ToString() ?? "0.0.0.0";
         var result = await AuthenticateAsync(request, remoteIp, cancellationToken);
 
         if (!result.Success)
@@ -493,7 +497,7 @@ public sealed class ClientSession : IDisposable
             Ip = result.Ip
         });
 
-        var remoteAddress = (_client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+        var remoteAddress = ClientEndPoint?.Address;
         await SendAcceptLoginAsync(result, remoteAddress, cancellationToken);
     }
 

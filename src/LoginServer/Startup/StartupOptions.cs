@@ -11,6 +11,13 @@ public sealed class StartupOptions
     public bool AutoMigrate { get; init; }
 
     /// <summary>
+    /// Applies pending migrations for both DbContexts and exits (0 on success,
+    /// nonzero on failure). Takes precedence over --self-test and
+    /// --create-account-username. See <see cref="MigrateOnlyMode"/>.
+    /// </summary>
+    public bool MigrateOnly { get; init; }
+
+    /// <summary>
     /// One-shot account-creation mode: provisions a single player account (via
     /// IPlayerAccountProvisioningService) and exits, instead of starting the
     /// server. Used by scripts/create-player-account.sh, replacing that script's
@@ -45,6 +52,7 @@ public sealed class StartupOptions
             SelfTest = ArgsHelper.HasFlag(args, "--self-test"),
             AutoMigrate = ArgsHelper.HasFlag(args, "--auto-migrate") ||
                 string.Equals(Environment.GetEnvironmentVariable("ATHENA_NET_LOGIN_DB_AUTOMIGRATE"), "true", StringComparison.OrdinalIgnoreCase),
+            MigrateOnly = ArgsHelper.HasFlag(args, "--migrate-only"),
             CreateAccountUserName = createAccountUserName,
             CreateAccountSex = !string.IsNullOrEmpty(sexArg) ? char.ToUpperInvariant(sexArg[0]) : 'M',
             CreateAccountEmail = ArgsHelper.GetValue(args, "--create-account-email"),

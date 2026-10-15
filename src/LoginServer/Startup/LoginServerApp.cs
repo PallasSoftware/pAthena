@@ -33,10 +33,19 @@ public static class LoginServerApp
             GlobalAccRegStrTable = interConfig.GlobalAccRegStrTable,
         };
 
-        LoginLogger.Status($"Login server starting on {config.BindIp}:{config.LoginPort} (PACKETVER 20220406)");
+        if (!options.MigrateOnly)
+        {
+            LoginLogger.Status($"Login server starting on {config.BindIp}:{config.LoginPort} (PACKETVER 20220406)");
+        }
 
         var composition = ServiceComposition.Build(interConfig, secrets, tableNames, configStore);
         await using var serviceProvider = composition.Provider;
+
+        if (options.MigrateOnly)
+        {
+            return await MigrateOnlyMode.RunAsync(composition.DbAvailable, composition.IdentityDbAvailable, serviceProvider);
+        }
+
         var dbAvailable = composition.DbAvailable;
         var dbFactory = dbAvailable
             ? await DbSetup.CreateDbFactoryAsync(serviceProvider, options.AutoMigrate)
