@@ -100,21 +100,15 @@ public sealed class AdvertisedIpv4Tests
     }
 
     [Fact]
-    public void FromEnvironment_UsesTheFallback_WhenUnset_AndFailsOnGarbage()
+    public void FromValue_UsesTheFallback_WhenUnset_AndFailsOnGarbage()
     {
-        const string name = "ATHENA_TEST_ADVERTISED_IPV4";
-        try
-        {
-            Environment.SetEnvironmentVariable(name, null);
-            Assert.Equal(IPAddress.Parse("128.241.92.43"), AdvertisedIpv4.FromEnvironment(name, "128.241.92.43").Current);
+        // No process environment is touched: other tests build configurations from it in parallel.
+        const string name = "ATHENA_NET_LOGIN_IRO_CHAR_IP";
+        Assert.Equal(IPAddress.Parse("128.241.92.43"), AdvertisedIpv4.FromValue(name, null, "128.241.92.43").Current);
+        Assert.Equal(IPAddress.Parse("128.241.92.43"), AdvertisedIpv4.FromValue(name, "  ", "128.241.92.43").Current);
+        Assert.Equal(IPAddress.Parse("62.194.17.160"), AdvertisedIpv4.FromValue(name, "62.194.17.160", "128.241.92.43").Current);
 
-            Environment.SetEnvironmentVariable(name, "::1");
-            var ex = Assert.Throws<InvalidOperationException>(() => AdvertisedIpv4.FromEnvironment(name, "128.241.92.43"));
-            Assert.Contains(name, ex.Message);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(name, null);
-        }
+        var ex = Assert.Throws<InvalidOperationException>(() => AdvertisedIpv4.FromValue(name, "::1", "128.241.92.43"));
+        Assert.Contains(name, ex.Message);
     }
 }

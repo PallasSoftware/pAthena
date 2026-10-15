@@ -2,7 +2,7 @@ using Athena.Net.LoginServer.Startup;
 
 namespace Athena.Net.LoginServer.Tests.Startup;
 
-[Collection("LoginDbEnvironment")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class MigrateOnlyAppTests
 {
     private static readonly string[] DbVariables =

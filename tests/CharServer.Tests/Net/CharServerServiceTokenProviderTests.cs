@@ -11,6 +11,7 @@ namespace Athena.Net.CharServer.Tests.Net;
 /// bytes); a missing, malformed, or too-short value must all be treated
 /// identically as "not configured".
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class CharServerServiceTokenProviderTests
 {
     private const string EnvVar = CharServerServiceTokenProvider.EnvironmentVariableName;

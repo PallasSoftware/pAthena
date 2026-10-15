@@ -3,7 +3,7 @@
 .SYNOPSIS
 Publishes the four official server images for a release tag to GHCR. Unchanged servers are re-tagged (same digest, no rebuild).
 .DESCRIPTION
-Runs from the release-images workflow with the tag checked out (rAthena submodule initialised) and an authenticated docker.
+Runs from the release workflow (publish job) with the tag checked out (rAthena submodule initialised) and an authenticated docker.
 -PlanOnly prints the decisions without touching the registry.
 #>
 [CmdletBinding()]

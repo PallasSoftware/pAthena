@@ -2,7 +2,7 @@ using Athena.Net.CharServer.Startup;
 
 namespace Athena.Net.CharServer.Tests.Startup;
 
-[Collection("CharDbEnvironment")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class MigrateOnlyAppTests
 {
     private static readonly string[] DbVariables =
