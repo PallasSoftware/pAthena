@@ -24,10 +24,10 @@ function Get-RemoteDigest([string]$Reference) {
 }
 
 $commit = (git rev-parse "refs/tags/$Tag^{commit}").Trim()
-$plan = Get-ImagePlan -Tag $Tag -GetPreviousDigest { param($app, $prev) Get-RemoteDigest "$Registry/pathena-$($app):$prev" }
+$plan = Get-ImagePlan -Tag $Tag -GetPreviousDigest { param($app, $prev) Get-RemoteDigest "$Registry/pathena/$($app):$prev" }
 
 $rows = foreach ($item in $plan) {
-    $image = "$Registry/pathena-$($item.App)"
+    $image = "$Registry/pathena/$($item.App)"
     if ($PlanOnly) { $digest = '-' }
     elseif ($item.Action -eq 'RETAG') {
         docker buildx imagetools create --tag "$($image):$Tag" "$image@$($item.PreviousDigest)"

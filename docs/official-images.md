@@ -4,10 +4,10 @@ Release tags `vMAJOR.MINOR.PATCH` publish four production images to GHCR by the 
 
 | Image | Contents |
 |---|---|
-| `ghcr.io/pallassoftware/pathena-loginserver` | LoginServer |
-| `ghcr.io/pallassoftware/pathena-charserver` | CharServer, `char_athena.conf`/`inter_athena.conf` templates, `conf/import` |
-| `ghcr.io/pallassoftware/pathena-mapserver` | MapServer, Athena Map Pack (`MapData/AthenaMaps.bin`), `map_athena.conf` template, `world_partitions.json` |
-| `ghcr.io/pallassoftware/pathena-worldserver` | WorldServer (Orleans silo), `world_partitions.json`, rAthena `map_cache.dat` |
+| `ghcr.io/pallassoftware/pathena/loginserver` | LoginServer |
+| `ghcr.io/pallassoftware/pathena/charserver` | CharServer, `char_athena.conf`/`inter_athena.conf` templates, `conf/import` |
+| `ghcr.io/pallassoftware/pathena/mapserver` | MapServer, Athena Map Pack (`MapData/AthenaMaps.bin`), `map_athena.conf` template, `world_partitions.json` |
+| `ghcr.io/pallassoftware/pathena/worldserver` | WorldServer (Orleans silo), `world_partitions.json`, rAthena `map_cache.dat` |
 
 The images contain no environment-specific configuration and no secrets. They run as UID 1654 on `dotnet/runtime`, with base
 images pinned by digest. Deployments mount their own configuration (for example a ConfigMap at `/app/conf/k8s`) and supply
