@@ -17,11 +17,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReleaseImages.psm1') -Force
 
-function Get-RemoteDigest([string]$Reference) {
-    $out = docker buildx imagetools inspect $Reference --format '{{json .Manifest}}' 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
-    ($out | ConvertFrom-Json).digest
-}
+function Get-RemoteDigest([string]$Reference) { Get-ImageDigest $Reference }
 
 $commit = (git rev-parse "refs/tags/$Tag^{commit}").Trim()
 $plan = Get-ImagePlan -Tag $Tag -GetPreviousDigest { param($app, $prev) Get-RemoteDigest "$Registry/pathena/$($app):$prev" }
@@ -33,10 +29,8 @@ $rows = foreach ($item in $plan) {
     if ($PlanOnly) { $digest = '-' }
     elseif ($published) { $item.Action = 'DONE'; $item.Reason = 'already published by an earlier attempt'; $digest = $published }
     elseif ($item.Action -eq 'RETAG') {
-        docker buildx imagetools create --tag "$($image):$Tag" "$image@$($item.PreviousDigest)"
-        if ($LASTEXITCODE -ne 0) { throw "re-tagging $image failed" }
-        $digest = Get-RemoteDigest "$($image):$Tag"
-        if ($digest -cne $item.PreviousDigest) { throw "$image re-tag changed the digest ($digest)" }
+        # Same manifest, new tag: the digest must not change (verified inside), and nothing is rebuilt.
+        $digest = Add-ImageTag -Image $image -Digest $item.PreviousDigest -Tag $Tag
     }
     else {
         $meta = Join-Path ([IO.Path]::GetTempPath()) "meta-$($item.App).json"

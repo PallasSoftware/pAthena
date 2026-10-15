@@ -43,4 +43,14 @@ try {
     Assert-That $threw 'a non-release tag is rejected'
 }
 finally { Remove-Item -Recurse -Force $repo -ErrorAction SilentlyContinue }
+
+Write-Host '-- re-tag keeps the digest'
+$sha = 'sha256:' + ('a' * 64)
+$captured = @{}
+$ok = Add-ImageTag -Image 'ghcr.io/x/y' -Digest $sha -Tag 'v0.0.2' -Create { param($i, $d, $t) $captured.Args = "$i@$d -> $t" } -Resolve { param($r) $sha }
+Assert-That ($ok -ceq $sha -and $captured.Args -ceq "ghcr.io/x/y@$sha -> v0.0.2") 'a re-tag that resolves to the source digest is accepted'
+$threw = $false; try { Add-ImageTag -Image 'ghcr.io/x/y' -Digest $sha -Tag 'v0.0.2' -Create { } -Resolve { 'sha256:' + ('b' * 64) } | Out-Null } catch { $threw = $true; $msg = $_.Exception.Message }
+Assert-That ($threw -and $msg -match 'changed the digest') 'a re-tag that changes the digest fails the release'
+$threw = $false; try { Add-ImageTag -Image 'ghcr.io/x/y' -Digest $sha -Tag 'v0.0.2' -Create { } -Resolve { $null } | Out-Null } catch { $threw = $true }
+Assert-That $threw 'a re-tag that cannot be resolved fails the release'
 if ($failures) { throw "$failures assertion(s) failed" }

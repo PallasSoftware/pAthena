@@ -53,4 +53,30 @@ function Get-ImagePlan {
     }
 }
 
-Export-ModuleMember -Function Get-ImageApps, Get-ImageDockerfile, Get-PreviousReleaseTag, Get-ImagePlan
+function Get-ImageDigest {
+    <# The digest the registry serves for a reference ($null when it does not exist). #>
+    param([Parameter(Mandatory)][string]$Reference)
+    $out = docker buildx imagetools inspect $Reference --format '{{json .Manifest}}' 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    ($out | ConvertFrom-Json).digest
+}
+
+function Add-ImageTag {
+    <#
+    Gives an existing image (by digest) another tag WITHOUT rebuilding and WITHOUT changing the digest, then proves it:
+    the new tag must resolve to exactly the source digest, otherwise this throws. `--prefer-index=false` makes buildx copy a
+    single-platform manifest as it is instead of wrapping it in a new index (which would be a different digest).
+    $Create and $Resolve are injectable for tests.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$Digest, [Parameter(Mandatory)][string]$Tag,
+        [scriptblock]$Create = { param($Image, $Digest, $Tag) docker buildx imagetools create --prefer-index=false --tag "${Image}:$Tag" "$Image@$Digest"; if ($LASTEXITCODE -ne 0) { throw "re-tagging $Image failed" } },
+        [scriptblock]$Resolve = { param($Reference) Get-ImageDigest $Reference }
+    )
+    & $Create $Image $Digest $Tag
+    $actual = & $Resolve "${Image}:$Tag"
+    if ($actual -cne $Digest) { throw "re-tagging ${Image}:$Tag changed the digest: expected $Digest, registry serves $actual" }
+    $actual
+}
+
+Export-ModuleMember -Function Get-ImageDigest, Add-ImageTag, Get-ImageApps, Get-ImageDockerfile, Get-PreviousReleaseTag, Get-ImagePlan
