@@ -12,11 +12,11 @@ public sealed class LoginConfig
     public int IroAdvertisedCharPort { get; init; } = ParseIntEnvironment(
         "ATHENA_NET_LOGIN_IRO_CHAR_PORT", 4500);
     /// <summary>
-    /// ATHENA_NET_LOGIN_PROXY_PROTOCOL_TRUSTED: comma separated IPs/CIDRs of the load balancers allowed to send a PROXY protocol v2
-    /// header (real client IP). Empty (default) = off: every connection is direct. Connections from other addresses (internal
-    /// CharServer, health probes) are always direct.
+    /// ATHENA_NET_LOGIN_PROXY_PORT: a second listener whose connections must each start with a PROXY protocol v2 header (the real
+    /// client address behind a TCP load balancer). 0 / unset (default) = no such listener. The port carries no authentication of
+    /// the proxy: restrict who can reach it in the network (the ordinary LoginPort stays for direct connections, e.g. CharServer).
     /// </summary>
-    public TrustedProxies TrustedProxies { get; init; } = ParseTrustedProxies();
+    public int ProxyProtocolPort { get; init; } = ParseProxyPort();
     public IPAddress BindIp { get; init; } = IPAddress.Any;
     public int LoginPort { get; init; } = 6900;
     public bool LogLogin { get; init; } = true;
@@ -52,17 +52,14 @@ public sealed class LoginConfig
     public int UsercountMedium { get; init; } = 500;
     public int UsercountHigh { get; init; } = 1000;
 
-    private static TrustedProxies ParseTrustedProxies()
+    private static int ParseProxyPort()
     {
-        const string name = "ATHENA_NET_LOGIN_PROXY_PROTOCOL_TRUSTED";
-        try
-        {
-            return TrustedProxies.Parse(Environment.GetEnvironmentVariable(name));
-        }
-        catch (FormatException ex)
-        {
-            throw new InvalidOperationException($"{name}: {ex.Message}", ex);
-        }
+        const string name = "ATHENA_NET_LOGIN_PROXY_PORT";
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value)) return 0;
+        return int.TryParse(value, out var port) && port is > 0 and <= ushort.MaxValue
+            ? port
+            : throw new InvalidOperationException($"{name} must be a port number (1-65535), got '{value}'.");
     }
 
     private static int ParseIntEnvironment(string name, int fallback)

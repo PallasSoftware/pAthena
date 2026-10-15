@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Net;
-using System.Net.Sockets;
 
 namespace Athena.Shared.Net;
 
@@ -8,92 +7,11 @@ namespace Athena.Shared.Net;
 public sealed class ProxyProtocolException(string message) : IOException(message);
 
 /// <summary>
-/// The addresses that may send a PROXY protocol v2 header (a load balancer such as Traefik): a comma separated list of IP
-/// addresses and CIDR ranges. Empty means PROXY protocol is off and every connection is a direct one.
-/// </summary>
-public sealed class TrustedProxies
-{
-    private readonly (IPAddress Network, int Bits)[] _ranges;
-
-    public static TrustedProxies None { get; } = new([]);
-
-    private TrustedProxies((IPAddress, int)[] ranges) => _ranges = ranges;
-
-    public bool Enabled => _ranges.Length > 0;
-
-    public static TrustedProxies Parse(string? list)
-    {
-        if (string.IsNullOrWhiteSpace(list))
-        {
-            return None;
-        }
-
-        var ranges = new List<(IPAddress, int)>();
-        foreach (var item in list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var parts = item.Split('/');
-            if (parts.Length > 2 || !IPAddress.TryParse(parts[0], out var network))
-            {
-                throw new FormatException($"'{item}' is not an IP address or CIDR range.");
-            }
-
-            network = Normalize(network);
-            var max = network.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
-            var bits = max;
-            if (parts.Length == 2 && (!int.TryParse(parts[1], out bits) || bits < 0 || bits > max))
-            {
-                throw new FormatException($"'{item}' has an invalid prefix length.");
-            }
-
-            ranges.Add((network, bits));
-        }
-
-        return new TrustedProxies([.. ranges]);
-    }
-
-    public bool Contains(IPAddress address)
-    {
-        address = Normalize(address);
-        foreach (var (network, bits) in _ranges)
-        {
-            if (network.AddressFamily == address.AddressFamily && SamePrefix(network.GetAddressBytes(), address.GetAddressBytes(), bits))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static IPAddress Normalize(IPAddress address) => address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
-
-    private static bool SamePrefix(byte[] a, byte[] b, int bits)
-    {
-        var whole = bits / 8;
-        for (var i = 0; i < whole; i++)
-        {
-            if (a[i] != b[i])
-            {
-                return false;
-            }
-        }
-
-        var rest = bits % 8;
-        if (rest == 0)
-        {
-            return true;
-        }
-
-        var mask = (byte)(0xFF << (8 - rest));
-        return (a[whole] & mask) == (b[whole] & mask);
-    }
-}
-
-/// <summary>
-/// PROXY protocol v2 (binary) for raw TCP: the one real-client-IP mechanism a TCP load balancer offers. A header is trusted only
-/// when the TCP peer is a configured trusted proxy; any other peer is a direct connection and nothing is read from it, so
-/// a client can never claim another address. From a trusted proxy the header is mandatory: a missing or malformed one fails
-/// the connection (the proxy is misconfigured; guessing would attribute the proxy's address to a player).
+/// PROXY protocol v2 (binary) for raw TCP: how a TCP load balancer such as Traefik reports the real client address. It is meant
+/// for a dedicated listener that only the proxy can reach (restricted by the network, for example a Kubernetes NetworkPolicy):
+/// every connection to it must start with a valid header, and a missing or malformed one fails the connection rather than
+/// attributing the proxy's address to a player. Connections on the ordinary listener never carry or parse a header, so a
+/// client can not claim another address there.
 /// </summary>
 public static class ProxyProtocolV2
 {
@@ -102,18 +20,13 @@ public static class ProxyProtocolV2
     private const int MaxPayload = 536; // addresses plus TLVs; far more than any proxy sends for TCP
 
     /// <summary>
-    /// The client address of a new connection. For an untrusted peer: the peer itself, nothing is consumed. For a trusted proxy:
-    /// consumes exactly one header from <paramref name="stream"/> and returns the address it carries (the peer itself for LOCAL or
-    /// an unspecified family, as sent by proxy health checks).
+    /// Consumes exactly one PROXY protocol v2 header from <paramref name="stream"/> (within <paramref name="timeout"/>) and returns
+    /// the client address it carries; the proxy's own <paramref name="peer"/> for a LOCAL command (proxy health check) or an
+    /// unspecified/non-TCP family. Throws <see cref="ProxyProtocolException"/> for anything else.
     /// </summary>
-    public static async Task<IPEndPoint> ResolveClientAsync(
-        Stream stream, IPEndPoint peer, TrustedProxies trusted, TimeSpan timeout, CancellationToken cancellationToken)
+    public static async Task<IPEndPoint> ReadClientAsync(
+        Stream stream, IPEndPoint peer, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        if (!trusted.Enabled || !trusted.Contains(peer.Address))
-        {
-            return peer;
-        }
-
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
         try
@@ -132,11 +45,11 @@ public static class ProxyProtocolV2
         }
         catch (EndOfStreamException)
         {
-            throw new ProxyProtocolException($"Connection from trusted proxy {peer.Address} closed before a complete PROXY header.");
+            throw new ProxyProtocolException($"Connection from {peer.Address} closed before a complete PROXY header.");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new ProxyProtocolException($"Trusted proxy {peer.Address} sent no PROXY header in time.");
+            throw new ProxyProtocolException($"Connection from {peer.Address} sent no PROXY header in time.");
         }
     }
 
@@ -145,7 +58,7 @@ public static class ProxyProtocolV2
     {
         if (header.Length != FixedLength || !header[..12].SequenceEqual(Signature))
         {
-            throw new ProxyProtocolException($"Connection from trusted proxy {peer.Address} did not start with a PROXY protocol v2 header.");
+            throw new ProxyProtocolException($"Connection from {peer.Address} did not start with a PROXY protocol v2 header.");
         }
 
         var version = header[12] >> 4;

@@ -22,8 +22,10 @@ public sealed class LoginTcpServer
     private readonly Config.SubnetConfig _subnetConfig;
     private readonly IServiceProvider _serviceProvider;
     private readonly TcpListener _listener;
+    private readonly TcpListener? _proxyListener;
 
     public int BoundPort { get; private set; }
+    public int BoundProxyPort { get; private set; }
 
     public LoginTcpServer(
         LoginConfigStore configStore,
@@ -47,11 +49,13 @@ public sealed class LoginTcpServer
 
         var config = _configStore.Current;
         _listener = new TcpListener(config.BindIp, config.LoginPort);
+        _proxyListener = config.ProxyProtocolPort > 0 ? new TcpListener(config.BindIp, config.ProxyProtocolPort) : null;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         _listener.Start();
+        _proxyListener?.Start();
 
         BoundPort = ((IPEndPoint)_listener.LocalEndpoint).Port;
 
@@ -61,12 +65,17 @@ public sealed class LoginTcpServer
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            var accepting = new List<Task> { AcceptLoopAsync(_listener, viaProxy: false, cancellationToken) };
+            if (_proxyListener is not null)
             {
-                var client = await _listener.AcceptTcpClientAsync(cancellationToken);
-
-                _ = HandleClientAsync(client, cancellationToken);
+                BoundProxyPort = ((IPEndPoint)_proxyListener.LocalEndpoint).Port;
+                LoginLogger.Status(
+                    $"Login server listening on {_configStore.Current.BindIp}:{BoundProxyPort} for PROXY protocol v2 connections (real client IP)..."
+                );
+                accepting.Add(AcceptLoopAsync(_proxyListener, viaProxy: true, cancellationToken));
             }
+
+            await Task.WhenAll(accepting);
         }
         catch (OperationCanceledException)
         {
@@ -75,10 +84,21 @@ public sealed class LoginTcpServer
         finally
         {
             _listener.Stop();
+            _proxyListener?.Stop();
         }
     }
 
-    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync(TcpListener listener, bool viaProxy, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var client = await listener.AcceptTcpClientAsync(cancellationToken);
+
+            _ = HandleClientAsync(client, viaProxy, cancellationToken);
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client, bool viaProxy, CancellationToken cancellationToken)
     {
         var peer = client.Client.RemoteEndPoint as IPEndPoint;
         var endpoint = peer;
@@ -90,7 +110,7 @@ public sealed class LoginTcpServer
             ActivityKind.Server
         );
 
-        LoginLogger.Info($"Client connected: {peer}");
+        LoginLogger.Info($"Client connected: {peer}{(viaProxy ? " (proxy listener)" : string.Empty)}");
 
         using (client)
         // A DI scope is created per TCP connection solely to resolve the
@@ -108,16 +128,13 @@ public sealed class LoginTcpServer
                 // SocketFlags.Peek means the bytes remain in the socket,
                 // so ClientSession will still receive the complete packet.
                 // ---------------------------------------------------------
-                // Behind a TCP load balancer the peer is the proxy: a trusted proxy's PROXY protocol v2 header carries the real
-                // client address (consumed here, before anything else reads the stream). Every other peer is a direct connection.
-                if (peer is not null)
+                // On the proxy listener the TCP peer is the load balancer: its PROXY protocol v2 header (consumed here, before
+                // anything else reads the stream) carries the real client address. The ordinary listener never parses a header.
+                if (viaProxy && peer is not null)
                 {
-                    endpoint = await ProxyProtocolV2.ResolveClientAsync(
-                        client.GetStream(), peer, _configStore.Current.TrustedProxies, TimeSpan.FromSeconds(5), cancellationToken);
-                    if (!endpoint.Equals(peer))
-                    {
-                        LoginLogger.Info($"Client {endpoint} via proxy {peer.Address}");
-                    }
+                    endpoint = await ProxyProtocolV2.ReadClientAsync(
+                        client.GetStream(), peer, TimeSpan.FromSeconds(5), cancellationToken);
+                    LoginLogger.Info($"Client {endpoint} via proxy {peer.Address}");
                 }
 
                 activity?.SetTag("net.peer.ip", endpoint?.Address.ToString());
