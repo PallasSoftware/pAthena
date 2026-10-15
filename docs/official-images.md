@@ -1,6 +1,6 @@
 # Official server images
 
-Release tags `vMAJOR.MINOR.PATCH` publish four production images to GHCR by the `release-images` workflow:
+Every push to `main` is a release: the `release-images` workflow validates it, tags it `vMAJOR.MINOR.PATCH` and publishes four production images to GHCR with that tag (for example `ghcr.io/pallassoftware/pathena/loginserver:v0.0.1`):
 
 | Image | Contents |
 |---|---|
@@ -12,6 +12,20 @@ Release tags `vMAJOR.MINOR.PATCH` publish four production images to GHCR by the 
 The images contain no environment-specific configuration and no secrets. They run as UID 1654 on `dotnet/runtime`, with base
 images pinned by digest. Deployments mount their own configuration (for example a ConfigMap at `/app/conf/k8s`) and supply
 secrets at runtime. `docker-compose.yml` builds the same Dockerfiles.
+
+## Versions
+
+- `MAJOR.MINOR` is the single line of the `VERSION` file (`0.0` while in beta) and is changed by hand in a pull request.
+- `PATCH` is derived from the existing `v*` release tags: the next free number of the `MAJOR.MINOR` series. Changing
+  `VERSION` starts the new series at `PATCH` 0 (the very first release is `0.0.1`, there is no `0.0.0`).
+  `0.0.1 → 0.0.2 → 0.0.3`, bump to `0.1` → `0.1.0 → 0.1.1`, bump to `1.0` → `1.0.0 → 1.0.1`.
+- No version commit is made, so nothing can loop: the tag is created by the workflow with `GITHUB_TOKEN`, which does not
+  start another run. Tags are never moved or deleted. A pull request never tags or publishes.
+- Order: tests pass on the commit → the tag is created → the images are published. A re-run of the same commit keeps its tag;
+  two concurrent runs never get the same version (a rejected tag push is retried with the next free number); lowering
+  `VERSION` below an existing release fails the run.
+- If the publish step fails after the tag exists, re-run the workflow: the commit keeps its version and the images are published.
+- Tests: `pwsh .github/scripts/Test-ReleaseVersion.ps1`.
 
 ## Same digest for unchanged servers
 
