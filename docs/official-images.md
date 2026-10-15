@@ -1,6 +1,6 @@
 # Official server images
 
-Every push to `main` is a release: the `release-images` workflow validates it, tags it `vMAJOR.MINOR.PATCH` and publishes four production images to GHCR with that tag (for example `ghcr.io/pallassoftware/pathena/loginserver:v0.0.1`):
+Every push to `main` is a release: `release-version.yml` tests it and tags it `vMAJOR.MINOR.PATCH`, and the new tag starts `release-images.yml`, which publishes four production images to GHCR with that tag (for example `ghcr.io/pallassoftware/pathena/loginserver:v0.0.1`):
 
 | Image | Contents |
 |---|---|
@@ -24,7 +24,8 @@ secrets at runtime. `docker-compose.yml` builds the same Dockerfiles.
 - Order: tests pass on the commit → the tag is created → the images are published. A re-run of the same commit keeps its tag;
   two concurrent runs never get the same version (a rejected tag push is retried with the next free number); lowering
   `VERSION` below an existing release fails the run.
-- If the publish step fails after the tag exists, re-run the workflow: the commit keeps its version and the images are published.
+- A version tag starts `release-images.yml` (explicitly via `workflow_dispatch`, because a tag pushed with `GITHUB_TOKEN` starts nothing; a `v*` tag pushed by hand starts it directly). If it fails half way, re-run it: an image tag that already exists is never overwritten or rebuilt, only the missing ones are added.
+- Nothing here deploys: `pathena-server` selects a release through its submodule and deploys on its own.
 - Tests: `pwsh .github/scripts/Test-ReleaseVersion.ps1`.
 
 ## Same digest for unchanged servers

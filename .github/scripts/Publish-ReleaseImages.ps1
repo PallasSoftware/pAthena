@@ -28,7 +28,10 @@ $plan = Get-ImagePlan -Tag $Tag -GetPreviousDigest { param($app, $prev) Get-Remo
 
 $rows = foreach ($item in $plan) {
     $image = "$Registry/pathena/$($item.App)"
+    # Safe retry: a version tag that already exists in the registry is never overwritten or rebuilt.
+    $published = if ($PlanOnly) { $null } else { Get-RemoteDigest "$($image):$Tag" }
     if ($PlanOnly) { $digest = '-' }
+    elseif ($published) { $item.Action = 'DONE'; $item.Reason = 'already published by an earlier attempt'; $digest = $published }
     elseif ($item.Action -eq 'RETAG') {
         docker buildx imagetools create --tag "$($image):$Tag" "$image@$($item.PreviousDigest)"
         if ($LASTEXITCODE -ne 0) { throw "re-tagging $image failed" }

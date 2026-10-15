@@ -1,83 +1,26 @@
 name: release-images
 
-# Every push to main is a release: after validation it gets the next version tag vMAJOR.MINOR.PATCH and the four official
-# server images ghcr.io/pallassoftware/pathena/{loginserver,charserver,mapserver,worldserver}:<tag> are published.
-#   MAJOR.MINOR  are set by hand in the VERSION file (a change starts the series at PATCH 0; the very first is 0.0.1).
-#   PATCH        is derived from the existing release tags, so no version commit is ever made.
-# Servers whose sources did not change since the previous release are re-tagged (same digest, no rebuild).
-# Pull requests only run the offline tests of the version and image decisions: they never tag or publish.
-# Tags are created with the workflow's GITHUB_TOKEN, which does not trigger further workflow runs (no loops), and are
-# never moved or deleted.
+# The official image release of ONE version tag vMAJOR.MINOR.PATCH, for example v0.0.1:
+#   ghcr.io/pallassoftware/pathena/{loginserver,charserver,mapserver,worldserver}:<tag>
+# Started for every new tag by release-version.yml (workflow_dispatch on the tag) or by pushing a v* tag. It compares the tag
+# with the previous release tag (git diff over each server's source, shared code, dependencies and build inputs), builds only
+# the servers that changed, and gives every unchanged server the new tag on its existing image digest (no rebuild, so its
+# version labels stay those of the build). All four tags exist after every release.
+# Safe to re-run: an image tag that already exists is never overwritten or rebuilt, so a partially failed release is
+# completed by running it again. It never deploys anything; pathena-server selects a release and deploys on its own.
 
 permissions:
   contents: read
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    paths:
-      - "VERSION"
-      - ".github/scripts/**"
-      - ".github/workflows/release-images.yml"
-      - "src/*/Dockerfile"
-      - ".dockerignore"
+    tags: [ "v[0-9]+.[0-9]+.[0-9]+" ]
   workflow_dispatch:
 
 jobs:
-  validate:
-    name: Validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
-      - name: Test the version and image decisions
-        shell: pwsh
-        run: |
-          ./.github/scripts/Test-ReleaseVersion.ps1
-          ./.github/scripts/Test-ReleaseImages.ps1
-      # The images are published only after the server tests pass on this very commit.
-      - uses: actions/setup-dotnet@v4
-        if: github.event_name != 'pull_request'
-        with:
-          dotnet-version: '10.0.x'
-      - name: Test the servers
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') {
-            dotnet test "tests/$project.Tests/$project.Tests.csproj" --configuration Release
-            if ($LASTEXITCODE -ne 0) { throw "$project tests failed" }
-          }
-
-  version:
-    name: Tag the release
-    needs: validate
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Create the next version tag
-        id: tag
-        shell: pwsh
-        env:
-          COMMIT: ${{ github.sha }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          ./.github/scripts/New-ReleaseTag.ps1 -Commit $env:COMMIT
-
   publish:
     name: Publish the images
-    needs: version
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,7 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ needs.version.outputs.tag }}
           fetch-depth: 0
           fetch-tags: true
       - name: Check out the rAthena data the WorldServer image carries
@@ -99,6 +41,6 @@ jobs:
       - name: Publish the images
         shell: pwsh
         env:
-          TAG: ${{ needs.version.outputs.tag }}
+          TAG: ${{ github.ref_name }}
           SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
         run: ./.github/scripts/Publish-ReleaseImages.ps1 -Tag $env:TAG -SourceUrl $env:SOURCE_URL
