@@ -16,7 +16,7 @@ public sealed class RathenaReferenceFixtureTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-07", "VF-14"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-07", "VF-08", "VF-14"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
 
