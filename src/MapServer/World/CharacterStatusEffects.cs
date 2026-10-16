@@ -19,7 +19,8 @@ public readonly record struct EffectiveCharacterStats(
     ushort Dexterity,
     ushort Luck,
     int MoveSpeedHaste,
-    int AttackSpeedBonus);
+    int AttackSpeedBonus,
+    int HitBonus = 0);
 
 // Per-session mutable status state. Each MapClientSession owns its own instance, so
 // concurrent sessions never share mutable status state - but WITHIN one session,
@@ -235,9 +236,11 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
             intelligence = baseStats.Intelligence, dexterity = baseStats.Dexterity, luck = baseStats.Luck;
         var moveSpeedHaste = 0;
         var attackSpeedBonus = 0;
+        var hitBonus = 0;
 
         if (lookup(StatusIds.Blessing) is { } blessing)
         {
+            hitBonus = blessing.Val1 * 2; // status_calc_hit, RENEWAL: SC_BLESSING val1 * 2 (status.cpp:7584-7585)
             strength = (ushort)(strength + blessing.Val2);
             intelligence = (ushort)(intelligence + blessing.Val2);
             dexterity = (ushort)(dexterity + blessing.Val2);
@@ -250,6 +253,6 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
             attackSpeedBonus += increaseAgi.Val1;
         }
 
-        return new EffectiveCharacterStats(strength, agility, vitality, intelligence, dexterity, luck, moveSpeedHaste, attackSpeedBonus);
+        return new EffectiveCharacterStats(strength, agility, vitality, intelligence, dexterity, luck, moveSpeedHaste, attackSpeedBonus, hitBonus);
     }
 }

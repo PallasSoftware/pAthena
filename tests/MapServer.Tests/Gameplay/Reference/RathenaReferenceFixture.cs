@@ -40,6 +40,7 @@ internal sealed class RathenaReferenceFixture
     }
 
     public JsonElement Output(string id) => _scenarios[id].GetProperty("output");
+    public JsonElement Input(string id) => _scenarios[id].GetProperty("input");
     public string Evidence(string id) => _scenarios[id].GetProperty("evidence").GetString()!;
     public IEnumerable<string> Ids => _scenarios.Keys;
 

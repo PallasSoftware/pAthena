@@ -16,8 +16,10 @@ namespace Athena.Net.MapServer.World;
 // (MapClientSession's basic-attack range check, `target.IsWalking ? 1 : 0`); this field is what
 // lets the mob-attacks-player path apply the identical pinned rule keyed on the PLAYER's own
 // current walking state, rather than assuming the two directions share one rule without tracing it.
+// `SoftDefense` is the authoritative def2 from DerivedStatCalculator (reference-verified, fixtures VF-01/02/07/08),
+// computed from the same captured snapshot as Vitality/Agility - consumers must not re-derive it.
 // `Agility` is the player's EFFECTIVE (base + active status bonuses) AGI, needed by the RENEWAL
 // player def2 formula (status.cpp:2649-2656: floor((BaseLevel+VIT)/2 + AGI/5)) - see
 // MobBasicAttackCalculator's own doc comment for the full trace.
 public readonly record struct PlayerCombatSnapshot(
-    uint AccountId, string Map, ushort X, ushort Y, bool IsAlive, bool IsWalking, ushort BaseLevel, ushort Vitality, ushort Agility);
+    uint AccountId, string Map, ushort X, ushort Y, bool IsAlive, bool IsWalking, ushort BaseLevel, ushort Vitality, ushort Agility, int SoftDefense = 0);

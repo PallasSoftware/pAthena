@@ -78,7 +78,7 @@ internal static class MobBasicAttackCalculator
         long damage = (atkmax > atkmin ? rollAtk(atkmin, atkmax - 1) : atkmin) + (attacker.Str + attacker.Level);
 
         const int def1 = 0; // Disclosed simplification - see this type's own doc comment, step 2.
-        var def2 = (int)((float)(target.BaseLevel + target.Vitality) / 2 + (float)target.Agility / 5);
+        var def2 = target.SoftDefense; // status_calc_misc / status_calc_bl_main def2, see DerivedStatCalculator.
         damage = damage * (4000 + def1) / (4000 + 10L * def1) - def2;
 
         return damage < 1 ? new BasicAttackDamageResult(0, IsMiss: true) : new BasicAttackDamageResult((uint)damage, IsMiss: false);

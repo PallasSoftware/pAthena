@@ -3348,7 +3348,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         {
             SyncPositionToNow();
             var isWalking = _movement?.IsMoving ?? false;
-            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility);
+            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, Athena.Net.MapServer.Gameplay.Rules.Renewal.DerivedStatCalculator.Calculate(snapshot).SoftDefense);
         }
         finally { _movementGate.Release(); }
     }

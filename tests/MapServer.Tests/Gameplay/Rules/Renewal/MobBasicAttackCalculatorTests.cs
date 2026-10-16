@@ -17,8 +17,9 @@ public sealed class MobBasicAttackCalculatorTests
         BaseExp: 0, JobExp: 0, Mode: MobMode.CanMove,
         Source: new("rAthena", "abc", "db/re/mob_db.yml", 1));
 
-    private static PlayerCombatSnapshot FreshNovice(ushort vit = 1, ushort baseLevel = 1, ushort agi = 1) =>
-        new(AccountId: 1, Map: "iz_int03", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: baseLevel, Vitality: vit, Agility: agi);
+    // def2 is supplied explicitly: its derivation lives in DerivedStatCalculator (reference-verified separately).
+    private static PlayerCombatSnapshot Target(int softDefense = 1) =>
+        new(AccountId: 1, Map: "iz_int03", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 1, Agility: 1, SoftDefense: softDefense);
 
     [Fact]
     public void Calculate_RollsWithinThePinned80To120BandWithExclusiveUpperBound()
@@ -28,7 +29,7 @@ public sealed class MobBasicAttackCalculatorTests
         var attacker = MakeGPoring(attack: 100);
         var observed = (Min: -1, Max: -1);
 
-        MobBasicAttackCalculator.Calculate(attacker, FreshNovice(), (min, max) => { observed = (min, max); return min; });
+        MobBasicAttackCalculator.Calculate(attacker, Target(), (min, max) => { observed = (min, max); return min; });
 
         Assert.Equal((80, 119), observed);
     }
@@ -37,7 +38,7 @@ public sealed class MobBasicAttackCalculatorTests
     public void Calculate_HighDamageAgainstLowVitTarget_DealsRealDamage()
     {
         var attacker = MakeGPoring(attack: 1000);
-        var result = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 1), (min, max) => max);
+        var result = MobBasicAttackCalculator.Calculate(attacker, Target(1), (min, max) => max);
 
         Assert.False(result.IsMiss);
         Assert.True(result.Damage > 0);
@@ -49,7 +50,7 @@ public sealed class MobBasicAttackCalculatorTests
         // G_PORING's real Attack=1: atkmax=1*120/100=1. A high-Vit target's def2 (floor((level+vit)/2))
         // easily exceeds that, driving damage below 1 - the pinned "no separate minimum-1 floor" miss.
         var attacker = MakeGPoring(attack: 1);
-        var result = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 99, baseLevel: 99), (min, max) => max);
+        var result = MobBasicAttackCalculator.Calculate(attacker, Target(softDefense: 60), (min, max) => max);
 
         Assert.True(result.IsMiss);
         Assert.Equal(0u, result.Damage);
@@ -59,8 +60,8 @@ public sealed class MobBasicAttackCalculatorTests
     public void Calculate_HigherVitality_ReducesDamage()
     {
         var attacker = MakeGPoring(attack: 200);
-        var lowVitResult = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 1), (min, max) => max);
-        var highVitResult = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 50), (min, max) => max);
+        var lowVitResult = MobBasicAttackCalculator.Calculate(attacker, Target(1), (min, max) => max);
+        var highVitResult = MobBasicAttackCalculator.Calculate(attacker, Target(softDefense: 26), (min, max) => max);
 
         Assert.True(lowVitResult.Damage > highVitResult.Damage);
     }
@@ -72,39 +73,9 @@ public sealed class MobBasicAttackCalculatorTests
         // proving the atkmin>atkmax guard never inverts the roll bounds it hands to rollAtk.
         var attacker = MakeGPoring(attack: 0);
         var calledWith = (Min: -1, Max: -1);
-        MobBasicAttackCalculator.Calculate(attacker, FreshNovice(), (min, max) => { calledWith = (min, max); return min; });
+        MobBasicAttackCalculator.Calculate(attacker, Target(), (min, max) => { calledWith = (min, max); return min; });
 
         Assert.True(calledWith.Min <= calledWith.Max);
-    }
-
-    // Section 9: def2 = (int)(((float)(BaseLevel+Vit))/2 + (float)Agi/5) - a single truncated
-    // floating-point expression (status.cpp:2649-2656), not two separate integer divisions summed
-    // together. Higher AGI must measurably increase def2 (reducing damage further), proving
-    // Agility actually participates in the formula rather than being accepted but ignored.
-    [Fact]
-    public void Calculate_HigherAgility_ReducesDamageFurther_ProvingAgiParticipatesInDef2()
-    {
-        var attacker = MakeGPoring(attack: 200);
-        var lowAgiResult = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 10, baseLevel: 10, agi: 0), (min, max) => max);
-        var highAgiResult = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 10, baseLevel: 10, agi: 50), (min, max) => max);
-
-        Assert.True(lowAgiResult.Damage > highAgiResult.Damage);
-    }
-
-    // Exact integer boundary: BaseLevel=10, Vit=10 -> (10+10)/2=10.0; Agi=5 -> +1.0 exactly ->
-    // def2=11, vs. Agi=4 -> +0.8 -> truncates to 0 additional -> def2=10. This proves the /5
-    // truncation happens on the COMBINED float expression, not on a separately-floored Agi/5 term
-    // (which would already show a boundary at Agi=5 either way, but this fixture pins the exact
-    // value the single-expression truncation must produce).
-    [Fact]
-    public void Calculate_Def2Formula_MatchesExactPinnedTruncationAtAgiBoundary()
-    {
-        var attacker = MakeGPoring(attack: 1000);
-        var justBelowBoundary = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 10, baseLevel: 10, agi: 4), (min, max) => max);
-        var atBoundary = MobBasicAttackCalculator.Calculate(attacker, FreshNovice(vit: 10, baseLevel: 10, agi: 5), (min, max) => max);
-
-        // def2 increases by exactly 1 crossing this boundary, so damage must decrease by exactly 1.
-        Assert.Equal(justBelowBoundary.Damage - 1, atBoundary.Damage);
     }
 
     // Reference-corrected (fixture VF-14): a mob's batk = str + level is added to the rolled weapon damage
@@ -116,7 +87,7 @@ public sealed class MobBasicAttackCalculatorTests
     {
         var attacker = GeneratedMobs.GPoring;
         Assert.Equal(1, attacker.Attack);
-        var freshNovice = new PlayerCombatSnapshot(AccountId: 1, Map: "iz_int03", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 9, Agility: 9);
+        var freshNovice = Target(softDefense: 6); // floor((1+9)/2 + 9/5), VF-02-verified formula
 
         var result = MobBasicAttackCalculator.Calculate(attacker, freshNovice);
 

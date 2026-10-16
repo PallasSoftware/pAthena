@@ -119,7 +119,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC: choose `main=STR, other=DEX`, swap for bow/musical/whip/firearms; `(main*10 + other*10/5 + LUK*10/3 + L*10/4)/10 + 5*POW`. Ordinary Renewal non-PC path: `STR+L`. |
 | Modifier dependencies | Base enable mask; flat/rate helper order includes Volcano, Ash, Pyroclastic, Angriffs Modus, Enervation, Zangetsu, Loud (+30 Renewal), Nibelungen (+20%), Sun stance, Intensive Aim (+150). Item `bBaseAtk` goes to **equipment ATK**, not this field, under Renewal. [Bonus dispatch][R-bonus]. |
 | Arithmetic semantics | Each integer division is retained. Base helper clamps `0..65535`; overlay BATK is `int32` and has no universal final clamp. Battle pass only enters if `B.batk` is nonzero. |
-| Existing Athena / coverage | `WeaponAttackCalculator.BaseAttack` implements a POW=0 melee PC expression for damage; no general BATK snapshot; mob calculator omits BATK. **Partial**. **Epic 15.2b (reference-verified):** `MobBasicAttackCalculator` now adds mob `batk = str + level` and uses the exclusive `[atkmin, atkmax)` roll; fixture VF-14 (mobs 1002/1031/1013 via real `battle_calc_attack`, `MobAttack_ReachableDamageValuesMatchReference`). Accuracy/FLEE, crit, elements, cards and armor DEF remain unmodeled. |
+| Existing Athena / coverage | `WeaponAttackCalculator.BaseAttack` implements a POW=0 melee PC expression for damage; no general BATK snapshot; mob calculator omits BATK. **Partial**. **Epic 15.2b (reference-verified):** `MobBasicAttackCalculator` now adds mob `batk = str + level` and uses the exclusive `[atkmin, atkmax)` roll; fixture VF-14 (mobs 1002/1031/1013 via real `battle_calc_attack`, `MobAttack_ReachableDamageValuesMatchReference`). Accuracy/FLEE, crit, elements, cards and armor DEF remain unmodeled. **Epic 15.4 (partial, reference-verified):** `DerivedStatCalculator` computes PC BATK for the no-equipment/POW=0 scope incl. Blessing STR/DEX delta (fixtures VF-01/02/07/08). Equipment, ranged weapons and passives unsupported. |
 | Test evidence | `WeaponAttackCalculatorTests` hand-selected novice values; no ranged swap, job, POW, disabled mask, zero guard or extreme arithmetic fixtures. |
 | Future work | Expose status ATK once; use it from combat and display without confusing PC damage's multiplier with displayed BATK. Include RS-MOB corrections. |
 
@@ -174,7 +174,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC base addition `trunc(((float)L+VIT)/2 + (float)AGI/5)`. Battle adjustment adds `trunc(((float)E.VIT/2 - (float)B.VIT/2) + ((float)E.AGI/5 - (float)B.AGI/5))` to existing `B.def2`, then helper. Both base and effective operands are explicitly converted to float before division; the combined delta is truncated once. |
 | Modifier dependencies | Base def2_rate first; Berserk/Chaos/DEFSET overrides; Angelus uses `VIT/2 * val2/100`; poison-family and other ordered effects. |
 | Arithmetic semantics | Base cap `0..SHRT_MAX`; helper signed cap `SHRT_MIN..SHRT_MAX`. Delta truncation is not equivalent to recalculating a single effective-stat expression. Preserve the precise operand casts in source. |
-| Existing Athena / coverage | Mob calculator computes a fresh formula using effective VIT/AGI, with no stored base/rates/status overlay. **Partial**. |
+| Existing Athena / coverage | Mob calculator computes a fresh formula using effective VIT/AGI, with no stored base/rates/status overlay. **Partial**. **Epic 15.4 (partial, reference-verified):** `DerivedStatCalculator` now owns soft DEF (base + VIT/AGI delta path, VF-01/02/07/08); `MobBasicAttackCalculator` consumes `PlayerCombatSnapshot.SoftDefense` instead of its own formula. |
 | Test evidence | `Calculate_Def2Formula_MatchesExactPinnedTruncationAtAgiBoundary` uses an even level+VIT sum; it cannot distinguish several wrong split-rounding formulas. Need odd sums, simultaneous VIT/AGI changes, negative expiry deltas and base-rate combinations. |
 | Future work | One soft-DEF output from staged calculation; combat consumes it then applies attack-context defense rules. |
 
@@ -201,7 +201,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC base addition `trunc(INT + (float)L/4 + (float)(DEX+VIT)/5)`; overlay `E.INT-B.INT + trunc(((float)E.DEX/5 - (float)B.DEX/5) + ((float)E.VIT/5 - (float)B.VIT/5))` added to `B.mdef2`. Both base-side and effective-side divisions are floating point; preserve the single cast of their combined delta. |
 | Modifier dependencies | Berserk zero, Eska 90, MDEFSET override; Mind Breaker, Burning and Analyze rates in order. |
 | Arithmetic semantics | Base cap nonnegative signed16; temporary helper signed16 limits; base expression groups DEX+VIT before division, overlay does not. |
-| Existing Athena / coverage | **Missing**. |
+| Existing Athena / coverage | **Missing**. **Epic 15.4 (partial, reference-verified):** soft MDEF in `DerivedStatCalculator` (base + INT/DEX/VIT deltas; VF-01/02/07/08); no combat consumer yet. |
 | Test evidence | Need grouped versus separate `/5`, level `/4`, expiry negative deltas, overrides and rate-order fixtures. |
 | Future work | Base/effective distinct representation; do not infer client field names from internal `mdef2` (see synchronization document). |
 
@@ -215,7 +215,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC base adds `L+DEX+LUK/3+175+2*CON`; battle adds `E.DEX-B.DEX + E.LUK/3-B.LUK/3 + 2*(E.CON-B.CON)`. |
 | Modifier dependencies | Weapon Research, Single Action and other passive branches in base pass; helper includes Blessing **additional `2*val1` HIT** independently of its DEX increase. Blind and ordered modifiers also apply. |
 | Arithmetic semantics | Base/helper clamp `1..SHRT_MAX`; rate/passive order may differ from moving them into the final helper. |
-| Existing Athena / coverage | Effective DEX exists; HIT and attack accuracy do not. **Missing**. |
+| Existing Athena / coverage | Effective DEX exists; HIT and attack accuracy do not. **Missing**. **Epic 15.4 (partial, reference-verified):** HIT in `DerivedStatCalculator` incl. Blessing `val1*2` (VF-01/02/07/08); accuracy roll itself still unmodeled (Epic 17). |
 | Test evidence | Blessing tests assert only primary +10; cannot catch missing extra HIT. |
 | Future work | Compute snapshot HIT now; separately stage accuracy integration with independent attack fixtures (not a hidden expansion into full combat). |
 
@@ -229,7 +229,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC base adds `L+AGI+LUK/5+100+2*CON`; overlay adds AGI difference, difference of divided LUK terms, twice CON difference. |
 | Modifier dependencies | Improve Dodge and class/passive branches; GvG/BG penalty before empty-SC return; Poison Mist zero and Overed Boost override; ordered flat/% effects. |
 | Arithmetic semantics | `1..SHRT_MAX` normal helper cap, but early overrides have their own return behavior. |
-| Existing Athena / coverage | **Missing**; miss results currently come from damage below one, not HIT/FLEE accuracy. |
+| Existing Athena / coverage | **Missing**; miss results currently come from damage below one, not HIT/FLEE accuracy. **Epic 15.4 (partial, reference-verified):** FLEE in `DerivedStatCalculator` incl. Increase AGI via AGI delta (VF-01/02/07/08); map GvG/BG penalties and the FLEE accuracy roll unmodeled. |
 | Test evidence | Existing zero-damage tests are not FLEE tests. Need map penalty, override, `/5`, buff refresh/end and negative delta cases. |
 | Future work | Derived FLEE first; accuracy and crowd penalties require attack-context inputs and later review. |
 
@@ -243,7 +243,7 @@ In the tables below `B` denotes rebuilt base state, `E` effective battle state, 
 | Formula | PC base adds `LUK+10`; overlay adds LUK delta | Base adds `10+3*LUK+L/10`; overlay adds `3*(E.LUK-B.LUK)` |
 | Modifier dependencies | Whistle, Unlucky, Hiss, Doram flee; helper order | Explosion Spirits, Fortune, True Sight, Cloaking double, quickens and other ordered helper effects; Katar final double |
 | Arithmetic semantics | Internal tenths of percent; base cap `0..32767`, helper `10..32767`; delta guarded by nonzero base | Internal tenths of percent; base minimum 1, helper minimum 10; post-helper Katar multiplication/narrowing is not covered by that clamp |
-| Existing Athena / coverage | **Missing** | **Missing** |
+| Existing Athena / coverage | **Missing** | **Missing** **Epic 15.4 (partial, reference-verified):** base CRI and perfect dodge (flee2) in `DerivedStatCalculator`, no overlay from supported statuses (VF-01/02/07/08); no combat consumer yet. |
 | Test evidence | No independent dodge-rate fixtures; add mask/zero/min/cap and display `/10` | No independent CRI fixtures; add level10, LUK increments, Katar and cap/overflow boundaries |
 | Future work | Calculate field, defer dodge random resolution explicitly | Calculate field, defer crit chance/damage pipeline explicitly |
 

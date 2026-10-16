@@ -89,7 +89,8 @@ public sealed class RathenaReferenceFixtureTests
         var attack = RathenaReferenceFixture.LoadCommitted().Output("VF-14").GetProperty("attacks").EnumerateArray().Single(a => a.GetProperty("mob_id").GetInt32() == mobId);
         var expected = attack.GetProperty("damage_histogram").EnumerateObject().Select(p => long.Parse(p.Name)).Order().ToArray();
         var mob = mobId switch { 1002 => GeneratedMobs.Poring, 1031 => GeneratedMobs.Poporing, _ => GeneratedMobs.Wolf };
-        var novice = new PlayerCombatSnapshot(AccountId: 1, Map: "prontera", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 1, Agility: 1);
+        var novice = new PlayerCombatSnapshot(AccountId: 1, Map: "prontera", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 1, Agility: 1,
+            SoftDefense: RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status").GetProperty("def2").GetInt32());
 
         var observed = Enumerable.Range(0, 20000)
             .Select(_ => MobBasicAttackCalculator.Calculate(mob, novice))
@@ -120,5 +121,60 @@ public sealed class RathenaReferenceFixtureTests
             [expected.GetProperty("str").GetInt32(), expected.GetProperty("agi").GetInt32(), expected.GetProperty("vit").GetInt32(),
              expected.GetProperty("int").GetInt32(), expected.GetProperty("dex").GetInt32(), expected.GetProperty("luk").GetInt32()],
             [effective.Strength, effective.Agility, effective.Vitality, effective.Intelligence, effective.Dexterity, effective.Luck]);
+    }
+
+    private static DerivedStats Expected(System.Text.Json.JsonElement b) => new(
+        b.GetProperty("batk").GetInt32(), b.GetProperty("hit").GetInt32(), b.GetProperty("flee").GetInt32(), b.GetProperty("flee2").GetInt32(),
+        b.GetProperty("cri").GetInt32(), b.GetProperty("def2").GetInt32(), b.GetProperty("mdef2").GetInt32());
+
+    private static CharacterGameplayState StateFrom(System.Text.Json.JsonElement i)
+    {
+        ushort U(string n) => (ushort)i.GetProperty(n).GetInt32();
+        return new CharacterGameplayState(CharacterId: 1, Version: 1, JobClass: 0, BaseLevel: U("base_level"), JobLevel: U("job_level"),
+            BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
+            Strength: U("str"), Agility: U("agi"), Vitality: U("vit"), Intelligence: U("int"), Dexterity: U("dex"), Luck: U("luk"));
+    }
+
+    [Theory]
+    [MemberData(nameof(JobBonusCases))]
+    public void Vf02_DerivedStatsMatchReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-02").GetProperty("cases")[index];
+        var state = StateFrom(c.GetProperty("input"));
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal(Expected(c.GetProperty("battle_status")), DerivedStatCalculator.Calculate(snapshot));
+    }
+
+    [Fact]
+    public void Vf01_FreshNovice_DerivedStatsMatchReference()
+    {
+        var b = RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status");
+        var state = new CharacterGameplayState(1, 1, 0, 1, 1, 0, 0, 40, 10, 40, 10, 0, 0, 1, 1, 1, 1, 1, 1);
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal(Expected(b), DerivedStatCalculator.Calculate(snapshot));
+    }
+
+    // VF-07/VF-08: every step and the post-end state of each sequence, full derived-stat comparison.
+    [Theory]
+    [MemberData(nameof(StatusSequences))]
+    public void StatusSequences_DerivedStatsMatchReference(string scenario, ushort statusId, int index)
+    {
+        var output = RathenaReferenceFixture.LoadCommitted().Output(scenario);
+        var seq = output.GetProperty("sequences")[index];
+        var input = RathenaReferenceFixture.LoadCommitted().Input(scenario);
+        var state = StateFrom(input);
+        var clock = new FakeTimeProvider();
+        var statuses = new CharacterStatusEffectState(clock);
+        var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
+        var steps = seq.GetProperty("steps");
+        for (var i = 0; i < levels.Length; i++)
+        {
+            statuses.Start(statusId, 120000, levels[i]);
+            Assert.Equal(Expected(steps[i]), DerivedStatCalculator.Calculate(statuses.Capture(() => state)));
+        }
+        statuses.ExpireDue(clock.GetUtcNow().AddMilliseconds(120001));
+        clock.Advance(TimeSpan.FromMilliseconds(120001));
+        statuses.ExpireDue(clock.GetUtcNow());
+        Assert.Equal(Expected(seq.GetProperty("after_end")), DerivedStatCalculator.Calculate(statuses.Capture(() => state)));
     }
 }

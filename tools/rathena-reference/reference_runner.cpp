@@ -93,9 +93,10 @@ static void vf02_vf03() {
 // deadline_moved: the status timer's absolute expiry changed between the two starts (a 50ms pause
 // separates them), i.e. the second start re-armed the status; retained/refreshed is decided by that.
 static void status_sequences(const char* id, sc_type type, const int seqs[][2], int count, uint32 first_id) {
-	std::fprintf(out, "{\"id\":\"%s\",\"input\":{\"duration_ms\":120000,\"flag\":\"NOAVOID|NOICON|NOTICKDEF\"},\"output\":{\"sequences\":[", id);
+	std::fprintf(out, "{\"id\":\"%s\",\"input\":{\"base_level\":40,\"job_level\":8,\"str\":20,\"agi\":30,\"vit\":25,\"int\":12,\"dex\":33,\"luk\":14,\"duration_ms\":120000,\"flag\":\"NOAVOID|NOICON|NOTICKDEF\"},\"output\":{\"sequences\":[", id);
 	for (int i = 0; i < count; i++) {
-		map_session_data* sd = make_novice(first_id + i);
+		NoviceSpec spec; spec.base_level = 40; spec.job_level = 8; spec.str = 20; spec.agi = 30; spec.vit = 25; spec.int_ = 12; spec.dex = 33; spec.luk = 14;
+		map_session_data* sd = make_novice(first_id + i, spec);
 		std::fprintf(out, "%s{\"levels\":[%d,%d],\"steps\":[", i ? "," : "", seqs[i][0], seqs[i][1]);
 		t_tick previous_deadline = 0;
 		for (int j = 0; j < 2; j++) {
@@ -112,13 +113,13 @@ static void status_sequences(const char* id, sc_type type, const int seqs[][2], 
 				previous_deadline = deadline;
 			}
 			const status_data& b = sd->battle_status;
-			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"int\":%d,\"dex\":%d,\"hit\":%d,\"flee\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.int_, b.dex, b.hit, b.flee, b.speed, b.amotion, b.adelay);
+			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.speed, b.amotion, b.adelay);
 		}
 		status_change_end(sd, type); // real end path (same function the expiry timer calls)
 		status_calc_pc(sd, SCO_NONE);
 		const status_data& b = sd->battle_status;
-		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"int\":%d,\"dex\":%d,\"hit\":%d,\"flee\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
-			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.int_, b.dex, b.hit, b.flee, b.speed, b.amotion, b.adelay);
+		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
+			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.speed, b.amotion, b.adelay);
 	}
 	std::fprintf(out, "]}}");
 }
