@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 <#
 Static rules of the release workflows, so that a refactoring can not silently weaken them:
- - validation runs for pull requests and main with the same steps (no event-dependent skipping);
+ - validation runs for pull requests and main with the same steps; the only skipping is by changed files (Get-CodeImpact.ps1), never by event;
  - a version tag can only be created after a successful validation, only on main, never for a pull request;
  - images are published only after the tag job, a GitHub Release only after all images, and nothing deploys.
 #>
@@ -27,7 +27,10 @@ Assert-That (-not (Test-Path (Join-Path $root '.github/workflows/release-version
 Assert-That ($workflow -notmatch 'workflow_dispatch|gh workflow run|workflow_call|workflow_run') 'no workflow is started by another workflow or by hand: a push to main is the only release trigger'
 Assert-That ($workflow -match '(?m)^  pull_request:\s*$' -and $workflow -match '(?ms)^  push:\s*\n\s+branches:\s*\[ main \]') 'validation runs for every pull request and every push to main'
 Assert-That ($workflow -notmatch '(?ms)^  pull_request:\s*\n\s+(paths|paths-ignore|branches):') 'the pull request trigger has no path filter, so the required check always reports'
-Assert-That ($validate -notmatch '(?m)^\s+if:' -and $validate -notmatch 'github\.event_name') 'no step or job of validate depends on the event: pull requests and main run the same steps'
+Assert-That ($validate -notmatch 'github\.event_name') 'no step or job of validate depends on the event: pull requests and main run the same steps'
+Assert-That ($validate -notmatch '(?m)^    if:' -and $retag -notmatch '(?m)^    if:') 'validate and the digest check are never skipped as jobs, so the required checks always report'
+Assert-That ((@([regex]::Matches($validate, '(?m)^\s+if:(.*)$') | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique) -join '|') -eq "steps.scope.outputs.code == 'true'") 'the only condition inside validate is the changed-files scope'
+Assert-That ($validate -match 'Get-CodeImpact\.ps1' -and $retag -match 'Get-CodeImpact\.ps1') 'validate and the digest check both decide their scope with Get-CodeImpact.ps1'
 foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') { Assert-That ($validate -match $project) "validate runs the $project tests" }
 Assert-That ($validate -match 'Test-NoVulnerablePackages\.ps1') 'validate fails on vulnerable packages'
 Assert-That ($workflow -notmatch 'always\(\)|!cancelled\(\)|failure\(\)') 'nothing overrides the default "only after success" (no always()/!cancelled()/failure())'

@@ -3,6 +3,8 @@ name: release
 # THE release workflow. Every push to main that passes validation becomes a complete release, with no manual step:
 #
 #   validate        tests, vulnerable packages, release rules   (pull requests too: same steps, the required check "Validate")
+#                   Pull requests that only touch docs/.claude/markdown (Get-CodeImpact.ps1) skip the heavy steps of validate and
+#                   retag-digest but both jobs still run and pass, so the required checks never stay Pending. Pushes to main always validate.
 #   retag-digest    proves on a real registry that re-tagging keeps the digest (pull requests too)
 #   version         next version tag vMAJOR.MINOR.PATCH on the commit (immutable; an existing tag of the commit is reused)
 #   publish         the four ghcr.io/pallassoftware/pathena/<server>:<tag> images: changed servers are built, unchanged servers get
@@ -40,19 +42,31 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - name: Decide whether the change can affect the servers
+        id: scope
+        shell: pwsh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./.github/scripts/Get-CodeImpact.ps1 -Base $env:BASE -Head $env:HEAD
       - uses: actions/setup-dotnet@v4
+        if: steps.scope.outputs.code == 'true'
         with:
           dotnet-version: '10.0.x'
       - name: Test the release scripts and the workflow rules
+        if: steps.scope.outputs.code == 'true'
         shell: pwsh
         run: |
           ./.github/scripts/Test-ReleaseVersion.ps1
           ./.github/scripts/Test-ReleaseImages.ps1
           ./.github/scripts/Test-ReleaseWorkflowRules.ps1
+          ./.github/scripts/Test-CodeImpact.ps1
       - name: No vulnerable packages (direct and transitive)
+        if: steps.scope.outputs.code == 'true'
         shell: pwsh
         run: ./.github/scripts/Test-NoVulnerablePackages.ps1
       - name: Test the servers
+        if: steps.scope.outputs.code == 'true'
         shell: pwsh
         run: |
           foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') {
@@ -70,7 +84,17 @@ jobs:
           - 5000:5000
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide whether the change can affect the servers
+        id: scope
+        shell: pwsh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./.github/scripts/Get-CodeImpact.ps1 -Base $env:BASE -Head $env:HEAD
       - uses: docker/setup-buildx-action@v3
+        if: steps.scope.outputs.code == 'true'
         with:
           driver-opts: network=host
           buildkitd-config-inline: |
@@ -78,6 +102,7 @@ jobs:
               http = true
               insecure = true
       - name: Build, push and re-tag a single-platform image on a throw-away registry, compare digests
+        if: steps.scope.outputs.code == 'true'
         shell: pwsh
         run: ./.github/scripts/Test-RetagRegistry.ps1
 
