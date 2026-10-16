@@ -566,7 +566,13 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
                 await Task.Delay(20);
                 var page = await grain.PollMonsterFeedAsync(cursor: null, mapId);
                 var candidate = page.Snapshot!.SingleOrDefault(i => i.ActorId == actorId);
-                confirmedDead = candidate is { Lifecycle: WorldMonsterLifecycleState.Dead, CurrentHp: 0 };
+                // World confirms the kill either by still reporting the Dead/HP==0 life, or - because the
+                // respawn delay (200ms) is shorter than a poll can be starved for on a loaded CI box - by
+                // already reporting a NEWER incarnation of the same spawn: a new incarnation can only exist
+                // once the one this cycle attacked died. Both are authoritative World state, never inferred
+                // from the session's own projection.
+                confirmedDead = candidate is { Lifecycle: WorldMonsterLifecycleState.Dead, CurrentHp: 0 }
+                    || (candidate is not null && candidate.IncarnationId.Value > currentIncarnation.Value);
             }
             if (!confirmedDead)
             {

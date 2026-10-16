@@ -160,6 +160,49 @@ public sealed class MapClientSessionPlayerPresenceTests
         Assert.False(players.TryGetByActorId(1, out _));
     }
 
+    // Feed epoch/cursor resynchronisation through the real per-map tick: a replica whose cursor belongs
+    // to a previous epoch is answered with a snapshot; a player that left while it was behind is
+    // vanished exactly once, the survivors are untouched (no spurious leave/re-enter), and repeating
+    // the tick changes nothing.
+    [Fact]
+    public async Task EpochRotation_ResyncSnapshot_VanishesTheDepartedPlayerOnce_AndLeavesSurvivorsAlone()
+    {
+        var players = new PlayerPresenceRegistry();
+        var coordinator = new PlayerVisibilityCoordinator(players);
+        var runtime = new RecordingWorldRuntime();
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules()),
+            EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(),
+            players, coordinator, WorldVisibilityOptions.Default, new PlayerFeedProjectionRegistry());
+        var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), world, runtime);
+
+        await using var a = await ConnectAsync(1, 101, "Alice", 100, 100, players, coordinator, runtime);
+        await EnterWorldAsync(a);
+        await using var b = await ConnectAsync(2, 102, "Bob", 101, 100, players, coordinator, runtime);
+        await EnterWorldAsync(b);
+        await using var c = await ConnectAsync(3, 103, "Cleo", 102, 100, players, coordinator, runtime);
+        await EnterWorldAsync(c);
+        await runtime.WaitForRegistrationsAsync(3);
+        await server.ProcessOnePlayerTickAsync([a.Session, b.Session, c.Session], CancellationToken.None);
+        // Alice learns of Bob and Cleo through the feed; drain both introductions.
+        await ReadVariablePacketAsync(a.Stream);
+        await ReadVariablePacketAsync(a.Stream);
+        Assert.NotNull(world.PlayerProjectionsOrDefault.GetOrCreate("prontera").Cursor);
+
+        runtime.RotateEpochAndRemove(characterId: 102); // Bob left while this replica was behind.
+        await server.ProcessOnePlayerTickAsync([a.Session, c.Session], CancellationToken.None);
+
+        Assert.Equal(Convert.FromHexString("80000200000000"), await ReadExactAsync(a.Stream, 7)); // exactly one vanish for actor 2.
+        Assert.False(players.TryGetByActorId(2, out _));
+        Assert.True(players.TryGetByActorId(1, out _));
+        Assert.True(players.TryGetByActorId(3, out _));
+
+        // Idempotent: the same resync again (and an ordinary empty poll) produces nothing further.
+        await server.ProcessOnePlayerTickAsync([a.Session, c.Session], CancellationToken.None);
+        await server.ProcessOnePlayerTickAsync([a.Session, c.Session], CancellationToken.None);
+        await a.Stream.WriteAsync(new byte[] { 0x1c, 0x0b });
+        Assert.Equal((short)0x0b1d, BinaryPrimitives.ReadInt16LittleEndian(await ReadExactAsync(a.Stream, 2)));
+    }
+
     // Production race: World appends a player's Registered feed entry INSIDE the registration RPC,
     // i.e. before the registering session is marked world-eligible. A tick that polls the feed in that
     // window must still bind the REAL session as that player's observer (not a permanent
@@ -300,7 +343,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         // (kept for the existing WaitForRegistrationsAsync/replay-identity assertions).
         private readonly Dictionary<uint, WorldPlayerPresence> _currentByCharacterId = [];
         private readonly Dictionary<uint, WorldPlayerPublicState> _publicStateByCharacterId = [];
-        private static readonly WorldSimulationEpoch PlayerFeedEpoch = WorldSimulationEpoch.NewEpoch();
+        private WorldSimulationEpoch PlayerFeedEpoch = WorldSimulationEpoch.NewEpoch();
         private static readonly WorldPlayerPublicState EmptyPublicState = new("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         // Item 14 §3: a real (if minimal) incremental entry log - needed specifically to prove
         // movement broadcast, which ONLY ever happens via an incremental MovementStarted/Moved
@@ -362,6 +405,21 @@ public sealed class MapClientSessionPlayerPresenceTests
                 _currentByCharacterId.Remove(characterId);
                 _publicStateByCharacterId.Remove(characterId);
                 return Task.FromResult(new WorldPresenceUnregistration("test-partition", mapId, WorldPresenceUnregistrationStatus.Removed, 0));
+            }
+        }
+
+        // Models World rotating the feed epoch (for example the partition was reactivated) while a
+        // replica was not polling: the retained entries are gone, a character may have left in the
+        // meantime, and the next poll with the old cursor must be answered with a ResyncRequired
+        // snapshot - never with a silently incomplete incremental page.
+        public void RotateEpochAndRemove(uint characterId)
+        {
+            lock (_gate)
+            {
+                PlayerFeedEpoch = WorldSimulationEpoch.NewEpoch();
+                _entries.Clear();
+                _currentByCharacterId.Remove(characterId);
+                _publicStateByCharacterId.Remove(characterId);
             }
         }
 
