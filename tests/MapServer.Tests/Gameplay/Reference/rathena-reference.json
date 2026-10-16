@@ -1,0 +1,223 @@
+{
+  "schema": 1,
+  "reference": {
+    "repository": "rathena/rathena",
+    "commit": "e985006171d2eb320ee512a653f4c83aea3d81b6",
+    "renewalCompiled": true,
+    "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "runner": "tools/rathena-reference (map-server built from the pinned tree plus one call to reference_runner.cpp after init)",
+    "configuration": "unmodified conf/ and db/re defaults, no import overrides"
+  },
+  "scenarios": [
+    {
+      "id": "VF-01",
+      "evidence": "ReferenceExecuted",
+      "scope": "Fresh Novice status_calc_pc on prontera: stats, batk, hit/flee/crit, aspd, max HP/SP. No equipment, skills or statuses.",
+      "input": {
+        "job": 0,
+        "base_level": 1,
+        "job_level": 1,
+        "str": 1,
+        "agi": 1,
+        "vit": 1,
+        "int": 1,
+        "dex": 1,
+        "luk": 1,
+        "map": "prontera"
+      },
+      "output": {
+        "base_status": {
+          "str": 1,
+          "agi": 1,
+          "vit": 1,
+          "int": 1,
+          "dex": 1,
+          "luk": 1,
+          "batk": 1,
+          "watk": 0,
+          "watk2": 0,
+          "matk_min": 1,
+          "matk_max": 1,
+          "def": 0,
+          "def2": 1,
+          "mdef": 0,
+          "mdef2": 1,
+          "hit": 177,
+          "flee": 102,
+          "flee2": 11,
+          "cri": 13,
+          "amotion": 440,
+          "adelay": 880,
+          "speed": 150,
+          "max_hp": 40,
+          "max_sp": 11,
+          "hp": 20,
+          "sp": 1
+        },
+        "battle_status": {
+          "str": 1,
+          "agi": 1,
+          "vit": 1,
+          "int": 1,
+          "dex": 1,
+          "luk": 1,
+          "batk": 1,
+          "watk": 0,
+          "watk2": 0,
+          "matk_min": 1,
+          "matk_max": 1,
+          "def": 0,
+          "def2": 1,
+          "mdef": 0,
+          "mdef2": 1,
+          "hit": 177,
+          "flee": 102,
+          "flee2": 11,
+          "cri": 13,
+          "amotion": 440,
+          "adelay": 880,
+          "speed": 150,
+          "max_hp": 40,
+          "max_sp": 11,
+          "hp": 40,
+          "sp": 11
+        }
+      }
+    },
+    {
+      "id": "VF-07",
+      "evidence": "ReferenceExecuted",
+      "scope": "Blessing started twice via status_change_start on a fresh Novice: retained val1/val2 and resulting STR/INT/DEX/HIT. Timer/deadline not captured.",
+      "input": {
+        "duration_ms": 120000,
+        "flag": "NOAVOID|NOICON|NOTICKDEF"
+      },
+      "output": {
+        "sequences": [
+          {
+            "levels": [
+              10,
+              3
+            ],
+            "steps": [
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 10,
+                "val2": 10,
+                "str": 11,
+                "int": 11,
+                "dex": 11,
+                "hit": 207
+              },
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 10,
+                "val2": 10,
+                "str": 11,
+                "int": 11,
+                "dex": 11,
+                "hit": 207
+              }
+            ]
+          },
+          {
+            "levels": [
+              10,
+              10
+            ],
+            "steps": [
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 10,
+                "val2": 10,
+                "str": 11,
+                "int": 11,
+                "dex": 11,
+                "hit": 207
+              },
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 10,
+                "val2": 10,
+                "str": 11,
+                "int": 11,
+                "dex": 11,
+                "hit": 207
+              }
+            ]
+          },
+          {
+            "levels": [
+              3,
+              10
+            ],
+            "steps": [
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 3,
+                "val2": 3,
+                "str": 4,
+                "int": 4,
+                "dex": 4,
+                "hit": 186
+              },
+              {
+                "returned": 1,
+                "present": 1,
+                "val1": 10,
+                "val2": 10,
+                "str": 11,
+                "int": 11,
+                "dex": 11,
+                "hit": 207
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-14",
+      "evidence": "ReferenceExecuted",
+      "scope": "Values stored by the real mob_db loader for mob 1002 (Poring). Does NOT cover the attack roll or its random bounds.",
+      "input": {
+        "mob_id": 1002
+      },
+      "output": {
+        "loaded_status": {
+          "str": 6,
+          "agi": 1,
+          "vit": 1,
+          "int": 0,
+          "dex": 6,
+          "luk": 5,
+          "batk": 7,
+          "watk": 0,
+          "watk2": 1,
+          "matk_min": 1,
+          "matk_max": 2,
+          "def": 2,
+          "def2": 1,
+          "mdef": 5,
+          "mdef2": 0,
+          "hit": 157,
+          "flee": 102,
+          "flee2": 0,
+          "cri": 0,
+          "amotion": 672,
+          "adelay": 1872,
+          "speed": 400,
+          "max_hp": 55,
+          "max_sp": 1,
+          "hp": 55,
+          "sp": 1
+        }
+      }
+    }
+  ]
+}
