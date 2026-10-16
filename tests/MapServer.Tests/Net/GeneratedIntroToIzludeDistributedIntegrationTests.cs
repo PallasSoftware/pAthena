@@ -56,7 +56,7 @@ public sealed class GeneratedIntroToIzludeDistributedIntegrationTests : IAsyncLi
         // resolver the silo's own WorldPartitionGrain instances are constructed with (silo DI is
         // not reachable from _cluster.ServiceProvider, which is the CLIENT'S service provider).
         var resolver = WorldPartitionTopologyLoader.Load(Path.Combine(FindRepositoryRoot(), "conf", "world_partitions.json"), ["int_land", "izlude"]);
-        var worldRuntime = new OrleansWorldRuntime(_cluster.Client, resolver);
+        var worldRuntime = new OrleansWorldRuntime(_cluster.Client, resolver, gatewayId: Guid.Empty /* no MapTcpServer tick loop here to renew a lease */);
         var gameplayState = new CharacterGameplayState(9, 1, 0, 10, 5, 0, 0, 100, 20, 100, 20, 0, 0, 9, 9, 9, 9, 9, 9);
 
         await using var session = new MapClientSession(1, serverClient, connector, true,
@@ -151,7 +151,7 @@ public sealed class GeneratedIntroToIzludeDistributedIntegrationTests : IAsyncLi
     public async Task OrleansWorldRuntime_CancelMovementAsync_HonorsCancellationToken()
     {
         var resolver = WorldPartitionTopologyLoader.Load(Path.Combine(FindRepositoryRoot(), "conf", "world_partitions.json"), ["int_land", "izlude"]);
-        var worldRuntime = new OrleansWorldRuntime(_cluster.Client, resolver);
+        var worldRuntime = new OrleansWorldRuntime(_cluster.Client, resolver, gatewayId: Guid.Empty /* no MapTcpServer tick loop here to renew a lease */);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 

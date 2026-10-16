@@ -5,11 +5,14 @@ using Orleans;
 
 namespace Athena.Net.MapServer.World;
 
-public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPartitionResolver resolver) : IWorldRuntime
+public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPartitionResolver resolver, Guid? gatewayId = null) : IWorldRuntime
 {
     // One identity per gateway PROCESS (per runtime instance): a restarted MapServer is a different gateway, so
     // whatever the previous process left behind is owned by an identity that will never renew it again.
-    public Guid GatewayId { get; } = Guid.NewGuid();
+    //
+    // `gatewayId` exists for harnesses that drive sessions WITHOUT a MapTcpServer tick loop (nothing would ever
+    // renew their leases): passing Guid.Empty registers presences without a lease. Production always uses the default.
+    public Guid GatewayId { get; } = gatewayId ?? Guid.NewGuid();
 
     public async Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, IReadOnlyList<WorldPresenceLeaseRef> presences, CancellationToken cancellationToken)
     {
