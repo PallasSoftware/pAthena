@@ -9,26 +9,6 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/protect-repository-paths.py"
           }
         ]
-      },
-      {
-        "matcher": "Bash|Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PATH=\"$HOME/.local/bin:$PATH\" graphify hook-guard search",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PATH=\"$HOME/.local/bin:$PATH\" graphify hook-guard read",
-            "timeout": 10
-          }
-        ]
       }
     ]
   }
