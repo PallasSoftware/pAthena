@@ -1243,19 +1243,53 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // primary lifetime contract is IAsyncDisposable. Every construction site in this codebase is
     // already inside an async method (MapTcpServer.HandleClientAsync, every test's async Task
     // [Fact]), so there is no call site that actually needs synchronous disposal.
+    //
+    // The shutdown Task is published BEFORE the teardown body starts running. `_shutdownTask ??= StopCoreAsync()`
+    // would not do: StopCoreAsync runs synchronously until its first await, and its first act cancels the
+    // session token, which can run the read loop's continuation inline on this very thread - its `finally`
+    // calls StopAsync again, the (re-entrant) lock lets it through while `_shutdownTask` is still null, and a
+    // SECOND teardown would start, disposing the gates and sockets under the first one (an intermittent
+    // ObjectDisposedException out of RunAsync, and a teardown that could skip its World unregister).
     public Task StopAsync()
     {
+        TaskCompletionSource? owner = null;
+        Task shutdown;
         lock (_shutdownGate)
         {
-            return _shutdownTask ??= StopCoreAsync();
+            if (_shutdownTask is null)
+            {
+                owner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _shutdownTask = owner.Task;
+            }
+            shutdown = _shutdownTask;
+        }
+        if (owner is not null) _ = RunShutdownAsync(owner);
+        return shutdown;
+    }
+
+    private async Task RunShutdownAsync(TaskCompletionSource completion)
+    {
+        try
+        {
+            await StopCoreAsync();
+            completion.SetResult();
+        }
+        catch (Exception ex)
+        {
+            completion.SetException(ex);
         }
     }
+
+    // Test-only seam: invoked synchronously right after the session token is cancelled, i.e. exactly where a
+    // synchronous cancellation continuation can re-enter StopAsync.
+    internal Action? DebugAfterSessionCancelledHook { get; set; }
 
     public ValueTask DisposeAsync() => new(StopAsync());
 
     private async Task StopCoreAsync()
     {
         _sessionCancellation.Cancel();
+        DebugAfterSessionCancelledHook?.Invoke();
         // Give World the departure FIRST, before anything below that can wait on a background task, a gate
         // or a blocked write: the player must leave the world no matter how the rest of the teardown goes.
         // (Bounded retries; if World stays unreachable the presence lease expires it - see

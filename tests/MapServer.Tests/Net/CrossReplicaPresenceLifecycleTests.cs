@@ -552,4 +552,30 @@ public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests
         Assert.Equal(1, Entries(c.Stream, 95));
         Assert.Equal(1, Entries(c.Stream, 96));
     }
+
+    // StopAsync re-entered from a synchronous cancellation continuation (what the read loop's `finally` does when the
+    // cancel runs it inline) must observe the ONE shutdown in flight - never start a second teardown that disposes the
+    // gates under the first one. Deterministic: the hook fires exactly where that re-entry happens.
+    [Fact]
+    public async Task ReentrantStopAsync_DuringTeardown_SharesTheSingleShutdown_AndUnregistersExactlyOnce()
+    {
+        const string mapId = "izlude";
+        var replicaA = MakeReplica(mapId);
+        var replicaB = MakeReplica(mapId);
+        var a = await ConnectAsync(replicaA, accountId: 98, mapId, 99, 100);
+        var b = await ConnectAsync(replicaB, accountId: 99, mapId, 101, 100);
+        using var _b = b.Client;
+        await ReadUntilAsync(b.Stream, packet => IsPlayerIntro(packet, 98), tick: TickBoth(replicaA, a.Session, replicaB, b.Session));
+
+        Task? reentrant = null;
+        a.Session.DebugAfterSessionCancelledHook = () => { if (reentrant is null) reentrant = a.Session.StopAsync(); };   // once: a regression must fail an assertion, not overflow the stack.
+        var outer = a.Session.StopAsync();
+        await outer;     // would throw ObjectDisposedException when a second teardown disposed the gates mid-flight.
+        a.Client.Dispose();
+
+        Assert.NotNull(reentrant);
+        Assert.Same(outer, reentrant);
+        await ReadUntilAsync(b.Stream, packet => IsPlayerVanish(packet, 98), tick: () => TickAsync(replicaB, b.Session));
+        Assert.Equal(1, await CommittedPlayerEntriesAsync(mapId, 98, WorldPlayerFeedEntryKind.Unregistered));
+    }
 }
