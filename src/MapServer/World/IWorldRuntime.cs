@@ -8,6 +8,20 @@ namespace Athena.Net.MapServer.World;
 // remains the sole player-presence authority.
 public interface IWorldRuntime
 {
+    /// <summary>
+    /// Identity of this MapServer gateway process, stamped on every presence it registers so World can lease
+    /// the presence to it (see WorldPresenceLease). Guid.Empty = no gateway identity: presences registered
+    /// through such a runtime carry no lease and only ever leave through an explicit unregister.
+    /// </summary>
+    Guid GatewayId => Guid.Empty;
+
+    /// <summary>
+    /// Renews this gateway's lease on the listed presences of one map. Runtimes without a lease concept
+    /// (test doubles) report every presence Renewed, which is exactly the "nothing to do" answer.
+    /// </summary>
+    Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, IReadOnlyList<WorldPresenceLeaseRef> presences, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<WorldPresenceLeaseResult>>([.. presences.Select(p => new WorldPresenceLeaseResult(p.CharacterId, p.PresenceId, WorldPresenceLeaseStatus.Renewed))]);
+
     Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState, CancellationToken cancellationToken);
     Task<WorldPresenceUnregistration> UnregisterPresenceAsync(string mapId, uint characterId, Guid presenceId, CancellationToken cancellationToken);
     Task<WorldMovementResult> MovePlayerAsync(WorldMovementCommand command, CancellationToken cancellationToken);

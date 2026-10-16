@@ -21,7 +21,7 @@ namespace Athena.Net.MapServer.Tests.Net;
 // against ONE shared Orleans TestCluster-hosted IWorldPartitionGrain, exactly the way two real
 // MapServer processes share one World silo. Mirrors MapTcpServerMonsterAuthorityIntegrationTests'
 // own established TestCluster/ConnectSessionAsync/deterministic-tick pattern.
-public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetime
+public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetime
 {
     private const int PoringMobId = 1002;
     private const ushort MonsterX = 100;
@@ -30,6 +30,7 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
     private TestCluster _cluster = null!;
     public async Task InitializeAsync()
     {
+        LeaseClock.Reset();
         var builder = new TestClusterBuilder();
         builder.AddSiloBuilderConfigurator<TopologyConfigurator>();
         _cluster = builder.Build();
@@ -54,7 +55,7 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
     // PlayerVisibilityCoordinator/PlayerFeedProjectionRegistry/MonsterFeedProjectionRegistry), own
     // MapTcpServer, own OrleansWorldRuntime instance (a distinct client-side object, though it talks
     // to the SAME underlying TestCluster/grain).
-    private sealed record Replica(MapServerWorld World, MapTcpServer Server, OrleansWorldRuntime Runtime);
+    private sealed record Replica(MapServerWorld World, MapTcpServer Server, IWorldRuntime Runtime);
 
     private Replica MakeReplica(string mapId)
     {
@@ -69,12 +70,12 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
         // both talk to the SAME underlying TestCluster/grain (_cluster.Client is itself already the
         // one shared cluster client TestCluster exposes for this test's entire process).
         var runtime = new OrleansWorldRuntime(_cluster.Client, Resolver());
-        var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused.conf"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), world, runtime);
+        var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused.conf"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), world, runtime, LeaseClock);
         return new Replica(world, server, runtime);
     }
 
     private static async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask)> ConnectAsync(
-        Replica replica, uint accountId, string mapId, ushort x, ushort y, CharacterGameplayState? gameplayState = null)
+        Replica replica, uint accountId, string mapId, ushort x, ushort y, CharacterGameplayState? gameplayState = null, Func<string, bool>? playerMapReconciled = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -93,6 +94,7 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
             players: replica.World.Players, playerVisibility: replica.World.PlayerVisibility, visibilityOptions: replica.World.Visibility,
             distributedWorld: replica.Runtime, playerAttackFanout: replica.Server.FanOutPlayerAttackActionAsync, lethalAttackGate: replica.Server.LethalAttackGateForTest);
         replica.Server.RegisterSessionForTest(session); // same table the accept loop uses, so attacker echo fan-out finds it.
+        if (playerMapReconciled is not null) session._isPlayerMapReconciled = playerMapReconciled;
         var run = session.RunAsync(CancellationToken.None);
         var auth = new MapAuthOkData(accountId, accountId, 1, 2, 0, 0, false, mapId, x, y, 0, 0, 1, $"P{accountId}", HairStyle: 4, HairColor: 2, ClothesColor: 1);
         await session.CompleteIroAuthenticationAsync(auth);
@@ -1120,7 +1122,7 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
                 .AddSingleton<IWorldPartitionResolver>(Resolver())
                 .AddSingleton<IMovementPathProvider>(new UnverifiedGridLineMovementPathProvider())
                 .AddSingleton<IMapCollisionProvider>(new MapCollisionProvider([MakeAllWalkableMap("izlude"), MakeAllWalkableMap("geffen")]))
-                .AddSingleton(TimeProvider.System);
+                .AddSingleton<TimeProvider>(LeaseClock);
         }
     }
 }

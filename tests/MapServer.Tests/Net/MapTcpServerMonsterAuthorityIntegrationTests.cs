@@ -1247,7 +1247,11 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // documented ordering) against a genuinely-removed presence, without requiring this
         // session's own attack loop to unwind first.
         var unregistration = await grain.UnregisterPresenceAsync(mapId, accountId, presenceIdA);
-        Assert.Equal(WorldPresenceUnregistrationStatus.Removed, unregistration.Status);
+        // Teardown now gives World the departure FIRST, before joining the loops (see StopCoreAsync), so even
+        // with the attack loop parked inside a World RPC the session unregisters itself: this direct call
+        // either wins the race (Removed) or finds the session's own unregister already done (AlreadyAbsent).
+        // Either way the presence is gone, which is what the rest of this test needs.
+        Assert.True(unregistration.Status is WorldPresenceUnregistrationStatus.Removed or WorldPresenceUnregistrationStatus.AlreadyAbsent, $"unexpected status {unregistration.Status}");
 
         var window = await grain.ValidateMonsterAttackWindowAsync(new WorldMonsterAttackWindowQuery(life, accountId, presenceIdA));
         Assert.NotEqual(WorldMonsterAttackWindowStatus.Valid, window.Status);

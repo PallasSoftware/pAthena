@@ -125,6 +125,29 @@ public sealed class PlayerFeedProjection(string mapId)
         }
     }
 
+    // A gateway polls a map's player feed only while it has a session on that map, so once the last local
+    // session leaves, this projection stops being reconciled and everything it registered goes stale
+    // (players log out, die, or are expired by World while nobody here is looking). Rather than keep serving
+    // that to whoever logs in next - the new client would first be introduced to players who are not
+    // there - an idle map's projection is evicted: its registrations are dropped and its cursor reset, so the
+    // next activation starts from a fresh World snapshot. Nobody local observes the map while it is idle, so
+    // dropping loses nothing; remote players are re-learned from the snapshot.
+    public async Task EvictAsync(PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator, CancellationToken cancellationToken)
+    {
+        uint[] actorIds;
+        lock (_gate)
+        {
+            if (_cursor is null && _registeredActorIds.Count == 0) return;
+            actorIds = [.. _registeredActorIds];
+            _registeredActorIds.Clear();
+            _cursor = null;
+            _currentEpoch = null;
+        }
+        foreach (var actorId in actorIds)
+            if (IsRegisteredOnThisMap(registry, actorId))
+                await coordinator.UnregisterAsync(actorId, cancellationToken);
+    }
+
     private bool IsRegisteredOnThisMap(PlayerPresenceRegistry registry, uint actorId) =>
         registry.TryGetByActorId(actorId, out var current) && string.Equals(current.MapName, MapId, StringComparison.OrdinalIgnoreCase);
 

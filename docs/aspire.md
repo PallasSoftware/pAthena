@@ -71,6 +71,26 @@ address) and add `"MapTargetPorts": [5121, 5122]` next to `MapTargetPort`.
 14. Throughout, confirm no duplicated actor spawn or combat action on either client and no
     `[WORLD]` error loops in either MapServer log.
 
+### Manual acceptance: presence lifecycle (ghost players)
+
+Run this exact sequence with verbose MapServer logging; it is the real-client check for the lifecycle work, and
+automated tests do not replace it. Keep both MapServer consoles and the World console, and collect the `[PRESENCE]`
+lines.
+
+1. Start Aspire. Log client B in on MapServer B (5122) FIRST and put it on the test map. Verify character A is NOT
+   shown. (A ghost here is the failure this sequence exists to catch; note the `feed-snapshot actors=[...]` line.)
+2. Log client A in on MapServer A (5121), same map, within range. Verify both clients see each other once, at the
+   right positions. Walk one of them 10+ cells: the other sees one smooth walk.
+3. Log A out normally (and in a second run, close the client window; in a third, kill the network or the process).
+   Verify A vanishes from B within a second or two (a killed network takes about a minute: TCP keepalive). Expect
+   on MapServer A: `session-ending reason=...` then `world-unregister status=Removed`.
+4. Log A in again (any MapServer). Verify exactly one A on B, B visible to A, no duplicate or stale actor.
+5. Kill the MapServer A PROCESS (not the client) while A is online. Verify A disappears from B after at most ~15 s
+   (the lease TTL; the `world.presence.lease.expired` metric counts it and the other gateway logs the `feed-entry kind=Unregistered`). Start MapServer A again and log A in: if it is refused within that
+   window, retry after it; afterwards A and B see each other once, no ghost.
+6. Restart World with both clients online. Verify neither client keeps a ghost and both sessions recover (the
+   gateways log `lease-absent` then `world-reassert`).
+
 ## Secrets
 The AppHost reads the SQL Server SA password from `solutionfiles/secrets/secret.json`
 (`SqlServer.SaPassword`). You can still override it via environment variable:

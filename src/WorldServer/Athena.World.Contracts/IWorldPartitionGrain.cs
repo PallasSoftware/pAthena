@@ -7,6 +7,13 @@ public interface IWorldPartitionGrain : IGrainWithStringKey
 {
     Task<WorldPresenceRegistration> RegisterPresenceAsync(WorldPlayerPresence presence, WorldPlayerPublicState publicState);
     Task<WorldPresenceUnregistration> UnregisterPresenceAsync(string mapId, uint characterId, Guid presenceId);
+    /// <summary>
+    /// Extends the lease of every listed presence that this gateway currently owns. Per-presence status tells
+    /// the gateway what to do: Renewed (nothing), Absent (expired or World restarted - re-assert), PresenceMismatch
+    /// (a different presence now holds the character) or NotOwner (another gateway owns it) - the last two mean the
+    /// session is stale and must end.
+    /// </summary>
+    Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, Guid gatewayId, IReadOnlyList<WorldPresenceLeaseRef> presences);
     Task<WorldMovementResult> MovePlayerAsync(WorldMovementCommand command);
     Task<WorldMovementResult> TruncateMovementAsync(WorldMovementTruncation command);
     Task<WorldMovementAdvanceResult> AdvanceMovementAsync(WorldMovementAdvance command);
@@ -75,7 +82,43 @@ public sealed record WorldPlayerPresence(
     // (WorldMonsterEngagementRules.Evaluate) read this to decide Unlock vs. Chase/InAttackRange -
     // MonsterEngagementDomain.Evaluate's existing local equivalent already gates identically on
     // PlayerCombatSnapshot.IsAlive.
-    [property: Id(6)] bool IsAlive = true);
+    [property: Id(6)] bool IsAlive = true,
+    // The MapServer gateway process that owns this presence (see WorldPresenceLease). Guid.Empty means
+    // "no lease": the presence only ever leaves through an explicit unregister (legacy callers, tests).
+    [property: Id(7)] Guid GatewayId = default);
+
+// ---------------------------------------------------------------------------------------------
+// Presence ownership lease. A presence registered by a gateway is owned by that gateway and stays
+// valid only while the gateway keeps proving it is alive by renewing the lease: a MapServer process
+// that dies cannot send the unregister its sessions would have sent, and without an expiry its players
+// would stay in World (and on every other gateway's screen) until World restarts. World alone decides
+// expiry, on its own clock, and an expired presence is removed through the same path as an explicit
+// unregister (an Unregistered feed entry), so every observing gateway drops it by the ordinary feed.
+//
+// Fencing: every operation that could remove or refresh a presence is keyed by its PresenceId (unique
+// per session) AND, for renewal, by the owning GatewayId, so a previous session, a replaced gateway or
+// an expired one can never unregister or extend a newer presence. A gateway that finds a presence
+// Absent (it expired, or World restarted) may re-assert it with the same PresenceId; that is refused
+// (Conflict) if a different presence has claimed the character in the meantime.
+// ---------------------------------------------------------------------------------------------
+public static class WorldPresenceLease
+{
+    /// <summary>A presence not renewed for this long is considered orphaned and removed.</summary>
+    public static readonly TimeSpan Ttl = TimeSpan.FromSeconds(15);
+    /// <summary>Gateways renew well inside the TTL so one lost renewal never expires a healthy player.</summary>
+    public static readonly TimeSpan RenewInterval = TimeSpan.FromSeconds(5);
+}
+
+[GenerateSerializer]
+public sealed record WorldPresenceLeaseRef([property: Id(0)] uint CharacterId, [property: Id(1)] Guid PresenceId);
+
+public enum WorldPresenceLeaseStatus { Renewed, Absent, PresenceMismatch, NotOwner }
+
+[GenerateSerializer]
+public sealed record WorldPresenceLeaseResult(
+    [property: Id(0)] uint CharacterId,
+    [property: Id(1)] Guid PresenceId,
+    [property: Id(2)] WorldPresenceLeaseStatus Status);
 
 public enum WorldPresenceRegistrationStatus { Registered, AlreadyRegistered, Conflict }
 

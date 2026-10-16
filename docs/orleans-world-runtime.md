@@ -106,6 +106,19 @@ synchronously before any RPC yields control. Monster -> player combat keeps its 
 HP mutation/cadence; `PublishMonsterAttackActionAsync` is a narrow, idempotent (ActionId-keyed)
 publish-only RPC that lets other replicas project an already-resolved local attack.
 
+## Presence ownership lease
+
+A presence registered by a MapServer gateway carries that gateway's `GatewayId` (one id per process) and is valid
+only while the gateway renews it (`WorldPresenceLease`: TTL 15 s, renewal every 5 s, driven by the gateway's tick).
+`WorldPartitionGrain` keeps the expiry per character, decides it on its own clock (the grain timer plus every
+register/unregister/renew/poll/snapshot call) and removes a lapsed presence through the same path as an explicit
+unregister: an `Unregistered` feed entry, so every gateway drops the player by the ordinary feed. This is what
+recovers from a MapServer that dies without sending its unregisters; a presence without a `GatewayId` has no lease.
+Everything is fenced by `PresenceId` (unique per session) and, for renewal, `GatewayId`: an old session or an
+expired gateway cannot unregister or extend a newer presence, and an `Absent` renewal lets a live session
+re-assert the same presence (refused with `Conflict` if another presence claimed the character). A same-partition
+or cross-partition transfer keeps the owner and refreshes the lease.
+
 ## Deferred work
 
 Global actor-ID allocation for Phase 2B's monster/NPC runtime is a lease-based block allocator

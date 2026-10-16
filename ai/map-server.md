@@ -1883,6 +1883,75 @@ Invariants and the tests that pin them:
 - **Failure isolation**: `DeliverAllAsync` awaits every delivery; a dead observer socket (IOException /
   disposed / cancelled) is ignored and cannot stall or corrupt other observers or the tick.
 
+### Presence lifecycle and ghost players
+
+What can leave a player visible after the real session ended, with the code evidence, the fix and the test:
+
+1. **Ordinary logout** reliably reaches World: `RunAsync`'s `finally` -> `StopAsync` -> `StopCoreAsync`, whose
+   FIRST step is now `LeavePlayerWorldAsync(Closed)` -> `UnregisterWorldPresenceAsync`. Before, it ran only after
+   cancelling and joining the background loops, so a loop parked inside a World RPC or a blocked write stalled the
+   unregister (the pre-existing `ReconnectMidCombat...` test documented exactly that deadlock and had to unregister
+   by hand). Tests: `NormalLogout_...`, `ClientClosesTheGame_...`, `AbruptConnectionReset_...`.
+2. **World removes exactly the active presence**: `UnregisterPresenceAsync` is keyed by `PresenceId` (unique per
+   session); `AlreadyAbsent`/`PresenceMismatch`/`MapMismatch` never touch another presence, `Removed` appends one
+   `Unregistered` entry. Idempotent (`RepeatedStopAndDispose_...`, `WorldPresenceLeaseTests.StaleUnregister...`).
+3. **The unregister result used to be ignored and failures swallowed into a permanent orphan**: a failed RPC became
+   the session's `firstError`, the `finally` cleared `_presenceId`, and nothing ever retried. Now each attempt has its
+   own 5 s timeout, 3 attempts, every outcome is logged (`[PRESENCE] event=world-unregister status=...`), `PresenceMismatch`
+   is logged as "a newer presence owns the character, left untouched", and exhausting the retries is logged as
+   `world-unregister-abandoned` and left to the lease (the session no longer renews it).
+4. **Registration racing shutdown**: if the session started closing while `RegisterPresenceAsync` was in flight, the
+   registration used to land after the unregister and flip a closing session back to WorldVisible. Now the late
+   registration is unregistered (`registration-after-close`).
+5. **Gateway process death** (kill, crash, power loss): nothing can send the unregister, so the presence stayed in
+   World - and on every other gateway's screen - until World restarted, and a re-login of the character was refused
+   (`Conflict`). Reproduced by `GatewayProcessDeath_...` before the fix. Fix: a World-owned **presence lease**
+   (`WorldPresenceLease`: TTL 15 s, renewed every 5 s). A presence carries the registering gateway's `GatewayId`
+   (one per MapServer process, `OrleansWorldRuntime.GatewayId`); `MapTcpServer.RenewPresenceLeasesIfDueAsync`
+   renews every world-visible session's lease from the existing tick; World expires lapsed leases on ITS clock
+   from the grain timer and at every entry point, through the same path as an unregister (an `Unregistered`
+   entry), so every gateway drops the player by the ordinary feed. A restarted MapServer is a new gateway, so
+   it recovers by itself; a reconnect of the character is refused (`Conflict`) for at most the TTL and then succeeds.
+6. **Fencing**: unregister is keyed by `PresenceId`; renewal by `PresenceId` and `GatewayId`
+   (`Renewed`/`Absent`/`PresenceMismatch`/`NotOwner`). A stale or expired session therefore can neither unregister nor
+   extend a newer presence. A renewal answer `PresenceMismatch`/`NotOwner` ends the stale session
+   (`presence-superseded`); `Absent` (lease lapsed during a stall, or World restarted) makes a still-connected
+   session re-assert the SAME presence, refused with `Conflict` if a newer one claimed the character.
+   Healthy players are never removed: renewal runs far inside the TTL and a missed pass is retried.
+7. **Half-open connections** (network vanished without FIN/RST) leave the read loop waiting forever on a LIVE
+   gateway, which keeps renewing the lease. Accepted sockets now get OS TCP keepalive (30 s + 3 x 10 s), which fails
+   the read and ends the session through the normal path. (No idle timeout on packets: nothing in
+   `ai/iro-2026-wire.md` establishes how often the stock client sends while idle.) Deterministic proof is limited
+   to the socket options; the consequence is the same path as a reset (`AbruptConnectionReset_...`).
+8. **Stale projection on an idle gateway** (the most likely cause of "B sees A although A is not logged in"): a
+   gateway polls a map's player feed only while it has a session there. When the last local session left, the
+   projection stopped being reconciled but kept its registry, and the next login was handed that stale registry by
+   the map-load replay (`SendVisiblePlayersAsync`) before any poll could correct it - a flash of a ghost, or a
+   permanent one if the character then re-registered (the stale registry entry was merely refreshed, never
+   re-introduced). Reproduced by `StaleRegistryOnAnIdleGateway_...` before the fix. Fix: a map with no eligible
+   session has its player projection evicted (registrations dropped, cursor reset) the moment the last session
+   ends and on every tick, and the replay is skipped for any map that is not currently reconciled (the first tick
+   then bootstraps from World's snapshot and introduces the real players once).
+9. **Feed epoch change / World restart / resync**: a consumer with a foreign epoch or out-of-retention cursor is
+   answered with a snapshot and `PlayerFeedProjection.ApplySnapshotAsync` removes what the snapshot lacks; expired
+   presences are already gone from that snapshot (`EpochRotationAndResync_...`, `EpochRotation_ResyncSnapshot_...`,
+   `LateJoiningGateway_...`). World losing its in-memory state also makes every renewal answer `Absent`, so live
+   sessions re-assert themselves.
+
+Diagnostics: every lifecycle step logs one `[PRESENCE] event=... session= account= char= gateway= map= presence= ...`
+line (`gateway-start`, `world-register`/`-conflict`, `session-ending reason=`, `world-unregister status=`/`-failed`/
+`-abandoned`, `lease-absent`/`-refused`, `world-reassert`, `session-terminate`, `registration-after-close`).
+`reason` is one of `client-closed-or-reset`, `client-gone-detected-by-<loop>-write`, `server-shutdown`,
+`session-stopped`, `error:<Type>`, `presence-superseded[:status]`. With `MonsterDebugLog.Verbose`:
+`feed-entry`/`feed-snapshot` (epoch, sequence, kind, actor, presence), `observer-intro`/`observer-vanish` with the
+client write result (failed writes are always logged), `observer-intro-deferred`/`observer-vanish-skipped`. Together
+they tell apart: an open TCP connection (no `session-ending`), a detected disconnect (`session-ending reason=`),
+a failed shutdown (`world-unregister-failed`/`-abandoned`), a successful unregister (`world-unregister status=Removed`),
+a delayed or missing feed event (World's `Unregistered` seq vs the gateway's `feed-entry`), a stale projection
+(`feed-snapshot` dropping an actor / registry present without a feed entry), a missing client vanish (`observer-vanish`
+write failed or skipped) and an orphaned presence after gateway failure (`gateway-start` of a new id while
+the old id's presence is still in World, followed by World's lease expiry).
+
 Known gaps (not regressions, not hidden):
 
 - Appearance/public-state changes (`UpdatePlayerPublicStateAsync`) update World and every replica's
@@ -1893,7 +1962,11 @@ Known gaps (not regressions, not hidden):
 - Monster -> player attack HP mutation stays MapServer-local; the cross-replica publish
   (`PublishMonsterAttackActionAsync`) only informs observers.
 - A client that stops reading without closing its socket can still back-pressure `WriteAsync` (no write
-  timeout exists anywhere in MapServer); a closed/reset socket is handled.
+  timeout exists anywhere in MapServer); a closed/reset socket and a vanished network (keepalive) are handled.
+- A character refused with `Conflict` right after its gateway died stays refused for up to the lease TTL (15 s);
+  the client sees a disconnect and can retry.
+- Lease renewal is driven by the gateway's 100 ms tick loop: a gateway whose tick loop is wedged (not dead) for
+  more than the TTL has its players expired, and recovers them by re-asserting once the loop runs again.
 - Real stock-iRO two-client acceptance is a manual procedure (`docs/aspire.md`); automated tests do not
   replace it.
 

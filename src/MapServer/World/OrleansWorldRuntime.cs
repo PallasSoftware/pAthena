@@ -7,6 +7,16 @@ namespace Athena.Net.MapServer.World;
 
 public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPartitionResolver resolver) : IWorldRuntime
 {
+    // One identity per gateway PROCESS (per runtime instance): a restarted MapServer is a different gateway, so
+    // whatever the previous process left behind is owned by an identity that will never renew it again.
+    public Guid GatewayId { get; } = Guid.NewGuid();
+
+    public async Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, IReadOnlyList<WorldPresenceLeaseRef> presences, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        return await Grain(resolver.ResolvePartition(normalized)).RenewPresenceLeasesAsync(normalized, GatewayId, presences).WaitAsync(cancellationToken);
+    }
+
     public async Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState, CancellationToken cancellationToken)
     {
         var normalized = WorldMapId.Normalize(mapId);
@@ -15,7 +25,7 @@ public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPart
         var started = Stopwatch.GetTimestamp();
         try
         {
-            var result = await Grain(partitionId).RegisterPresenceAsync(presence with { MapId = normalized }, publicState).WaitAsync(cancellationToken);
+            var result = await Grain(partitionId).RegisterPresenceAsync(presence with { MapId = normalized, GatewayId = GatewayId }, publicState).WaitAsync(cancellationToken);
             if (result.Status == WorldPresenceRegistrationStatus.Conflict) Failure("register-presence-conflict");
             return result;
         }

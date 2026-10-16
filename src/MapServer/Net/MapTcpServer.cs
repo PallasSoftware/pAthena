@@ -27,6 +27,8 @@ public sealed class MapTcpServer
     private readonly TcpListener _listener;
     private readonly ConcurrentDictionary<int, MapClientSession> _sessions = new();
     private readonly LocalMonsterAttackEchoes _localMonsterAttackEchoes = new();
+    private readonly TimeProvider _timeProvider;
+    private DateTimeOffset _nextLeaseRenewalAt = DateTimeOffset.MinValue;
     private readonly MonsterAttackCadenceExecutor _cadenceExecutor;
     // Cross-session (this gateway process only) ordering primitive for a lethal player attack action
     // vs this SAME process's own Died feed dispatch - see LethalAttackProjectionGate's own doc comment.
@@ -57,6 +59,7 @@ public sealed class MapTcpServer
         _charConnector = charConnector;
         _world = world;
         _worldRuntime = worldRuntime;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         var config = _configStore.Current;
         _listener = new TcpListener(config.BindIp, config.MapPort);
         _cadenceExecutor = new MonsterAttackCadenceExecutor(_world.MonsterProjections, _world.CombatState, _worldRuntime, timeProvider ?? TimeProvider.System, localEchoes: _localMonsterAttackEchoes);
@@ -82,7 +85,13 @@ public sealed class MapTcpServer
     // Test-only: registers a session that a test constructed directly (instead of through the accept
     // loop) in the same table HandleClientAsync uses, so server-level fan-out (e.g. the attacker's own
     // local echo in FanOutPlayerAttackActionAsync) finds it exactly as it would in production.
-    internal void RegisterSessionForTest(MapClientSession session) => _sessions[(int)session.AccountId] = session;
+    internal void RegisterSessionForTest(MapClientSession session)
+    {
+        session._isPlayerMapReconciled = IsPlayerMapReconciled;
+        _sessions[(int)session.AccountId] = session;
+        // Mirror HandleClientAsync: when the session's run ends, the server cleans up exactly as in production.
+        _ = session.EndedAsync().ContinueWith(_ => OnSessionEndedAsync((int)session.AccountId), TaskScheduler.Default).Unwrap();
+    }
 
     internal int AuthenticatedSessionCountForTest => _sessions.Values.Count(session => session.IsAuthenticated);
 
@@ -301,6 +310,9 @@ public sealed class MapTcpServer
         _listener.Start();
         BoundPort = ((IPEndPoint)_listener.LocalEndpoint).Port;
         MapLogger.Status($"Map server listening on {_configStore.Current.BindIp}:{BoundPort}...");
+        // Gateway identity: every [PRESENCE] line carries the first 8 hex digits of the gateway id, so this line
+        // is what ties "gateway=1a2b3c4d" in a log (or in World's) to a concrete MapServer process and port.
+        MapLogger.Info($"[PRESENCE] event=gateway-start gateway={(_worldRuntime.GatewayId == Guid.Empty ? "none" : _worldRuntime.GatewayId.ToString("N")[..8])} port={BoundPort} leaseTtlS={WorldPresenceLease.Ttl.TotalSeconds} leaseRenewS={WorldPresenceLease.RenewInterval.TotalSeconds}");
         MapLogger.Status(
             $"WORLD: loaded {_world.Maps.EntityCount} world entities over {_world.Maps.MapCount} maps, {_world.Maps.StaticWarpCount} active warps, {_world.Maps.DynamicWarpActorCount} legacy dynamic/scripted warp actors, {_world.MonsterSpawns.Count} monster spawn declarations (World-authoritative simulation).");
 
@@ -596,7 +608,53 @@ public sealed class MapTcpServer
             timing.PendingLifeTicks += Stopwatch.GetTimestamp() - pendingLifeStartedAt;
         }
 
+        await EvictIdlePlayerProjectionsAsync(eligibleSessions, cancellationToken);
+        await RenewPresenceLeasesIfDueAsync(sessions, cancellationToken);
+
         LogTickTimingSummary(timing, Stopwatch.GetTimestamp() - tickStartedAt);
+    }
+
+    // Proves to World that this gateway is alive: once per WorldPresenceLease.RenewInterval (on this server's
+    // clock) every world-visible session's presence lease is renewed, one RPC per map. A gateway that dies stops
+    // doing this, and World expires what it owned. A failed renewal is not fatal: the TTL spans several intervals,
+    // so the next pass retries; if World was unreachable long enough to lose the lease, the Absent answer
+    // makes the session re-assert its presence (or end, if a newer presence took the character).
+    internal async Task RenewPresenceLeasesIfDueAsync(IReadOnlyCollection<MapClientSession> sessions, CancellationToken cancellationToken)
+    {
+        var now = _timeProvider.GetUtcNow();
+        if (now < _nextLeaseRenewalAt) return;
+        _nextLeaseRenewalAt = now + WorldPresenceLease.RenewInterval;
+
+        var leased = new List<(MapClientSession Session, string MapId, WorldPresenceLeaseRef Lease)>();
+        foreach (var session in sessions)
+            if (session.TryGetLeaseRef(out var mapId, out var lease)) leased.Add((session, mapId, lease));
+
+        foreach (var mapGroup in leased.GroupBy(entry => entry.MapId, StringComparer.OrdinalIgnoreCase))
+        {
+            IReadOnlyList<WorldPresenceLeaseResult> results;
+            try
+            {
+                results = await _worldRuntime.RenewPresenceLeasesAsync(mapGroup.Key, [.. mapGroup.Select(entry => entry.Lease)], cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (WorldRpcFailureClassifier.IsTransientWorldRpcFailure(ex) || ex is OperationCanceledException)
+            {
+                MapLogger.Warning($"[PRESENCE] event=lease-renew-failed map={mapGroup.Key} sessions={mapGroup.Count()} error={ex.GetType().Name}: {ex.Message} (retried next pass; the lease outlives several passes)");
+                continue;
+            }
+            foreach (var result in results)
+            {
+                var owner = mapGroup.FirstOrDefault(entry => entry.Lease.CharacterId == result.CharacterId && entry.Lease.PresenceId == result.PresenceId);
+                if (owner.Session is null) continue;
+                try { await owner.Session.OnLeaseResultAsync(result, cancellationToken); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    // One session's lease handling must never fault the shared tick loop for every other session.
+                    MapLogger.Warning($"[PRESENCE] event=lease-result-failed map={mapGroup.Key} char={result.CharacterId} status={result.Status} error={ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
     }
 
     // Item 14: isolates ONLY the player-feed poll/reconcile portion of a production tick - for a
@@ -610,6 +668,37 @@ public sealed class MapTcpServer
         var eligibleSessions = sessions.Where(session => session.IsWorldMapEligible).ToArray();
         foreach (var mapGroup in eligibleSessions.GroupBy(session => session.CurrentMapName, StringComparer.OrdinalIgnoreCase))
             await PollAndReconcilePlayersAsync(mapGroup.Key, sessions, cancellationToken);
+        await EvictIdlePlayerProjectionsAsync(eligibleSessions, cancellationToken);
+        await RenewPresenceLeasesIfDueAsync(sessions, cancellationToken);
+    }
+
+    // Everything the server does when a session's RunAsync has returned, whatever ended it.
+    internal async Task OnSessionEndedAsync(int sessionId)
+    {
+        _sessions.TryRemove(sessionId, out _);
+        // The moment the last session of a map is gone, nothing reconciles that map any more: drop its
+        // player projection now rather than leave it to serve stale players to the next login until
+        // the next tick notices.
+        try { await EvictIdlePlayerProjectionsAsync(_sessions.Values.Where(other => other.IsWorldMapEligible).ToArray(), CancellationToken.None); }
+        catch (Exception ex) { MapLogger.Warning($"[PRESENCE] event=projection-evict-failed session={sessionId} error={ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // A map's registry is trustworthy only while its projection has a cursor, i.e. it has been reconciled with
+    // World since it last became active (eviction resets the cursor).
+    private bool IsPlayerMapReconciled(string mapId) =>
+        _world.PlayerProjectionsOrDefault.TryGet(mapId, out var projection) && projection.Cursor is not null;
+
+    // See PlayerFeedProjection.EvictAsync: a map with no eligible local session is not polled, so its
+    // projection (and the registry entries it owns) would silently go stale.
+    private async Task EvictIdlePlayerProjectionsAsync(IReadOnlyCollection<MapClientSession> eligibleSessions, CancellationToken cancellationToken)
+    {
+        var activeMaps = eligibleSessions.Select(session => session.CurrentMapName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var mapId in _world.PlayerProjectionsOrDefault.TrackedMapIds.ToArray())
+        {
+            if (activeMaps.Contains(mapId)) continue;
+            if (_world.PlayerProjectionsOrDefault.TryGet(mapId, out var projection))
+                await projection.EvictAsync(_world.Players, _world.PlayerVisibility, cancellationToken);
+        }
     }
 
     // DEBUG-LOG-ONLY per-tick timing (no behavior, not guarded by the verbose toggle): raw
@@ -746,6 +835,8 @@ public sealed class MapTcpServer
 
         if (page.Snapshot is { } snapshot)
         {
+            if (MonsterDebugLog.Verbose)
+                MapLogger.Info($"[PRESENCE] event=feed-snapshot map={mapId} status={page.Status} epoch={page.Epoch.Value.ToString("N")[..8]} asOfSeq={page.AsOfSequence} players={snapshot.Count} actors=[{string.Join(',', snapshot.Select(e => e.Presence.ActorId))}]");
             await projection.ApplySnapshotAsync(snapshot, page.Epoch, _world.Players, _world.PlayerVisibility, resolveObserver, cancellationToken);
             projection.CommitCursor(page.Epoch, page.AsOfSequence);
             return;
@@ -755,6 +846,8 @@ public sealed class MapTcpServer
         if (page.Entries is not { Count: > 0 } entries) return;
         foreach (var entry in entries)
         {
+            if (MonsterDebugLog.Verbose && entry.Kind is WorldPlayerFeedEntryKind.Registered or WorldPlayerFeedEntryKind.Unregistered or WorldPlayerFeedEntryKind.TransferredIn or WorldPlayerFeedEntryKind.TransferredOut)
+                MapLogger.Info($"[PRESENCE] event=feed-entry map={mapId} epoch={page.Epoch.Value.ToString("N")[..8]} seq={entry.Sequence} kind={entry.Kind} actor={entry.ActorId} char={entry.CharacterId} presence={entry.Entry.Presence.PresenceId.ToString("N")[..8]}");
             await projection.ApplyEntryAsync(entry, _world.Players, _world.PlayerVisibility, resolveObserver, cancellationToken);
             // Per-entry commit: if a later entry in this page throws, the next poll resumes after the
             // last entry that was fully applied instead of replaying it (a replayed movement entry
@@ -1015,18 +1108,43 @@ public sealed class MapTcpServer
         }
     }
 
+    // OS-level TCP keepalive: a client whose network vanished without a FIN/RST (power loss, unplugged cable,
+    // NAT drop) leaves the read loop waiting forever, so the session - and its world presence - would never end.
+    // Keepalive probes make the OS fail that read with an IOException after roughly time + interval * retries
+    // (about a minute), which is the ordinary "client gone" path. Protocol-agnostic on purpose: no assumption
+    // about which packets the stock client sends while idle.
+    internal static readonly int KeepAliveTimeSeconds = 30, KeepAliveIntervalSeconds = 10, KeepAliveRetryCount = 3;
+
+    internal static void ConfigureClientSocket(TcpClient client)
+    {
+        try
+        {
+            var socket = client.Client;
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, KeepAliveTimeSeconds);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, KeepAliveIntervalSeconds);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, KeepAliveRetryCount);
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException or PlatformNotSupportedException or InvalidOperationException)
+        {
+            MapLogger.Warning($"[PRESENCE] event=keepalive-not-configured error={ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private async Task HandleClientAsync(int sessionId, TcpClient client, CancellationToken cancellationToken)
     {
         var endpoint = client.Client.RemoteEndPoint as IPEndPoint;
+        ConfigureClientSocket(client);
         MapTelemetry.ConnectionsAccepted.Add(1);
         using var activity = MapTelemetry.ActivitySource.StartActivity("map.client.session", ActivityKind.Server);
         activity?.SetTag("net.peer.ip", endpoint?.Address.ToString());
         activity?.SetTag("net.peer.port", endpoint?.Port);
-        MapLogger.Info($"[iRO MAP DEBUG] Client connected: {endpoint}");
+        MapLogger.Info($"[iRO MAP DEBUG] Client connected: {endpoint} session={sessionId}");
 
         using (client)
         await using (var session = new MapClientSession(sessionId, client, _charConnector, _world, _worldRuntime, FanOutPlayerAttackActionAsync, _lethalAttackGate, ReportAuthenticatedUserCount))
         {
+            session._isPlayerMapReconciled = IsPlayerMapReconciled;
             _sessions[sessionId] = session;
             try
             {
@@ -1046,7 +1164,7 @@ public sealed class MapTcpServer
             }
             finally
             {
-                _sessions.TryRemove(sessionId, out _);
+                await OnSessionEndedAsync(sessionId);
                 // Covers every disconnect path (normal close, IOException, OperationCanceledException,
                 // an unexpected exception) uniformly - a session that never authenticated simply does
                 // not change the count (it was never included in it), and this can never go negative
@@ -1055,6 +1173,6 @@ public sealed class MapTcpServer
             }
         }
 
-        MapLogger.Info($"[iRO MAP DEBUG] Client disconnected: {endpoint}");
+        MapLogger.Info($"[iRO MAP DEBUG] Client disconnected: {endpoint} session={sessionId}");
     }
 }

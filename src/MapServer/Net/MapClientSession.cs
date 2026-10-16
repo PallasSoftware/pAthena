@@ -591,6 +591,10 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
     public int SessionId { get; }
 
+    // Supplied by MapTcpServer: whether this gateway currently reconciles the given map's player feed.
+    // Null (direct construction in tests) means "assume yes".
+    internal Func<string, bool>? _isPlayerMapReconciled;
+
     // Read-only; never mutated after CompleteIroAuthenticationAsync sets it. Safe to read from any
     // thread (a plain uint field, assigned once during single-threaded auth completion before this
     // session is registered in MapTcpServer's _sessions - see that dictionary's own doc comment for
@@ -685,6 +689,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 var packet = await ReadNextPacketAsync(_stream, sessionToken);
                 if (packet.Length == 0)
                 {
+                    SetEndReason("client-closed-or-reset");
                     return;
                 }
 
@@ -706,6 +711,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             // end, see ReadExactAsync): the same ordinary disconnect, so RunAsync ends normally here as well, and the finally
             // below tears the session down. (MapTcpServer swallowed this as an IOException anyway; direct callers no longer see it.)
             MapLogger.Info($"[iRO MAP DEBUG] Client disconnected while a packet was being answered - ending this session: {ex.InnerException?.Message ?? ex.Message}");
+            SetEndReason("client-gone-detected-by-reply-write");
+        }
+        catch (OperationCanceledException)
+        {
+            SetEndReason(cancellationToken.IsCancellationRequested ? "server-shutdown" : "session-stopped");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            SetEndReason($"error:{ex.GetType().Name}");
+            throw;
         }
         finally
         {
@@ -1240,6 +1256,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private async Task StopCoreAsync()
     {
         _sessionCancellation.Cancel();
+        // Give World the departure FIRST, before anything below that can wait on a background task, a gate
+        // or a blocked write: the player must leave the world no matter how the rest of the teardown goes.
+        // (Bounded retries; if World stays unreachable the presence lease expires it - see
+        // UnregisterWorldPresenceAsync.)
+        await LeavePlayerWorldAsync(PlayerSessionLifecycle.Closed, CancellationToken.None);
         // Unblock a pending WaitAsync so a parked loop observes cancellation promptly instead of
         // waiting for its own indefinite signal wait to somehow resolve; a wake may already be
         // pending (SemaphoreFullException), which is harmless here too.
@@ -2140,6 +2161,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private async Task EndSessionAfterClientDisconnectAsync(string loop, ClientDisconnectedException exception)
     {
         MapLogger.Info($"[iRO MAP DEBUG] Client disconnected while the {loop} loop was writing - ending this session: {exception.InnerException?.Message ?? exception.Message}");
+        SetEndReason($"client-gone-detected-by-{loop}-write");
         try { await _sessionCancellation.CancelAsync(); } catch (ObjectDisposedException) { }
     }
 
@@ -4601,17 +4623,31 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // remote (see PlayerFeedProjection's own doc comment). This mirrors exactly how a monster
         // spawn becomes client-visible only once the monster feed's own tick delivers it - a player
         // registration is not a special case that gets an instant local shortcut.
+        WorldPresenceRegistration? registration = null;
         if (_distributedWorld is not null)
         {
-            var registration = await _distributedWorld.RegisterPresenceAsync(
+            registration = await _distributedWorld.RegisterPresenceAsync(
                 presence.MapName,
                 new WorldPlayerPresence(presenceId, presence.ActorId, presence.CharacterId, presence.MapName, presence.X, presence.Y),
                 ToPublicState(presence),
                 cancellationToken);
             if (registration.Status == WorldPresenceRegistrationStatus.Conflict)
+                LogPresence("world-register-conflict", $"status={registration.Status} partition={registration.PartitionId} - another presence still holds this character (its owning gateway has not released it and its lease has not lapsed)", warn: true);
+            if (registration.Status == WorldPresenceRegistrationStatus.Conflict)
                 throw new InvalidOperationException($"Character {presence.CharacterId} is already present in map authority '{registration.MapId}'.");
         }
         if (!firstRegistration) return;
+        // The session may have started closing while the registration RPC was in flight. StopCoreAsync already
+        // ran its unregister (which could not know about a registration that had not returned yet), so the
+        // registration that just landed would be orphaned, and flipping a closing session to WorldVisible
+        // would be wrong anyway: give World its departure now and leave the session closing.
+        if (_sessionCancellation.IsCancellationRequested)
+        {
+            LogPresence("registration-after-close", "session ended while registering; unregistering the late registration", warn: true);
+            await UnregisterWorldPresenceAsync(presence.MapName, presenceId);
+            return;
+        }
+        LogPresence("world-register", registration is null ? "status=local" : $"status={registration.Status} partition={registration.PartitionId} presenceCount={registration.PresenceCount}");
         lock (_playerPresenceGate)
         {
             _presence = presence;
@@ -4691,7 +4727,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             // Map changes preserve the logical presence and transfer it separately. Only the end
             // of the connected world session unregisters distributed ownership.
             if (after == PlayerSessionLifecycle.Closed && _distributedWorld is not null && presenceId is { } id && presenceMapId is not null)
-                await _distributedWorld.UnregisterPresenceAsync(presenceMapId, _charId, id, CancellationToken.None);
+                await UnregisterWorldPresenceAsync(presenceMapId, id);
         }
         finally
         {
@@ -4708,6 +4744,139 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 _playerLifecycle = after;
             }
         }
+    }
+
+    // ---- Presence lifecycle: bounded unregister, lease callbacks, diagnostics ----------------------------
+
+    private static readonly TimeSpan UnregisterAttemptTimeout = TimeSpan.FromSeconds(5);
+    private const int UnregisterAttempts = 3;
+    private string _endReason = "unknown";
+    private DateTimeOffset _sessionStartedAt = DateTimeOffset.UtcNow;
+
+    private void SetEndReason(string reason)
+    {
+        // The FIRST recorded cause wins: a later teardown artefact (a cancellation caused by the stop itself)
+        // must not overwrite what actually ended the session.
+        if (_endReason == "unknown") _endReason = reason;
+    }
+
+    internal string EndReason => _endReason;
+
+    // Completes when this session's shutdown has finished (success or failure): lets the owner of a session
+    // that was not created by MapTcpServer.HandleClientAsync run the same post-session cleanup.
+    internal async Task EndedAsync()
+    {
+        while (true)
+        {
+            Task? shutdown;
+            lock (_shutdownGate) shutdown = _shutdownTask;
+            if (shutdown is not null)
+            {
+                try { await shutdown; } catch { /* observed by whoever called StopAsync */ }
+                return;
+            }
+            await Task.Delay(20);
+        }
+    }
+
+    // One correlatable line per lifecycle event. Never contains credentials or tokens: only ids, status and reason.
+    private void LogPresence(string evt, string detail = "", bool warn = false)
+    {
+        var gateway = _distributedWorld?.GatewayId is { } g && g != Guid.Empty ? g.ToString("N")[..8] : "none";
+        var presence = _presenceId is { } pid ? pid.ToString("N")[..8] : "none";
+        var message = $"[PRESENCE] event={evt} session={SessionId} account={_accountId} char={_charId} gateway={gateway} map={_mapName} presence={presence} {detail}".TrimEnd();
+        if (warn) MapLogger.Warning(message); else MapLogger.Info(message);
+    }
+
+    // Tells World this session's player left. The result is checked and every outcome is logged, a transient
+    // failure is retried (bounded, each attempt on its own timeout so a hung RPC cannot stall shutdown), and a
+    // failure that survives the retries is NOT thrown: the session still finishes tearing down, and the presence
+    // is left to World's lease, which expires it because this session stops renewing. Fencing is by PresenceId:
+    // PresenceMismatch means a NEWER presence holds the character and is deliberately left untouched.
+    private async Task UnregisterWorldPresenceAsync(string mapId, Guid presenceId)
+    {
+        LogPresence("session-ending", $"reason={_endReason} unregister-map={mapId} sessionAgeMs={(long)(DateTimeOffset.UtcNow - _sessionStartedAt).TotalMilliseconds}");
+        for (var attempt = 1; attempt <= UnregisterAttempts; attempt++)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(UnregisterAttemptTimeout);
+                var result = await _distributedWorld!.UnregisterPresenceAsync(mapId, _charId, presenceId, timeout.Token);
+                var fenced = result.Status is WorldPresenceUnregistrationStatus.PresenceMismatch or WorldPresenceUnregistrationStatus.MapMismatch;
+                LogPresence("world-unregister", $"status={result.Status} attempt={attempt}{(fenced ? " (a different presence or map now owns the character; left untouched)" : "")}", warn: fenced);
+                return;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                LogPresence("world-unregister-failed", $"attempt={attempt}/{UnregisterAttempts} error={ex.GetType().Name}: {ex.Message}", warn: true);
+                if (attempt < UnregisterAttempts) await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt));
+            }
+        }
+        LogPresence("world-unregister-abandoned", "World was unreachable; the presence lease will expire it because this session no longer renews it", warn: true);
+    }
+
+    // For the gateway's lease renewal pass: the identity of this session's World presence, but only while the
+    // session really is a live world-visible player (not authenticating, not mid map change, not closing).
+    internal bool TryGetLeaseRef(out string mapId, out WorldPresenceLeaseRef lease)
+    {
+        lock (_playerPresenceGate)
+        {
+            if (_playerLifecycle == PlayerSessionLifecycle.WorldVisible && _presenceId is { } id && _presenceMapId is { } map)
+            {
+                mapId = map;
+                lease = new WorldPresenceLeaseRef(_charId, id);
+                return true;
+            }
+        }
+        mapId = "";
+        lease = null!;
+        return false;
+    }
+
+    // World answered a renewal. Renewed: nothing. Absent: World no longer has this presence (its lease lapsed
+    // while the gateway was unreachable, or World restarted) although the client is still connected - re-assert
+    // the SAME presence; World refuses it if a newer presence claimed the character meanwhile. PresenceMismatch
+    // or NotOwner: another presence/gateway owns the character now, so this session is stale and must end.
+    internal async Task OnLeaseResultAsync(WorldPresenceLeaseResult result, CancellationToken cancellationToken)
+    {
+        switch (result.Status)
+        {
+            case WorldPresenceLeaseStatus.Renewed:
+                return;
+            case WorldPresenceLeaseStatus.Absent:
+                LogPresence("lease-absent", "World no longer holds this presence; re-asserting it", warn: true);
+                if (!await ReassertPresenceAsync(cancellationToken)) await TerminateAsync("presence-superseded");
+                return;
+            default:
+                LogPresence("lease-refused", $"status={result.Status}; this session is stale", warn: true);
+                await TerminateAsync($"presence-superseded:{result.Status}");
+                return;
+        }
+    }
+
+    private async Task<bool> ReassertPresenceAsync(CancellationToken cancellationToken)
+    {
+        if (_distributedWorld is null || _presenceId is not { } presenceId) return false;
+        var presence = BuildCurrentPresence(movement: null);
+        if (presence is null) return false;
+        presence = presence with { X = CurrentX, Y = CurrentY };
+        var registration = await _distributedWorld.RegisterPresenceAsync(
+            presence.MapName,
+            new WorldPlayerPresence(presenceId, presence.ActorId, presence.CharacterId, presence.MapName, presence.X, presence.Y),
+            ToPublicState(presence),
+            cancellationToken);
+        LogPresence("world-reassert", $"status={registration.Status}", warn: registration.Status == WorldPresenceRegistrationStatus.Conflict);
+        return registration.Status != WorldPresenceRegistrationStatus.Conflict;
+    }
+
+    // Ends this session from the server side (the client is disconnected by the teardown): used when World says
+    // the session no longer owns its presence.
+    internal async Task TerminateAsync(string reason)
+    {
+        SetEndReason(reason);
+        LogPresence("session-terminate", $"reason={reason}", warn: true);
+        try { await StopAsync(); }
+        catch (Exception ex) { LogPresence("session-terminate-error", $"error={ex.GetType().Name}: {ex.Message}", warn: true); }
     }
 
     private async Task TransferDistributedPresenceAsync(string sourceMap, string destinationMap, ushort x, ushort y, CancellationToken cancellationToken)
@@ -5720,6 +5889,12 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // places in range. Players that appear later arrive through the ordinary observer callbacks.
     private async Task SendVisiblePlayersAsync(CancellationToken cancellationToken)
     {
+        // Only replay a registry that is being reconciled with World right now. A map this gateway is not
+        // currently polling (no other local session was on it) holds whatever it held when the last session
+        // left - players who have since logged out - and replaying that would show this client ghosts. In
+        // that case the first tick bootstraps from World's snapshot and introduces the real players through
+        // the ordinary observer callbacks (this session is WorldVisible by then), so nothing is lost.
+        if (_isPlayerMapReconciled is not null && !_isPlayerMapReconciled(_mapName)) return;
         foreach (var presence in _players.QueryNearby(_mapName, _x, _y))
         {
             if (presence.ActorId == _accountId) continue;
@@ -5729,14 +5904,35 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
     public Task PlayerEnteredViewAsync(PlayerPresence presence, PlayerEntryKind kind, CancellationToken cancellationToken)
     {
-        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
+        if (!ClientAcceptsActorPackets)
+        {
+            if (MonsterDebugLog.Verbose) LogPresence("observer-intro-deferred", $"target={presence.ActorId} (client not ready; replayed when it reports the map loaded)");
+            return Task.CompletedTask;
+        }
         if (presence.ActorId == _accountId || !_visibleActorIds.TryMarkVisible(presence.ActorId)) return Task.CompletedTask;
         var packet = kind == PlayerEntryKind.NewlySpawned
             ? IroPlayerActorPackets.BuildSpawnEntry(presence)
             : presence.Movement is null
                 ? IroPlayerActorPackets.BuildStandEntry(presence)
                 : BuildLocalWalkEntry(presence);
-        return WriteAsync(packet, cancellationToken);
+        return WriteObservedAsync("intro", presence.ActorId, $"kind={kind} at=({presence.X},{presence.Y})", packet, cancellationToken);
+    }
+
+    // The client-visible half of presence diagnostics: whether the packet that introduces/removes another player
+    // really reached THIS client. A failed write is always logged (it is how a "missing vanish" is told apart
+    // from a missing feed event); successful ones follow the verbose toggle (one per AOI event).
+    private async Task WriteObservedAsync(string evt, uint targetActorId, string detail, byte[] packet, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WriteAsync(packet, cancellationToken);
+            if (MonsterDebugLog.Verbose) LogPresence($"observer-{evt}", $"target={targetActorId} {detail} write=ok");
+        }
+        catch (Exception ex)
+        {
+            LogPresence($"observer-{evt}", $"target={targetActorId} {detail} write=failed:{ex.GetType().Name}", warn: true);
+            throw;
+        }
     }
 
     public Task PlayerMovementChangedAsync(PlayerPresence presence, CancellationToken cancellationToken)
@@ -5770,9 +5966,18 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
     public Task PlayerLeftViewAsync(uint actorId, CancellationToken cancellationToken)
     {
-        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
-        if (actorId == _accountId || !_visibleActorIds.TryMarkNotVisible(actorId)) return Task.CompletedTask;
-        return WriteAsync(IroPlayerActorPackets.BuildVanish(actorId), cancellationToken);
+        if (!ClientAcceptsActorPackets)
+        {
+            if (MonsterDebugLog.Verbose) LogPresence("observer-vanish-skipped", $"target={actorId} (client not ready)");
+            return Task.CompletedTask;
+        }
+        if (actorId == _accountId) return Task.CompletedTask;
+        if (!_visibleActorIds.TryMarkNotVisible(actorId))
+        {
+            if (MonsterDebugLog.Verbose) LogPresence("observer-vanish-skipped", $"target={actorId} (was not visible to this client)");
+            return Task.CompletedTask;
+        }
+        return WriteObservedAsync("vanish", actorId, "", IroPlayerActorPackets.BuildVanish(actorId), cancellationToken);
     }
 
     public void ForgetPlayer(uint actorId) => _visibleActorIds.MarkNotVisible(actorId);

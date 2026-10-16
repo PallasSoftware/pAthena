@@ -14,6 +14,9 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     private readonly Dictionary<Guid, TransferRecord> _outgoing = [];
     private readonly Dictionary<Guid, IncomingRecord> _incoming = [];
     private readonly Dictionary<uint, ActiveMovement> _movements = [];
+    // Presence ownership leases (see WorldPresenceLease): characterId -> when the owning gateway's lease lapses.
+    // Present only for presences registered with a GatewayId; World's own clock decides expiry.
+    private readonly Dictionary<uint, DateTimeOffset> _leaseExpiry = [];
     // Phase 2B monster simulation: one WorldMonsterMapSimulation per map this partition owns,
     // created lazily on first touch (LoadMonsterSpawnsAsync or an implicit PollMonsterFeedAsync
     // bootstrap) - never pre-created for every map the resolver could theoretically route here,
@@ -135,6 +138,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     {
         var tickStartedAt = timeProvider.GetTimestamp();
         var now = timeProvider.GetUtcNow();
+        ExpireLapsedPresenceLeases(now);
         if (_lastMonsterTickAt is { } previous)
         {
             var elapsedSinceLast = (now - previous).TotalMilliseconds;
@@ -175,9 +179,60 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
 
     private WorldPlayerPresence? ResolvePresenceForEngagement(uint characterId) => TryFind(characterId, out var presence) ? presence : null;
 
+    // Removes every presence whose owning gateway stopped renewing its lease, through the SAME path as an
+    // explicit unregister (an Unregistered feed entry, then Remove), so every observing gateway drops the
+    // player by the ordinary feed. Called from every entry point that reads or changes presence state AND
+    // from the grain timer, so expiry is decided on World's clock and never waits for a particular caller.
+    private void ExpireLapsedPresenceLeases(DateTimeOffset now)
+    {
+        if (_leaseExpiry.Count == 0) return;
+        List<uint>? lapsed = null;
+        foreach (var (characterId, expiresAt) in _leaseExpiry)
+            if (expiresAt <= now) (lapsed ??= []).Add(characterId);
+        if (lapsed is null) return;
+        foreach (var characterId in lapsed)
+        {
+            if (!TryFind(characterId, out var existing)) { _leaseExpiry.Remove(characterId); continue; }
+            AppendUnregistered(existing);
+            Remove(existing);
+            WorldTelemetry.PresenceLeasesExpired.Add(1, new KeyValuePair<string, object?>("world.partition.id", PartitionId));
+        }
+    }
+
+    private void AppendUnregistered(WorldPlayerPresence existing)
+    {
+        var publicState = PlayerSimulation(existing.MapId).TryGetPublicState(existing.CharacterId, out var ps) ? ps : EmptyPublicState;
+        PlayerSimulation(existing.MapId).Append(WorldPlayerFeedEntryKind.Unregistered, BuildPresenceEntry(existing, publicState));
+    }
+
+    private void GrantLease(WorldPlayerPresence presence)
+    {
+        if (presence.GatewayId == Guid.Empty) _leaseExpiry.Remove(presence.CharacterId);
+        else _leaseExpiry[presence.CharacterId] = timeProvider.GetUtcNow() + WorldPresenceLease.Ttl;
+    }
+
+    public Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, Guid gatewayId, IReadOnlyList<WorldPresenceLeaseRef> presences)
+    {
+        RequireOwnedMap(mapId);
+        // Expire first: a lease that had already lapsed on World's clock is gone, whatever the renewal says.
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
+        var results = new List<WorldPresenceLeaseResult>(presences.Count);
+        foreach (var requested in presences)
+        {
+            WorldPresenceLeaseStatus status;
+            if (!TryFind(requested.CharacterId, out var current)) status = WorldPresenceLeaseStatus.Absent;
+            else if (current.PresenceId != requested.PresenceId) status = WorldPresenceLeaseStatus.PresenceMismatch;
+            else if (current.GatewayId != gatewayId) status = WorldPresenceLeaseStatus.NotOwner;
+            else { GrantLease(current); status = WorldPresenceLeaseStatus.Renewed; }
+            results.Add(new WorldPresenceLeaseResult(requested.CharacterId, requested.PresenceId, status));
+        }
+        return Task.FromResult<IReadOnlyList<WorldPresenceLeaseResult>>(results);
+    }
+
     public Task<WorldPresenceRegistration> RegisterPresenceAsync(WorldPlayerPresence presence, WorldPlayerPublicState publicState)
     {
         Validate(presence);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         var mapId = RequireOwnedMap(presence.MapId);
         presence = presence with { MapId = mapId };
         if (_incoming.Values.Any(x => !x.Committed && x.Presence.CharacterId == presence.CharacterId))
@@ -187,6 +242,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
             if (existing.PresenceId != presence.PresenceId || existing.ActorId != presence.ActorId || !Same(existing.MapId, mapId))
                 return Task.FromResult(Registration(mapId, WorldPresenceRegistrationStatus.Conflict));
             Map(mapId).Players[presence.CharacterId] = presence;
+            GrantLease(presence);
             PlayerSimulation(mapId).SetPublicState(presence.CharacterId, publicState);
             PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.Registered, BuildPresenceEntry(presence, publicState));
             return Task.FromResult(Registration(mapId, WorldPresenceRegistrationStatus.AlreadyRegistered));
@@ -200,11 +256,11 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     public Task<WorldPresenceUnregistration> UnregisterPresenceAsync(string mapId, uint characterId, Guid presenceId)
     {
         mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         if (!TryFind(characterId, out var existing)) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.AlreadyAbsent));
         if (existing.PresenceId != presenceId) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.PresenceMismatch));
         if (!Same(existing.MapId, mapId)) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.MapMismatch));
-        var publicState = PlayerSimulation(mapId).TryGetPublicState(characterId, out var ps) ? ps : EmptyPublicState;
-        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.Unregistered, BuildPresenceEntry(existing, publicState));
+        AppendUnregistered(existing);
         Remove(existing);
         return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.Removed));
     }
@@ -326,6 +382,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     public Task<WorldPlayerFeedPage> PollPlayerFeedAsync(WorldPlayerFeedCursor? cursor, string mapId)
     {
         mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         var simulation = PlayerSimulation(mapId);
         var snapshot = Map(mapId).Players.Values
             .Select(presence =>
@@ -453,6 +510,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     public Task<WorldMapSnapshot> GetMapSnapshotAsync(string mapId)
     {
         mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         var players = _maps.TryGetValue(mapId, out var map) ? map.Players.Values.OrderBy(x => x.CharacterId).ToArray() : [];
         return Task.FromResult(new WorldMapSnapshot(PartitionId, mapId, players));
     }
@@ -724,7 +782,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     }
     private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     private MapRuntime Map(string mapId) => _maps.TryGetValue(mapId, out var map) ? map : _maps[mapId] = new();
-    private void Add(WorldPlayerPresence presence) { Map(presence.MapId).Players[presence.CharacterId] = presence; _mapByCharacter[presence.CharacterId] = presence.MapId; }
+    private void Add(WorldPlayerPresence presence) { Map(presence.MapId).Players[presence.CharacterId] = presence; _mapByCharacter[presence.CharacterId] = presence.MapId; GrantLease(presence); }
     private bool TryFind(uint characterId, [NotNullWhen(true)] out WorldPlayerPresence? presence)
     { if (_mapByCharacter.TryGetValue(characterId, out var mapId) && Map(mapId).Players.TryGetValue(characterId, out var found)) { presence = found; return true; } presence = null; return false; }
     // Step 7 substep 3: the single chokepoint every presence-departure path (UnregisterPresenceAsync,
@@ -759,6 +817,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         Map(presence.MapId).Players.Remove(presence.CharacterId);
         _mapByCharacter.Remove(presence.CharacterId);
         _movements.Remove(presence.CharacterId);
+        _leaseExpiry.Remove(presence.CharacterId);
     }
     private int Count => _mapByCharacter.Count;
     private WorldPresenceRegistration Registration(string mapId, WorldPresenceRegistrationStatus status) => new(PartitionId, mapId, status, Count);
