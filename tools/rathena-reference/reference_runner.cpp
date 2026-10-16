@@ -37,14 +37,17 @@ static void dump_status(const char* name, const struct status_data& s) {
 	std::fprintf(out, "}");
 }
 
-static map_session_data* make_novice(uint32 id) {
+struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; };
+
+static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec()) {
 	map_session_data* sd = new map_session_data();
 	pc_setnewpc(sd, id, id + 100000, 0, gettick(), SEX_MALE, 0);
 	sd->m = map_mapname2mapid("prontera"); // plain map, no PvP/GvG/BG flags; player is not added to the grid
 	sd->status.class_ = JOB_NOVICE;
 	sd->class_ = pc_jobid2mapid(JOB_NOVICE);
-	sd->status.base_level = 1; sd->status.job_level = 1;
-	sd->status.str = sd->status.agi = sd->status.vit = sd->status.int_ = sd->status.dex = sd->status.luk = 1;
+	sd->status.base_level = n.base_level; sd->status.job_level = n.job_level;
+	sd->status.str = n.str; sd->status.agi = n.agi; sd->status.vit = n.vit;
+	sd->status.int_ = n.int_; sd->status.dex = n.dex; sd->status.luk = n.luk;
 	sd->status.max_hp = 40; sd->status.hp = 40; sd->status.max_sp = 11; sd->status.sp = 11;
 	memset(&sd->equip_index, -1, sizeof(sd->equip_index));
 	map_addiddb(sd); // as pc_authok does; status code looks the player up by id
@@ -62,6 +65,28 @@ static void vf01() {
 	std::fprintf(out, ",");
 	dump_status("battle_status", sd->battle_status);
 	std::fprintf(out, "}}");
+}
+
+// VF-02/VF-03: Novice job-level bonus sweep (job_stats.yml BonusStats) with explicit allocated stats; base_status
+// carries the job bonus, battle_status the effective values.
+static void vf02_vf03() {
+	const NoviceSpec specs[] = {
+		{1, 1, 5, 5, 5, 5, 5, 5}, {1, 2, 5, 5, 5, 5, 5, 5}, {1, 3, 5, 5, 5, 5, 5, 5}, {1, 4, 5, 5, 5, 5, 5, 5},
+		{1, 5, 5, 5, 5, 5, 5, 5}, {1, 6, 5, 5, 5, 5, 5, 5}, {1, 7, 5, 5, 5, 5, 5, 5}, {1, 8, 5, 5, 5, 5, 5, 5},
+		{1, 9, 5, 5, 5, 5, 5, 5}, {1, 10, 5, 5, 5, 5, 5, 5},
+		{10, 10, 30, 20, 10, 5, 15, 8}, {99, 10, 99, 1, 77, 33, 6, 99}};
+	std::fprintf(out, "{\"id\":\"VF-02\",\"input\":{\"job\":\"Novice\"},\"output\":{\"cases\":[");
+	uint32 id = 2000040;
+	for (const NoviceSpec& n : specs) {
+		map_session_data* sd = make_novice(id++, n);
+		std::fprintf(out, "%s{\"input\":{\"base_level\":%d,\"job_level\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d},",
+			id > 2000041 ? "," : "", n.base_level, n.job_level, n.str, n.agi, n.vit, n.int_, n.dex, n.luk);
+		dump_status("base_status", sd->base_status);
+		std::fprintf(out, ",");
+		dump_status("battle_status", sd->battle_status);
+		std::fprintf(out, "}");
+	}
+	std::fprintf(out, "]}}");
 }
 
 // Applies `type` twice via the real status_change_start and records what the reference does.
@@ -149,6 +174,8 @@ void ra_reference_run() {
 #endif
 	std::fprintf(out, "{\"renewal_compiled\":%d,\"scenarios\":[", renewal);
 	vf01();
+	std::fprintf(out, ",");
+	vf02_vf03();
 	std::fprintf(out, ",");
 	vf07_vf08();
 	std::fprintf(out, ",");

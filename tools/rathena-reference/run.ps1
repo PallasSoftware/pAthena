@@ -42,6 +42,7 @@ cat /out/reference.json
     $raw = ($result -join "`n") | ConvertFrom-Json
     $scope = @{
         'VF-01' = 'Fresh Novice status_calc_pc on prontera: stats, batk, hit/flee/crit, aspd, max HP/SP. No equipment, skills or statuses.'
+        'VF-02' = 'Novice job-level 1..10 job bonuses (job_stats.yml) plus two high-level mixed-allocation cases; full base_status/battle_status for each. Jobs other than Novice are not captured.'
         'VF-07' = 'Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.'
         'VF-08' = 'Increase AGI started twice via status_change_start on a fresh Novice: retained val1/val2, stats, speed, ASPD, timer deadline movement and state after status_change_end.'
         'VF-14' = 'Loader values for mob 1002, plus mobs 1002/1031/1013 spawned (SZ_SMALL) and attacking the VF-01 Novice through real battle_calc_attack: 2000 seeded samples each (std::mt19937 reseeded 1..2000), histogram of non-zero damage, zero/miss count. Covers roll bounds, batk and def2 for ordinary non-skill attacks; hit/flee outcome is recorded but not compared.'

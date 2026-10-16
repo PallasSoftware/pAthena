@@ -17,7 +17,7 @@ public sealed class RathenaReferenceFixtureTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-07", "VF-08", "VF-14"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-07", "VF-08", "VF-14"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
 
@@ -96,5 +96,29 @@ public sealed class RathenaReferenceFixtureTests
             .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
 
         Assert.Equal(expected, observed);
+    }
+
+    // VF-02: Novice job-level bonuses. Reference battle_status six stats == allocated + cumulative job bonus
+    // (no statuses/equipment), as consumed by every Recalculate caller.
+    public static TheoryData<int> JobBonusCases => [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+    [Theory]
+    [MemberData(nameof(JobBonusCases))]
+    public void NoviceJobBonus_EffectiveSixStatsMatchReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-02").GetProperty("cases")[index];
+        var i = c.GetProperty("input");
+        ushort U(string n) => (ushort)i.GetProperty(n).GetInt32();
+        var state = new CharacterGameplayState(CharacterId: 1, Version: 1, JobClass: 0, BaseLevel: U("base_level"), JobLevel: U("job_level"),
+            BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
+            Strength: U("str"), Agility: U("agi"), Vitality: U("vit"), Intelligence: U("int"), Dexterity: U("dex"), Luck: U("luk"));
+
+        var effective = new CharacterStatusEffectState(new FakeTimeProvider()).Recalculate(state);
+
+        var expected = c.GetProperty("battle_status");
+        Assert.Equal(
+            [expected.GetProperty("str").GetInt32(), expected.GetProperty("agi").GetInt32(), expected.GetProperty("vit").GetInt32(),
+             expected.GetProperty("int").GetInt32(), expected.GetProperty("dex").GetInt32(), expected.GetProperty("luk").GetInt32()],
+            [effective.Strength, effective.Agility, effective.Vitality, effective.Intelligence, effective.Dexterity, effective.Luck]);
     }
 }

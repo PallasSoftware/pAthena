@@ -1651,9 +1651,12 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _y = movement.CurrentY;
     }
 
+    // One consistent (gameplay state, effective stats) pair - see CharacterStatusEffectState.Capture.
+    private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State);
+
     private int CurrentCellDurationMs()
     {
-        var haste = _gameplayState is null ? 0 : _statusEffects.Recalculate(_gameplayState.State).MoveSpeedHaste;
+        var haste = _gameplayState is null ? 0 : CaptureStatusSnapshot().Effective.MoveSpeedHaste;
         return MovementSpeedCalculator.CellDurationMs(haste);
     }
 
@@ -2961,7 +2964,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_monsterProjections is not null && _monsterProjections.TryGet(_mapName, out var projection) && projection.TryGetInstance(life.ActorId, out var instance))
             targetSnapshot = new WorldMonsterActorView(instance);
 
-        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(_statusEffects.Recalculate(_gameplayState!.State), null);
+        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(CaptureStatusSnapshot().Effective, null);
         Func<uint, CharacterQuestStatus> questStatusSnapshot = _ => CharacterQuestStatus.Absent;
 
         if (_repeatAttack is { } existing)
@@ -3271,8 +3274,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // Substep 9 cutover (§1): calculate the candidate hit against the target's static
         // definition only - no local HP/lethality guess, no store lookup. A live feed-Alive target
         // is attackable by definition, so there is no Attackable early-return any more.
-        var effectiveStats = _statusEffects.Recalculate(_gameplayState.State);
-        var candidate = _combat.CalculateAttack(target, effectiveStats, _gameplayState.State.BaseLevel, equippedWeapon);
+        var statusSnapshot = CaptureStatusSnapshot();
+        var effectiveStats = statusSnapshot.Effective;
+        var candidate = _combat.CalculateAttack(target, effectiveStats, statusSnapshot.State.BaseLevel, equippedWeapon);
         var acquireEngagement = target.StaticMob.Mode.HasFlag(MobMode.CanAttack);
         var attackDelayMs = AttackDelayCalculator.AttackDelayMs(effectiveStats, equippedWeapon?.WeaponType);
 
@@ -3337,13 +3341,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     internal async Task<PlayerCombatSnapshot?> TryGetCombatSnapshotAsync(CancellationToken cancellationToken)
     {
         if (_gameplayState is null) return null;
-        var stats = _statusEffects.Recalculate(_gameplayState.State);
+        var snapshot = CaptureStatusSnapshot();
+        var stats = snapshot.Effective;
         await _movementGate.WaitAsync(cancellationToken);
         try
         {
             SyncPositionToNow();
             var isWalking = _movement?.IsMoving ?? false;
-            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, _gameplayState.State.CurrentHp > 0, isWalking, _gameplayState.State.BaseLevel, stats.Vitality, stats.Agility);
+            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility);
         }
         finally { _movementGate.Release(); }
     }

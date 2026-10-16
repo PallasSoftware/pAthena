@@ -31,6 +31,10 @@ public readonly record struct EffectiveCharacterStats(
 // that must observe one coherent snapshot (e.g. Blessing + IncreaseAgi both read for the
 // same Recalculate call, or "identify due statuses" + "remove those exact statuses" in
 // ExpireDue) take the lock once for the whole operation rather than once per sub-step.
+// Immutable result of CharacterStatusEffectState.Capture: the exact gameplay state the effective stats were derived
+// from, so consumers never re-read State for a second value (level, HP, ...) after taking the stats.
+public sealed record CharacterStatusSnapshot(CharacterGameplayState State, EffectiveCharacterStats Effective, DateTimeOffset CapturedAt);
+
 public enum StatusStartOutcome { Started, Replaced, Retained }
 
 public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
@@ -186,6 +190,26 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
         return RecalculateFrom(baseState, id => snapshot.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
     }
 
+    // One mutually consistent (gameplay state, effective stats) pair. The two inputs have different owners
+    // (CharacterGameplayStateSession publishes immutable states after persistence; this class owns the status
+    // dictionary under its own leaf gate), so a plain "read state, then read statuses" can mix instants.
+    // Lock-free validate-and-retry: read the state, copy the statuses under the gate (the only lock taken, never
+    // while holding another), and accept only if the state reference is unchanged afterwards. Gameplay states are
+    // versioned and never revisited, so an unchanged reference means the state was current throughout the
+    // status copy - the pair is a real instant. No lock ordering exists to deadlock on.
+    public CharacterStatusSnapshot Capture(Func<CharacterGameplayState> readState)
+    {
+        while (true)
+        {
+            var state = readState();
+            var now = _timeProvider.GetUtcNow();
+            var statuses = SnapshotForRecalculate();
+            if (!ReferenceEquals(state, readState())) continue;
+            var effective = RecalculateFrom(state, id => statuses.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
+            return new CharacterStatusSnapshot(state, effective, now);
+        }
+    }
+
     // Effective stats as of just BEFORE an ExpireDue(now) removal, for the expiration driver's
     // "before" snapshot. Distinct from Recalculate(baseState) because by the time
     // ProcessDueStatusExpirationsAsync runs, the clock has already reached the statuses' own
@@ -206,8 +230,9 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
 
     private static EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup)
     {
-        ushort strength = baseState.Strength, agility = baseState.Agility, vitality = baseState.Vitality,
-            intelligence = baseState.Intelligence, dexterity = baseState.Dexterity, luck = baseState.Luck;
+        var baseStats = Athena.Net.MapServer.Gameplay.Rules.Renewal.StatusCalculator.BasePrimaryStats(baseState);
+        ushort strength = baseStats.Strength, agility = baseStats.Agility, vitality = baseStats.Vitality,
+            intelligence = baseStats.Intelligence, dexterity = baseStats.Dexterity, luck = baseStats.Luck;
         var moveSpeedHaste = 0;
         var attackSpeedBonus = 0;
 

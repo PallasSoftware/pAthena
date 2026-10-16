@@ -104,6 +104,35 @@ public sealed class CharacterStatusEffectStateTests
         Assert.Equal(3, status.Val1);
     }
 
+    // Capture must return a real instant. The writer always publishes state N (Strength = N) BEFORE starting Blessing
+    // level N, so Blessing's level can never exceed the state's Strength at any instant; a "read state, then read
+    // statuses" capture could observe state N-1 with Blessing N and violate that. 
+    [Fact]
+    public async Task Capture_NeverMixesAnOlderStateWithANewerStatus()
+    {
+        var state = new CharacterStatusEffectState(new FakeTimeProvider());
+        var published = BaseState() with { Strength = 1 };
+        var stop = false;
+        var writer = Task.Run(() =>
+        {
+            for (ushort n = 2; n < 20000 && !Volatile.Read(ref stop); n++)
+            {
+                Volatile.Write(ref published, published with { Strength = n });
+                state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, n);
+            }
+        });
+        var violations = 0;
+        for (var i = 0; i < 200000 && !writer.IsCompleted; i++)
+        {
+            var snapshot = state.Capture(() => Volatile.Read(ref published));
+            var blessing = snapshot.Effective.Strength - snapshot.State.Strength;
+            if (blessing > snapshot.State.Strength) violations++;
+        }
+        Volatile.Write(ref stop, true);
+        await writer;
+        Assert.Equal(0, violations);
+    }
+
     [Fact]
     public void StatusExpiresAfterItsDuration()
     {
