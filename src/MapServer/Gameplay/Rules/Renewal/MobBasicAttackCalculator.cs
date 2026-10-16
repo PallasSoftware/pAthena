@@ -19,7 +19,7 @@ namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
 //     comes from status_base_atk_max/status_base_atk_min (status.cpp:2522-2554), which for
 //     BL_MOB derive both bounds from the SAME single rhw.atk value (itself set directly from
 //     mob_db `Attack`, mob.cpp:5098-5104): atkmin = rhw.atk*80/100, atkmax = rhw.atk*120/100.
-//     damage = uniform random in [atkmin, atkmax] (battle.cpp:2571, no crit path modeled here -
+//     damage = uniform random in [atkmin, atkmax) EXCLUSIVE upper bound, plus batk = str + level (battle.cpp:2571, no crit path modeled here -
 //     G_PORING has no crit-relevant modeled state).
 //  2. battle_calc_defense_reduction (battle.cpp:4720-4884), RENEWAL branch, target is a PC
 //     (`tsd` set, battle.cpp:4806-4815): vit_def = def2 (the PLAYER's own def2, RENEWAL PC
@@ -63,6 +63,7 @@ internal static class MobBasicAttackCalculator
 {
     public static BasicAttackDamageResult Calculate(MobDefinition attacker, PlayerCombatSnapshot target, Func<int, int, int>? rollAtk = null)
     {
+        // rollAtk keeps its inclusive [min, max] contract; Calculate hands it the reference's exclusive upper bound.
         rollAtk ??= (min, max) => min >= max ? min : Random.Shared.Next(min, max + 1);
 
         var rhwAtk = attacker.Attack;
@@ -70,7 +71,11 @@ internal static class MobBasicAttackCalculator
         var atkmax = rhwAtk * 120 / 100;
         if (atkmin > atkmax) atkmin = atkmax;
 
-        long damage = rollAtk(atkmin, atkmax);
+        // battle_calc_base_damage (battle.cpp:2571): `(atkmax>atkmin ? rnd()%(atkmax-atkmin) : 0) + atkmin`
+        // -> [atkmin, atkmax) exclusive; plus status->batk (battle.cpp:2624 area). For BL_MOB, batk =
+        // status_base_atk = str + level (status.cpp:2488-2491, enable_baseatk_renewal covers BL_MOB). Verified by
+        // executed fixture VF-14 (Poring/Poporing/Wolf: roll + batk - def2).
+        long damage = (atkmax > atkmin ? rollAtk(atkmin, atkmax - 1) : atkmin) + (attacker.Str + attacker.Level);
 
         const int def1 = 0; // Disclosed simplification - see this type's own doc comment, step 2.
         var def2 = (int)((float)(target.BaseLevel + target.Vitality) / 2 + (float)target.Agility / 5);

@@ -44,7 +44,7 @@ cat /out/reference.json
         'VF-01' = 'Fresh Novice status_calc_pc on prontera: stats, batk, hit/flee/crit, aspd, max HP/SP. No equipment, skills or statuses.'
         'VF-07' = 'Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.'
         'VF-08' = 'Increase AGI started twice via status_change_start on a fresh Novice: retained val1/val2, stats, speed, ASPD, timer deadline movement and state after status_change_end.'
-        'VF-14' = 'Values stored by the real mob_db loader for mob 1002 (Poring). Does NOT cover the attack roll or its random bounds.'
+        'VF-14' = 'Loader values for mob 1002, plus mobs 1002/1031/1013 spawned (SZ_SMALL) and attacking the VF-01 Novice through real battle_calc_attack: 2000 seeded samples each (std::mt19937 reseeded 1..2000), histogram of non-zero damage, zero/miss count. Covers roll bounds, batk and def2 for ordinary non-skill attacks; hit/flee outcome is recorded but not compared.'
     }
     $fixture = [ordered]@{
         schema = 1

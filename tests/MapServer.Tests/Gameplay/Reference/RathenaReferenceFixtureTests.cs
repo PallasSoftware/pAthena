@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
@@ -72,5 +74,27 @@ public sealed class RathenaReferenceFixtureTests
         clock.Advance(TimeSpan.FromMilliseconds(120000));
         state.ExpireDue(clock.GetUtcNow());
         Assert.False(state.TryGet(statusId, out _));
+    }
+
+    // VF-14: real spawned mob -> real battle_calc_attack vs the VF-01 Novice (def2 = 1), 2000 seeded samples each.
+    // The reference's non-miss damage histogram gives the exact set of reachable damage values
+    // (roll in [watk, watk2) + batk - def2). Accuracy/FLEE is not modeled by Athena, so reference misses are ignored;
+    // the Athena side samples its production roll and must produce exactly that value set.
+    public static TheoryData<int> MobAttackMobs => [1002, 1031, 1013];
+
+    [Theory]
+    [MemberData(nameof(MobAttackMobs))]
+    public void MobAttack_ReachableDamageValuesMatchReference(int mobId)
+    {
+        var attack = RathenaReferenceFixture.LoadCommitted().Output("VF-14").GetProperty("attacks").EnumerateArray().Single(a => a.GetProperty("mob_id").GetInt32() == mobId);
+        var expected = attack.GetProperty("damage_histogram").EnumerateObject().Select(p => long.Parse(p.Name)).Order().ToArray();
+        var mob = mobId switch { 1002 => GeneratedMobs.Poring, 1031 => GeneratedMobs.Poporing, _ => GeneratedMobs.Wolf };
+        var novice = new PlayerCombatSnapshot(AccountId: 1, Map: "prontera", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 1, Agility: 1);
+
+        var observed = Enumerable.Range(0, 20000)
+            .Select(_ => MobBasicAttackCalculator.Calculate(mob, novice))
+            .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
+
+        Assert.Equal(expected, observed);
     }
 }

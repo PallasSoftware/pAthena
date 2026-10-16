@@ -21,16 +21,16 @@ public sealed class MobBasicAttackCalculatorTests
         new(AccountId: 1, Map: "iz_int03", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: baseLevel, Vitality: vit, Agility: agi);
 
     [Fact]
-    public void Calculate_RollsWithinThePinned80To120PercentBand()
+    public void Calculate_RollsWithinThePinned80To120BandWithExclusiveUpperBound()
     {
-        // Attack=100 -> atkmin=80, atkmax=120 (status_base_atk_min/max, status.cpp:2522-2554).
+        // Attack=100 -> atkmin=80, atkmax=120 (status_base_atk_min/max, status.cpp:2522-2554); the reference roll is
+        // rnd()%(atkmax-atkmin)+atkmin = [80, 119] (battle.cpp:2571, confirmed by fixture VF-14).
         var attacker = MakeGPoring(attack: 100);
-        int? observedRoll = null;
-        Func<int, int, int> rollAtk = (min, max) => { observedRoll = (min + max) / 2; return observedRoll.Value; };
+        var observed = (Min: -1, Max: -1);
 
-        MobBasicAttackCalculator.Calculate(attacker, FreshNovice(), rollAtk);
+        MobBasicAttackCalculator.Calculate(attacker, FreshNovice(), (min, max) => { observed = (min, max); return min; });
 
-        Assert.Equal(100, observedRoll); // (80+120)/2
+        Assert.Equal((80, 119), observed);
     }
 
     [Fact]
@@ -107,25 +107,20 @@ public sealed class MobBasicAttackCalculatorTests
         Assert.Equal(justBelowBoundary.Damage - 1, atBoundary.Damage);
     }
 
-    // Live-observation regression: the real generated G_PORING definition (Attack=1) against a
-    // fresh Novice's real starting stats reproduces the exact "damage=0, IsMiss=true" outcome the
-    // live log showed - proving this is the AUTHORITATIVE pinned result (battle_calc_attack's own
-    // ATK_MISS reclassification, battle.cpp:6766-6770 - see this calculator's own doc comment for
-    // the full trace) for THIS specific mob/target pairing, not an artifact of a hand-built test
-    // fixture. G_PORING's own atkmax is 1*120/100=1 (integer division), which a fresh Novice's
-    // def2 of floor((1+9)/2 + 9/5) = 5+1 = 6 (using this project's own default fresh-character
-    // Vitality=9/Agility=9, WeaponAttackCalculatorTests' own convention) always exceeds - no roll
-    // of the real Attack=1 band can ever clear it, so this is deterministic, not merely likely.
+    // Reference-corrected (fixture VF-14): a mob's batk = str + level is added to the rolled weapon damage
+    // (battle.cpp:2624 area, status.cpp:2488-2491). Real GPoring (Attack=1 -> roll [0,1) = 0, str 6 + level 1 = 7 batk)
+    // against def2 = floor((1+9)/2 + 9/5) = 6 therefore deals 7 - 6 = 1 when the (unmodeled) accuracy roll hits.
+    // The earlier "authoritative miss" expectation omitted BATK and is contradicted by executed reference output.
     [Fact]
-    public void Calculate_RealGeneratedGPoring_AgainstFreshNoviceStats_IsAuthoritativelyAMiss()
+    public void Calculate_RealGeneratedGPoring_AgainstFreshNoviceStats_DealsRollPlusBatkMinusDef2()
     {
         var attacker = GeneratedMobs.GPoring;
-        Assert.Equal(1, attacker.Attack); // Pin the exact live-observed mob_db value this test depends on.
+        Assert.Equal(1, attacker.Attack);
         var freshNovice = new PlayerCombatSnapshot(AccountId: 1, Map: "iz_int03", X: 0, Y: 0, IsAlive: true, IsWalking: false, BaseLevel: 1, Vitality: 9, Agility: 9);
 
-        var result = MobBasicAttackCalculator.Calculate(attacker, freshNovice, (min, max) => max); // Max roll - even the best-case roll must still miss.
+        var result = MobBasicAttackCalculator.Calculate(attacker, freshNovice);
 
-        Assert.True(result.IsMiss);
-        Assert.Equal(0u, result.Damage);
+        Assert.False(result.IsMiss);
+        Assert.Equal(1u, result.Damage);
     }
 }

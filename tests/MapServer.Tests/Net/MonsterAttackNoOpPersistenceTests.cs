@@ -70,7 +70,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
 
     // Boots a real authenticated, World-visible session on `MapId` at (100,100) backed by the spy.
     private static async Task<(MapClientSession Session, TcpClient Client, NetworkStream Stream, VersionBumpingPersistence Persistence, MapServerWorld World)> CreateSessionAsync(
-        IWorldRuntime worldRuntime, Guid presenceId)
+        IWorldRuntime worldRuntime, Guid presenceId, CharacterGameplayState? state = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -81,7 +81,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
         listener.Stop();
 
         var world = MakeWorld();
-        var persistence = new VersionBumpingPersistence(Fresh());
+        var persistence = new VersionBumpingPersistence(state ?? Fresh());
         var session = new MapClientSession(
             (int)AccountId, serverClient, new CharServerConnector(ConfigStore()), iroAuthenticated: true,
             mapName: MapId, x: 100, y: 100,
@@ -338,13 +338,13 @@ public sealed class MonsterAttackNoOpPersistenceTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         const uint mobActorId = 901;
         var incarnation = WorldMonsterIncarnationId.First;
-        // Poring (generated Attack: 1) against this player's DEF always resolves to a miss/0 damage.
+        // Poring (Attack 1 -> roll 0, batk str6+lv1 = 7, reference-verified by VF-14) against def2 = floor((1+13)/2 + 9/5) = 8 gives 7 - 8 < 1: a zero-damage result.
         var monster = new WorldMonsterInstance(
             mobActorId, incarnation, MapId, MobId: 1002, X: 100, Y: 100,
             WorldMonsterLifecycleState.Alive, IsWalking: false, DestinationX: 100, DestinationY: 100,
             WorldMonsterEngagementState.InAttackRange, new WorldPlayerTargetReference(CharId, presenceId), CurrentHp: 55, MaxHp: 55);
         var scripted = new ScriptedRuntime { FixedEpoch = epoch, FixedSnapshot = [monster] };
-        var (session, client, stream, persistence, world) = await CreateSessionAsync(scripted, presenceId);
+        var (session, client, stream, persistence, world) = await CreateSessionAsync(scripted, presenceId, Fresh() with { Vitality = 13 });
         using var _dispose = client;
         var server = new MapTcpServer(ConfigStore(), new CharServerConnector(ConfigStore()), world, scripted);
 

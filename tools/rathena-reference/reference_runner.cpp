@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <thread>
 
 #include "battle.hpp"
@@ -11,6 +13,7 @@
 #include "mob.hpp"
 #include "pc.hpp"
 #include "status.hpp"
+#include "../common/random.hpp"
 #include "../common/timer.hpp"
 #include "unit.hpp"
 
@@ -102,12 +105,38 @@ static void vf07_vf08() {
 	status_sequences("VF-08", SC_INCREASEAGI, seqs, 3, 2000020);
 }
 
-// VF-14 (loaded-values part only): what the real mob_db loader stores for Poring (1002).
+// VF-14: what the real mob_db loader stores (mob 1002), then real battle_calc_attack (BF_WEAPON, no skill)
+// from a spawned mob against the VF-01 Novice with the RNG reseeded per sample. The rAthena generator is
+// seeded, never replaced, so the damage code runs unmodified.
 static void vf14() {
 	std::shared_ptr<s_mob_db> mob = mob_db.find(1002);
-	std::fprintf(out, "{\"id\":\"VF-14\",\"input\":{\"mob_id\":1002},\"output\":{");
+	std::fprintf(out, "{\"id\":\"VF-14\",\"input\":{\"mob_id\":1002,\"attack_mobs\":[1002,1031,1013],\"samples_per_mob\":2000,\"target\":\"VF-01 Novice\"},\"output\":{");
 	dump_status("loaded_status", mob->status);
-	std::fprintf(out, "}}");
+	map_session_data* target = make_novice(2000030);
+	int16 m = map_mapname2mapid("prontera");
+	std::fprintf(out, ",\"attacks\":[");
+	const int mobs[] = {1002, 1031, 1013};
+	for (int k = 0; k < 3; k++) {
+		int32 gid = mob_once_spawn(nullptr, m, 0, 0, "--en--", mobs[k], 1, "", SZ_SMALL, AI_NONE);
+		mob_data* md = map_id2md(gid);
+		std::fprintf(out, "%s{\"mob_id\":%d,", k ? "," : "", mobs[k]);
+		dump_status("loaded_status", mob_db.find(mobs[k])->status);
+		std::fprintf(out, ",");
+		dump_status("spawned_status", md->status);
+		std::map<long long, int> histogram;
+		int misses = 0;
+		for (int i = 1; i <= 2000; i++) {
+			generator.seed(i);
+			Damage d = battle_calc_attack(BF_WEAPON, md, target, 0, 0, 0);
+			if (d.damage + d.damage2 < 1) misses++;
+			else histogram[d.damage + d.damage2]++;
+		}
+		std::fprintf(out, ",\"misses_or_zero\":%d,\"damage_histogram\":{", misses);
+		bool firstBin = true;
+		for (const auto& [dmg, count] : histogram) { std::fprintf(out, "%s\"%lld\":%d", firstBin ? "" : ",", dmg, count); firstBin = false; }
+		std::fprintf(out, "}}");
+	}
+	std::fprintf(out, "]}}");
 }
 
 void ra_reference_run() {
