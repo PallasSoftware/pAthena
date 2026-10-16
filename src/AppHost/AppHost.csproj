@@ -13,6 +13,8 @@
     <PackageReference Include="Aspire.Hosting" Version="13.5.4" />
     <PackageReference Include="Aspire.Hosting.SqlServer" Version="13.5.4" />
     <PackageReference Include="Aspire.Hosting.Orleans" Version="13.5.4" />
+    <!-- Aspire.Hosting.SqlServer pulls in 10.0.11 of this package (GHSA-846f-f764-76mx); pinned to the patched release. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
 
   <ItemGroup>

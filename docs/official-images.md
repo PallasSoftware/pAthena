@@ -1,17 +1,8 @@
 # Official server images
 
-Every push to `main` is a release: `release-version.yml` tests it and tags it `vMAJOR.MINOR.PATCH`, and the new tag starts `release-images.yml`, which publishes four production images to GHCR with that tag (for example `ghcr.io/pallassoftware/pathena/loginserver:v0.0.1`):
-
-| Image | Contents |
-|---|---|
-| `ghcr.io/pallassoftware/pathena/loginserver` | LoginServer |
-| `ghcr.io/pallassoftware/pathena/charserver` | CharServer, `char_athena.conf`/`inter_athena.conf` templates, `conf/import` |
-| `ghcr.io/pallassoftware/pathena/mapserver` | MapServer, Athena Map Pack (`MapData/AthenaMaps.bin`), `map_athena.conf` template, `world_partitions.json` |
-| `ghcr.io/pallassoftware/pathena/worldserver` | WorldServer (Orleans silo), `world_partitions.json`, rAthena `map_cache.dat` |
-
-The images contain no environment-specific configuration and no secrets. They run as UID 1654 on `dotnet/runtime`, with base
-images pinned by digest. Deployments mount their own configuration (for example a ConfigMap at `/app/conf/k8s`) and supply
-secrets at runtime. `docker-compose.yml` builds the same Dockerfiles.
+Every push to `main` that passes validation is a complete release, in ONE workflow (`.github/workflows/release.yml`, no manual step, nothing
+deployed): `Validate` → `Tag the release` → `Publish the images` → `GitHub Release`. It publishes four production images to GHCR with the
+version as tag (for example `ghcr.io/pallassoftware/pathena/loginserver:v0.0.1`):
 
 ## Versions
 
@@ -24,9 +15,12 @@ secrets at runtime. `docker-compose.yml` builds the same Dockerfiles.
 - Order: tests pass on the commit → the tag is created → the images are published. A re-run of the same commit keeps its tag;
   two concurrent runs never get the same version (a rejected tag push is retried with the next free number); lowering
   `VERSION` below an existing release fails the run.
-- A version tag starts `release-images.yml` (explicitly via `workflow_dispatch`, because a tag pushed with `GITHUB_TOKEN` starts nothing; a `v*` tag pushed by hand starts it directly). If it fails half way, re-run it: an image tag that already exists is never overwritten or rebuilt, only the missing ones are added.
+- One workflow, sequential dependent jobs, all visible in the same run: each job `needs` the previous one (no `always()`), so a failing
+  validation creates no tag, no tag publishes nothing, and the GitHub Release is created only after all four image tags exist.
+  To finish a failed release use **Re-run failed jobs** of that run: the commit keeps its tag, an image tag that already exists is never
+  overwritten or rebuilt (only the missing ones are added), and an existing GitHub Release is left alone.
 - Nothing here deploys: `pathena-server` selects a release through its submodule and deploys on its own.
-- Tests: `pwsh .github/scripts/Test-ReleaseVersion.ps1`.
+- Tests: `pwsh .github/scripts/Test-ReleaseVersion.ps1`, `Test-ReleaseImages.ps1`, `Test-ReleaseWorkflowRules.ps1` (also the real-registry digest check in CI).
 
 ## Same digest for unchanged servers
 
