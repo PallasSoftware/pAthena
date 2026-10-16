@@ -102,8 +102,11 @@ public sealed class CharacterProgressionService(CharacterGameplayStateSession st
 
         if (baseLevelsGained > 0 || jobLevelsGained > 0)
         {
-            var maxHp = CalculateMaximum(definition.BaseHp[baseLevel], state.Vitality + definition.JobVitalityBonus[jobLevel]);
-            var maxSp = CalculateMaximum(definition.BaseSp[baseLevel], state.Intelligence + definition.JobIntelligenceBonus[jobLevel]);
+            // Single formula owner: StatusCalculator (status_calc_maxhp_pc/maxsp_pc, verified by fixture VF-04). The
+            // post-level state carries the new BaseLevel; VIT/INT are allocated + job bonus (no temporary status touches them).
+            var stats = Gameplay.Rules.Renewal.StatusCalculator.BasePrimaryStats(after);
+            var maxHp = Gameplay.Rules.Renewal.StatusCalculator.MaxHp(after, stats.Vitality);
+            var maxSp = Gameplay.Rules.Renewal.StatusCalculator.MaxSp(after, stats.Intelligence);
             after = baseLevelsGained > 0
                 ? after with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = maxHp, CurrentSp = maxSp }
                 : after with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = Math.Min(after.CurrentHp, maxHp), CurrentSp = Math.Min(after.CurrentSp, maxSp) };
@@ -118,7 +121,4 @@ public sealed class CharacterProgressionService(CharacterGameplayStateSession st
 
     private static ulong SaturatingAdd(ulong current, ulong award) =>
         MaximumExperience - Math.Min(current, MaximumExperience) < award ? MaximumExperience : current + award;
-
-    private static uint CalculateMaximum(uint baseValue, ulong stat) =>
-        checked((uint)(baseValue * (100UL + stat) / 100UL));
 }

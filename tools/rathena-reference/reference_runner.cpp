@@ -89,6 +89,52 @@ static void vf02_vf03() {
 	std::fprintf(out, "]}}");
 }
 
+// VF-04: max HP/SP across base levels and VIT/INT (job_basepoints tables via status_calc_maxhp_pc/maxsp_pc).
+static void vf04() {
+	std::fprintf(out, "{\"id\":\"VF-04\",\"input\":{\"job\":\"Novice\",\"job_level\":1},\"output\":{\"cases\":[");
+	uint32 id = 2000100;
+	bool first_case = true;
+	for (int level : {1, 2, 9, 10, 25, 50, 75, 99}) {
+		for (int stat : {1, 7, 30, 77, 99}) {
+			NoviceSpec n; n.base_level = level; n.vit = stat; n.int_ = 100 - stat > 0 ? 100 - stat : 1;
+			map_session_data* sd = make_novice(id++, n);
+			std::fprintf(out, "%s{\"input\":{\"base_level\":%d,\"vit\":%d,\"int\":%d},\"max_hp\":%u,\"max_sp\":%u}", first_case ? "" : ",", level, n.vit, n.int_, sd->battle_status.max_hp, sd->battle_status.max_sp);
+			first_case = false;
+		}
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-11: allocated VIT/INT changes followed by the real status_calc_pc (what pc_statusup runs after validation):
+// records max and current HP/SP before and after, for a damaged character and a full-HP character, both directions.
+static void vf11() {
+	struct Case { int level, vit, int_, hp, sp, new_vit, new_int; };
+	const Case cases[] = {
+		{50, 30, 30, 100, 20, 31, 31}, {50, 30, 30, 0, 0, 31, 31},        // raise, damaged / empty
+		{50, 30, 30, -1, -1, 31, 31},                                      // raise, full (-1 = start at max)
+		{50, 30, 30, -1, -1, 10, 10}, {50, 30, 30, 50, 10, 10, 10},        // lower: full / below new max
+		{50, 30, 30, 400, 100, 10, 10},                                    // lower: above new max (clamp)
+		{99, 99, 99, -1, -1, 98, 98}, {1, 1, 1, -1, -1, 2, 2}};
+	std::fprintf(out, "{\"id\":\"VF-11\",\"input\":{\"job\":\"Novice\",\"job_level\":1},\"output\":{\"cases\":[");
+	uint32 id = 2000200;
+	bool first_case = true;
+	for (const Case& c : cases) {
+		NoviceSpec n; n.base_level = c.level; n.vit = c.vit; n.int_ = c.int_;
+		map_session_data* sd = make_novice(id++, n);
+		sd->battle_status.hp = sd->base_status.hp = sd->status.hp = c.hp < 0 ? sd->battle_status.max_hp : c.hp;
+		sd->battle_status.sp = sd->base_status.sp = sd->status.sp = c.sp < 0 ? sd->battle_status.max_sp : c.sp;
+		uint32 before_max_hp = sd->battle_status.max_hp, before_max_sp = sd->battle_status.max_sp, before_hp = sd->battle_status.hp, before_sp = sd->battle_status.sp;
+		sd->status.vit = c.new_vit; sd->status.int_ = c.new_int;
+		status_calc_pc(sd, SCO_NONE);
+		std::fprintf(out, "%s{\"input\":{\"base_level\":%d,\"vit\":%d,\"int\":%d,\"hp\":%u,\"sp\":%u,\"new_vit\":%d,\"new_int\":%d},"
+			"\"before\":{\"max_hp\":%u,\"max_sp\":%u},\"after\":{\"max_hp\":%u,\"max_sp\":%u,\"hp\":%u,\"sp\":%u,\"char_hp\":%u,\"char_sp\":%u}}",
+			first_case ? "" : ",", c.level, c.vit, c.int_, before_hp, before_sp, c.new_vit, c.new_int, before_max_hp, before_max_sp,
+			sd->battle_status.max_hp, sd->battle_status.max_sp, sd->battle_status.hp, sd->battle_status.sp, sd->status.hp, sd->status.sp);
+		first_case = false;
+	}
+	std::fprintf(out, "]}}");
+}
+
 // Applies `type` twice via the real status_change_start and records what the reference does.
 // deadline_moved: the status timer's absolute expiry changed between the two starts (a 50ms pause
 // separates them), i.e. the second start re-armed the status; retained/refreshed is decided by that.
@@ -113,13 +159,13 @@ static void status_sequences(const char* id, sc_type type, const int seqs[][2], 
 				previous_deadline = deadline;
 			}
 			const status_data& b = sd->battle_status;
-			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.speed, b.amotion, b.adelay);
+			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay);
 		}
 		status_change_end(sd, type); // real end path (same function the expiry timer calls)
 		status_calc_pc(sd, SCO_NONE);
 		const status_data& b = sd->battle_status;
-		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
-			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.speed, b.amotion, b.adelay);
+		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
+			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay);
 	}
 	std::fprintf(out, "]}}");
 }
@@ -177,6 +223,10 @@ void ra_reference_run() {
 	vf01();
 	std::fprintf(out, ",");
 	vf02_vf03();
+	std::fprintf(out, ",");
+	vf04();
+	std::fprintf(out, ",");
+	vf11();
 	std::fprintf(out, ",");
 	vf07_vf08();
 	std::fprintf(out, ",");

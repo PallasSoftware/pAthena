@@ -17,7 +17,7 @@ public sealed class RathenaReferenceFixtureTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-07", "VF-08", "VF-14"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-07", "VF-08", "VF-11", "VF-14"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
 
@@ -176,5 +176,56 @@ public sealed class RathenaReferenceFixtureTests
         clock.Advance(TimeSpan.FromMilliseconds(120001));
         statuses.ExpireDue(clock.GetUtcNow());
         Assert.Equal(Expected(seq.GetProperty("after_end")), DerivedStatCalculator.Calculate(statuses.Capture(() => state)));
+    }
+
+    public static TheoryData<int> MaxResourceCases => new(Enumerable.Range(0, 40));
+
+    [Theory]
+    [MemberData(nameof(MaxResourceCases))]
+    public void Vf04_MaxHpSp_MatchReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-04").GetProperty("cases")[index];
+        var i = c.GetProperty("input");
+        var state = new CharacterGameplayState(1, 1, 0, (ushort)i.GetProperty("base_level").GetInt32(), 1, 0, 0, 1, 1, 1, 1, 0, 0,
+            1, 1, (ushort)i.GetProperty("vit").GetInt32(), (ushort)i.GetProperty("int").GetInt32(), 1, 1);
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal((c.GetProperty("max_hp").GetUInt32(), c.GetProperty("max_sp").GetUInt32()),
+            (StatusCalculator.MaxHp(state, snapshot.Effective.Vitality), StatusCalculator.MaxSp(state, snapshot.Effective.Intelligence)));
+    }
+
+    // The progression path (level-up) must use the same maxima as the calculator.
+    [Theory]
+    [MemberData(nameof(MaxResourceCases))]
+    public void Vf04_ProgressionMaxima_MatchReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-04").GetProperty("cases")[index];
+        var i = c.GetProperty("input");
+        var level = (ushort)i.GetProperty("base_level").GetInt32();
+        if (level == 1) return; // level 1 is not reachable through a level-up
+        var definition = Athena.Net.MapServer.Generated.Progression.GeneratedProgressionRegistry.Get((ushort)0);
+        var before = new CharacterGameplayState(1, 1, 0, (ushort)(level - 1), 1, definition.BaseExperienceToNext[level - 1], 0, 40, 11, 40, 11, 0, 0, 1, 1,
+            (ushort)i.GetProperty("vit").GetInt32(), (ushort)i.GetProperty("int").GetInt32(), 1, 1);
+        var after = CharacterProgressionService.Calculate(before, 0, 0).After;
+        Assert.Equal(level, after.BaseLevel);
+        Assert.Equal((c.GetProperty("max_hp").GetUInt32(), c.GetProperty("max_sp").GetUInt32()), (after.MaxHp, after.MaxSp));
+    }
+
+    public static TheoryData<int> ResourceTransitionCases => new(Enumerable.Range(0, 8));
+
+    [Theory]
+    [MemberData(nameof(ResourceTransitionCases))]
+    public void Vf11_ResourceTransition_MatchesReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-11").GetProperty("cases")[index];
+        var i = c.GetProperty("input");
+        var before = new CharacterGameplayState(1, 1, 0, (ushort)i.GetProperty("base_level").GetInt32(), 1, 0, 0,
+            i.GetProperty("hp").GetUInt32(), i.GetProperty("sp").GetUInt32(), c.GetProperty("before").GetProperty("max_hp").GetUInt32(), c.GetProperty("before").GetProperty("max_sp").GetUInt32(),
+            0, 0, 1, 1, (ushort)i.GetProperty("new_vit").GetInt32(), (ushort)i.GetProperty("new_int").GetInt32(), 1, 1);
+
+        var after = StatusCalculator.WithRecalculatedResources(before);
+
+        var expected = c.GetProperty("after");
+        Assert.Equal((expected.GetProperty("max_hp").GetUInt32(), expected.GetProperty("max_sp").GetUInt32(), expected.GetProperty("hp").GetUInt32(), expected.GetProperty("sp").GetUInt32()),
+            (after.MaxHp, after.MaxSp, after.CurrentHp, after.CurrentSp));
     }
 }

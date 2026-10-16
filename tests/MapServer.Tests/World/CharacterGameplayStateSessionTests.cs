@@ -150,6 +150,31 @@ public sealed class CharacterGameplayStateSessionTests
         Assert.Equal(0UL, session.State.Version);
     }
 
+    // VIT/INT stat-ups move max HP/SP in the same durable write (fixture VF-11): a raise never heals, current stays put.
+    [Fact]
+    public async Task IncreaseStatAsync_Vitality_RecalculatesMaxHpInTheSamePersistedWrite_WithoutHealing()
+    {
+        var initial = State() with { BaseLevel = 50, Vitality = 30, Intelligence = 30, MaxHp = 370, MaxSp = 78, CurrentHp = 100, CurrentSp = 20, StatPoints = 500 };
+        var store = new MemoryStore(initial);
+        var session = new CharacterGameplayStateSession(7, initial, store);
+
+        var result = await session.IncreaseStatAsync(CharacterBaseStat.Vitality, 1, default);
+
+        Assert.NotNull(result);
+        Assert.Equal((373U, 78U, 100U, 20U), (session.State.MaxHp, session.State.MaxSp, session.State.CurrentHp, session.State.CurrentSp)); // VF-11 case 0
+        Assert.Equal(373U, (await store.GetAsync(7, 9, default))!.MaxHp);
+    }
+
+    [Fact]
+    public async Task IncreaseStatAsync_Vitality_FailedPersistence_LeavesMaximaUntouched()
+    {
+        var initial = State() with { BaseLevel = 50, Vitality = 30, Intelligence = 30, MaxHp = 370, MaxSp = 78, CurrentHp = 100, CurrentSp = 20, StatPoints = 500 };
+        var session = new CharacterGameplayStateSession(7, initial, new MemoryStore(initial) { FailUpdates = true });
+
+        Assert.Null(await session.IncreaseStatAsync(CharacterBaseStat.Vitality, 1, default));
+        Assert.Equal((370U, 30), (session.State.MaxHp, (int)session.State.Vitality));
+    }
+
     [Fact]
     public async Task IncreaseStatAsync_FailedPersistence_StateUnchanged()
     {

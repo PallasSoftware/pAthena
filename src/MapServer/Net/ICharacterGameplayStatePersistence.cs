@@ -160,6 +160,10 @@ public sealed class CharacterGameplayStateSession
             var validation = CharacterStatService.ValidateIncrease(before, stat, increaseAmount);
             if (!validation.IsValid) return null;
             var candidate = ApplyStat(before, stat, validation.NewValue) with { StatPoints = validation.RemainingStatusPoints };
+            // VIT/INT feed max HP/SP (status_calc_maxhp_pc/maxsp_pc); the maxima move in the SAME durable write as the stat,
+            // so no reader can ever see the new stat with the old maxima. Other stats cannot change a maximum.
+            if (stat is CharacterBaseStat.Vitality or CharacterBaseStat.Intelligence)
+                candidate = Athena.Net.MapServer.Gameplay.Rules.Renewal.StatusCalculator.WithRecalculatedResources(candidate);
             var persisted = await _persistence.UpdateAsync(_accountId, before, candidate, cancellationToken);
             if (persisted is null) return null;
             State = persisted;

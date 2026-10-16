@@ -913,6 +913,576 @@
       }
     },
     {
+      "id": "VF-04",
+      "evidence": "ReferenceExecuted",
+      "scope": "Novice max HP/SP (battle_status) for base levels {1,2,9,10,25,50,75,99} x VIT {1,7,30,77,99} with INT = 100-VIT; no equipment, skills or statuses.",
+      "input": {
+        "job": "Novice",
+        "job_level": 1
+      },
+      "output": {
+        "cases": [
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 40,
+            "max_sp": 21
+          },
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 42,
+            "max_sp": 21
+          },
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 52,
+            "max_sp": 18
+          },
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 70,
+            "max_sp": 13
+          },
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 79,
+            "max_sp": 11
+          },
+          {
+            "input": {
+              "base_level": 2,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 45,
+            "max_sp": 23
+          },
+          {
+            "input": {
+              "base_level": 2,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 48,
+            "max_sp": 23
+          },
+          {
+            "input": {
+              "base_level": 2,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 58,
+            "max_sp": 20
+          },
+          {
+            "input": {
+              "base_level": 2,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 79,
+            "max_sp": 14
+          },
+          {
+            "input": {
+              "base_level": 2,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 89,
+            "max_sp": 12
+          },
+          {
+            "input": {
+              "base_level": 9,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 80,
+            "max_sp": 37
+          },
+          {
+            "input": {
+              "base_level": 9,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 85,
+            "max_sp": 36
+          },
+          {
+            "input": {
+              "base_level": 9,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 104,
+            "max_sp": 32
+          },
+          {
+            "input": {
+              "base_level": 9,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 141,
+            "max_sp": 23
+          },
+          {
+            "input": {
+              "base_level": 9,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 159,
+            "max_sp": 19
+          },
+          {
+            "input": {
+              "base_level": 10,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 85,
+            "max_sp": 39
+          },
+          {
+            "input": {
+              "base_level": 10,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 90,
+            "max_sp": 38
+          },
+          {
+            "input": {
+              "base_level": 10,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 110,
+            "max_sp": 34
+          },
+          {
+            "input": {
+              "base_level": 10,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 150,
+            "max_sp": 24
+          },
+          {
+            "input": {
+              "base_level": 10,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 169,
+            "max_sp": 20
+          },
+          {
+            "input": {
+              "base_level": 25,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 161,
+            "max_sp": 69
+          },
+          {
+            "input": {
+              "base_level": 25,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 171,
+            "max_sp": 67
+          },
+          {
+            "input": {
+              "base_level": 25,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 208,
+            "max_sp": 59
+          },
+          {
+            "input": {
+              "base_level": 25,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 283,
+            "max_sp": 43
+          },
+          {
+            "input": {
+              "base_level": 25,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 318,
+            "max_sp": 35
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 287,
+            "max_sp": 119
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 304,
+            "max_sp": 115
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 370,
+            "max_sp": 102
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 504,
+            "max_sp": 73
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 567,
+            "max_sp": 60
+          },
+          {
+            "input": {
+              "base_level": 75,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 414,
+            "max_sp": 169
+          },
+          {
+            "input": {
+              "base_level": 75,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 438,
+            "max_sp": 164
+          },
+          {
+            "input": {
+              "base_level": 75,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 533,
+            "max_sp": 144
+          },
+          {
+            "input": {
+              "base_level": 75,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 725,
+            "max_sp": 104
+          },
+          {
+            "input": {
+              "base_level": 75,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 815,
+            "max_sp": 85
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 1,
+              "int": 99
+            },
+            "max_hp": 535,
+            "max_sp": 216
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 7,
+              "int": 93
+            },
+            "max_hp": 567,
+            "max_sp": 210
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 30,
+              "int": 70
+            },
+            "max_hp": 689,
+            "max_sp": 185
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 77,
+              "int": 23
+            },
+            "max_hp": 938,
+            "max_sp": 134
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 99,
+              "int": 1
+            },
+            "max_hp": 1054,
+            "max_sp": 110
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-11",
+      "evidence": "ReferenceExecuted",
+      "scope": "Allocated VIT/INT raised or lowered on a Novice followed by the real status_calc_pc(SCO_NONE) (what pc_statusup runs after validation): max HP/SP and current HP/SP (battle_status and status) before/after; damaged, empty, full and above-new-max starting HP/SP.",
+      "input": {
+        "job": "Novice",
+        "job_level": 1
+      },
+      "output": {
+        "cases": [
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 100,
+              "sp": 20,
+              "new_vit": 31,
+              "new_int": 31
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 373,
+              "max_sp": 78,
+              "hp": 100,
+              "sp": 20,
+              "char_hp": 100,
+              "char_sp": 20
+            }
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 0,
+              "sp": 0,
+              "new_vit": 31,
+              "new_int": 31
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 373,
+              "max_sp": 78,
+              "hp": 0,
+              "sp": 0,
+              "char_hp": 0,
+              "char_sp": 0
+            }
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 370,
+              "sp": 78,
+              "new_vit": 31,
+              "new_int": 31
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 373,
+              "max_sp": 78,
+              "hp": 370,
+              "sp": 78,
+              "char_hp": 370,
+              "char_sp": 78
+            }
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 370,
+              "sp": 78,
+              "new_vit": 10,
+              "new_int": 10
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 313,
+              "max_sp": 66,
+              "hp": 313,
+              "sp": 66,
+              "char_hp": 370,
+              "char_sp": 78
+            }
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 50,
+              "sp": 10,
+              "new_vit": 10,
+              "new_int": 10
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 313,
+              "max_sp": 66,
+              "hp": 50,
+              "sp": 10,
+              "char_hp": 50,
+              "char_sp": 10
+            }
+          },
+          {
+            "input": {
+              "base_level": 50,
+              "vit": 30,
+              "int": 30,
+              "hp": 400,
+              "sp": 100,
+              "new_vit": 10,
+              "new_int": 10
+            },
+            "before": {
+              "max_hp": 370,
+              "max_sp": 78
+            },
+            "after": {
+              "max_hp": 313,
+              "max_sp": 66,
+              "hp": 313,
+              "sp": 66,
+              "char_hp": 400,
+              "char_sp": 100
+            }
+          },
+          {
+            "input": {
+              "base_level": 99,
+              "vit": 99,
+              "int": 99,
+              "hp": 1054,
+              "sp": 216,
+              "new_vit": 98,
+              "new_int": 98
+            },
+            "before": {
+              "max_hp": 1054,
+              "max_sp": 216
+            },
+            "after": {
+              "max_hp": 1049,
+              "max_sp": 215,
+              "hp": 1049,
+              "sp": 215,
+              "char_hp": 1054,
+              "char_sp": 216
+            }
+          },
+          {
+            "input": {
+              "base_level": 1,
+              "vit": 1,
+              "int": 1,
+              "hp": 40,
+              "sp": 11,
+              "new_vit": 2,
+              "new_int": 2
+            },
+            "before": {
+              "max_hp": 40,
+              "max_sp": 11
+            },
+            "after": {
+              "max_hp": 40,
+              "max_sp": 11,
+              "hp": 40,
+              "sp": 11,
+              "char_hp": 40,
+              "char_sp": 11
+            }
+          }
+        ]
+      }
+    },
+    {
       "id": "VF-07",
       "evidence": "ReferenceExecuted",
       "scope": "Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.",
@@ -955,6 +1525,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 46,
+                "max_hp": 296,
+                "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
                 "adelay": 740
@@ -979,6 +1551,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 46,
+                "max_hp": 296,
+                "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
                 "adelay": 740
@@ -999,6 +1573,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
@@ -1029,6 +1605,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 46,
+                "max_hp": 296,
+                "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
                 "adelay": 740
@@ -1053,6 +1631,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 46,
+                "max_hp": 296,
+                "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
                 "adelay": 740
@@ -1073,6 +1653,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
@@ -1103,6 +1685,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 37,
+                "max_hp": 296,
+                "max_sp": 57,
                 "speed": 150,
                 "amotion": 380,
                 "adelay": 760
@@ -1127,6 +1711,8 @@
                 "cri": 59,
                 "def2": 39,
                 "mdef2": 46,
+                "max_hp": 296,
+                "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
                 "adelay": 740
@@ -1147,6 +1733,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
@@ -1198,6 +1786,8 @@
                 "cri": 59,
                 "def2": 41,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
                 "adelay": 660
@@ -1222,6 +1812,8 @@
                 "cri": 59,
                 "def2": 41,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
                 "adelay": 660
@@ -1242,6 +1834,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
@@ -1272,6 +1866,8 @@
                 "cri": 59,
                 "def2": 41,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
                 "adelay": 660
@@ -1296,6 +1892,8 @@
                 "cri": 59,
                 "def2": 41,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
                 "adelay": 660
@@ -1316,6 +1914,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
@@ -1346,6 +1946,8 @@
                 "cri": 59,
                 "def2": 40,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 370,
                 "adelay": 740
@@ -1370,6 +1972,8 @@
                 "cri": 59,
                 "def2": 41,
                 "mdef2": 34,
+                "max_hp": 296,
+                "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
                 "adelay": 660
@@ -1390,6 +1994,8 @@
               "cri": 59,
               "def2": 39,
               "mdef2": 34,
+              "max_hp": 296,
+              "max_sp": 56,
               "speed": 150,
               "amotion": 380,
               "adelay": 760
