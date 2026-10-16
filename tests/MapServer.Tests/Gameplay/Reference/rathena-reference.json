@@ -48,6 +48,7 @@
           "cri": 13,
           "amotion": 440,
           "adelay": 880,
+          "dmotion": 796,
           "speed": 150,
           "max_hp": 40,
           "max_sp": 11,
@@ -76,6 +77,7 @@
           "cri": 13,
           "amotion": 440,
           "adelay": 880,
+          "dmotion": 796,
           "speed": 150,
           "max_hp": 40,
           "max_sp": 11,
@@ -126,6 +128,7 @@
               "cri": 25,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -154,6 +157,7 @@
               "cri": 25,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -194,6 +198,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -222,6 +227,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -262,6 +268,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -290,6 +297,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -330,6 +338,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -358,6 +367,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 780,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -398,6 +408,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -426,6 +437,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -466,6 +478,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -494,6 +507,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -534,6 +548,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -562,6 +577,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -602,6 +618,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -630,6 +647,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -670,6 +688,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -698,6 +717,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -738,6 +758,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -766,6 +787,7 @@
               "cri": 28,
               "amotion": 430,
               "adelay": 860,
+              "dmotion": 776,
               "speed": 150,
               "max_hp": 42,
               "max_sp": 11,
@@ -806,6 +828,7 @@
               "cri": 38,
               "amotion": 400,
               "adelay": 800,
+              "dmotion": 716,
               "speed": 150,
               "max_hp": 94,
               "max_sp": 21,
@@ -834,6 +857,7 @@
               "cri": 38,
               "amotion": 400,
               "adelay": 800,
+              "dmotion": 716,
               "speed": 150,
               "max_hp": 94,
               "max_sp": 21,
@@ -874,6 +898,7 @@
               "cri": 319,
               "amotion": 440,
               "adelay": 880,
+              "dmotion": 792,
               "speed": 150,
               "max_hp": 943,
               "max_sp": 146,
@@ -902,6 +927,7 @@
               "cri": 319,
               "amotion": 440,
               "adelay": 880,
+              "dmotion": 792,
               "speed": 150,
               "max_hp": 943,
               "max_sp": 146,
@@ -1529,7 +1555,8 @@
                 "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 676
               },
               {
                 "returned": 1,
@@ -1555,7 +1582,8 @@
                 "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 676
               }
             ],
             "after_end": {
@@ -1577,7 +1605,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           },
           {
@@ -1609,7 +1638,8 @@
                 "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 676
               },
               {
                 "returned": 1,
@@ -1635,7 +1665,8 @@
                 "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 676
               }
             ],
             "after_end": {
@@ -1657,7 +1688,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           },
           {
@@ -1689,7 +1721,8 @@
                 "max_sp": 57,
                 "speed": 150,
                 "amotion": 380,
-                "adelay": 760
+                "adelay": 760,
+                "dmotion": 676
               },
               {
                 "returned": 1,
@@ -1715,7 +1748,8 @@
                 "max_sp": 61,
                 "speed": 150,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 676
               }
             ],
             "after_end": {
@@ -1737,7 +1771,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           }
         ]
@@ -1790,7 +1825,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
-                "adelay": 660
+                "adelay": 660,
+                "dmotion": 628
               },
               {
                 "returned": 1,
@@ -1816,7 +1852,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
-                "adelay": 660
+                "adelay": 660,
+                "dmotion": 628
               }
             ],
             "after_end": {
@@ -1838,7 +1875,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           },
           {
@@ -1870,7 +1908,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
-                "adelay": 660
+                "adelay": 660,
+                "dmotion": 628
               },
               {
                 "returned": 1,
@@ -1896,7 +1935,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
-                "adelay": 660
+                "adelay": 660,
+                "dmotion": 628
               }
             ],
             "after_end": {
@@ -1918,7 +1958,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           },
           {
@@ -1950,7 +1991,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 370,
-                "adelay": 740
+                "adelay": 740,
+                "dmotion": 656
               },
               {
                 "returned": 1,
@@ -1976,7 +2018,8 @@
                 "max_sp": 56,
                 "speed": 112,
                 "amotion": 330,
-                "adelay": 660
+                "adelay": 660,
+                "dmotion": 628
               }
             ],
             "after_end": {
@@ -1998,7 +2041,8 @@
               "max_sp": 56,
               "speed": 150,
               "amotion": 380,
-              "adelay": 760
+              "adelay": 760,
+              "dmotion": 676
             }
           }
         ]
@@ -2041,6 +2085,7 @@
           "cri": 0,
           "amotion": 672,
           "adelay": 1872,
+          "dmotion": 480,
           "speed": 400,
           "max_hp": 55,
           "max_sp": 1,
@@ -2072,6 +2117,7 @@
               "cri": 0,
               "amotion": 672,
               "adelay": 1872,
+              "dmotion": 480,
               "speed": 400,
               "max_hp": 55,
               "max_sp": 1,
@@ -2100,6 +2146,7 @@
               "cri": 0,
               "amotion": 672,
               "adelay": 1872,
+              "dmotion": 480,
               "speed": 400,
               "max_hp": 55,
               "max_sp": 1,
@@ -2135,6 +2182,7 @@
               "cri": 0,
               "amotion": 672,
               "adelay": 1672,
+              "dmotion": 480,
               "speed": 300,
               "max_hp": 489,
               "max_sp": 1,
@@ -2163,6 +2211,7 @@
               "cri": 0,
               "amotion": 672,
               "adelay": 1672,
+              "dmotion": 480,
               "speed": 300,
               "max_hp": 489,
               "max_sp": 1,
@@ -2210,6 +2259,7 @@
               "cri": 0,
               "amotion": 504,
               "adelay": 1054,
+              "dmotion": 432,
               "speed": 200,
               "max_hp": 1091,
               "max_sp": 1,
@@ -2238,6 +2288,7 @@
               "cri": 0,
               "amotion": 504,
               "adelay": 1054,
+              "dmotion": 432,
               "speed": 200,
               "max_hp": 1091,
               "max_sp": 1,

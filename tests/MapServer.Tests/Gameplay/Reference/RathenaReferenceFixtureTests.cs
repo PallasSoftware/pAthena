@@ -228,4 +228,42 @@ public sealed class RathenaReferenceFixtureTests
         Assert.Equal((expected.GetProperty("max_hp").GetUInt32(), expected.GetProperty("max_sp").GetUInt32(), expected.GetProperty("hp").GetUInt32(), expected.GetProperty("sp").GetUInt32()),
             (after.MaxHp, after.MaxSp, after.CurrentHp, after.CurrentSp));
     }
+
+    // VF-02/07/08 timing: Novice fist ASPD (amotion/adelay) and walking speed from the same captured snapshot.
+    [Theory]
+    [MemberData(nameof(JobBonusCases))]
+    public void Vf02_AttackAndWalkTiming_MatchReference(int index)
+    {
+        var c = RathenaReferenceFixture.LoadCommitted().Output("VF-02").GetProperty("cases")[index];
+        var state = StateFrom(c.GetProperty("input"));
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var expected = c.GetProperty("battle_status");
+        AssertTiming(expected, snapshot);
+    }
+
+    [Theory]
+    [MemberData(nameof(StatusSequences))]
+    public void StatusSequences_AttackAndWalkTiming_MatchReference(string scenario, ushort statusId, int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var seq = fixture.Output(scenario).GetProperty("sequences")[index];
+        var state = StateFrom(fixture.Input(scenario));
+        var clock = new FakeTimeProvider();
+        var statuses = new CharacterStatusEffectState(clock);
+        var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
+        var steps = seq.GetProperty("steps");
+        for (var i = 0; i < levels.Length; i++)
+        {
+            statuses.Start(statusId, 120000, levels[i]);
+            AssertTiming(steps[i], statuses.Capture(() => state));
+        }
+        clock.Advance(TimeSpan.FromMilliseconds(120001));
+        statuses.ExpireDue(clock.GetUtcNow());
+        AssertTiming(seq.GetProperty("after_end"), statuses.Capture(() => state));
+    }
+
+    private static void AssertTiming(System.Text.Json.JsonElement expected, CharacterStatusSnapshot snapshot) =>
+        Assert.Equal((expected.GetProperty("adelay").GetInt32(), expected.GetProperty("speed").GetInt32(), expected.GetProperty("dmotion").GetInt32()),
+            (AttackDelayCalculator.AttackDelayMs(snapshot.Effective, null), MovementSpeedCalculator.CellDurationMs(snapshot.Effective.MoveSpeedHaste),
+             PlayerDamageMotionCalculator.Calculate(snapshot.Effective.Agility)));
 }

@@ -32,7 +32,7 @@ static void dump_status(const char* name, const struct status_data& s) {
 	num("matk_min", s.matk_min); num("matk_max", s.matk_max);
 	num("def", s.def); num("def2", s.def2); num("mdef", s.mdef); num("mdef2", s.mdef2);
 	num("hit", s.hit); num("flee", s.flee); num("flee2", s.flee2); num("cri", s.cri);
-	num("amotion", s.amotion); num("adelay", s.adelay); num("speed", s.speed);
+	num("amotion", s.amotion); num("adelay", s.adelay); num("dmotion", s.dmotion); num("speed", s.speed);
 	num("max_hp", s.max_hp); num("max_sp", s.max_sp); num("hp", s.hp); num("sp", s.sp);
 	std::fprintf(out, "}");
 }
@@ -159,13 +159,13 @@ static void status_sequences(const char* id, sc_type type, const int seqs[][2], 
 				previous_deadline = deadline;
 			}
 			const status_data& b = sd->battle_status;
-			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay);
+			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d,\"dmotion\":%d}", b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay, b.dmotion);
 		}
 		status_change_end(sd, type); // real end path (same function the expiry timer calls)
 		status_calc_pc(sd, SCO_NONE);
 		const status_data& b = sd->battle_status;
-		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
-			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay);
+		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"vit\":%d,\"int\":%d,\"dex\":%d,\"luk\":%d,\"batk\":%d,\"hit\":%d,\"flee\":%d,\"flee2\":%d,\"cri\":%d,\"def2\":%d,\"mdef2\":%d,\"max_hp\":%u,\"max_sp\":%u,\"speed\":%d,\"amotion\":%d,\"adelay\":%d,\"dmotion\":%d}}",
+			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.vit, b.int_, b.dex, b.luk, b.batk, b.hit, b.flee, b.flee2, b.cri, b.def2, b.mdef2, b.max_hp, b.max_sp, b.speed, b.amotion, b.adelay, b.dmotion);
 	}
 	std::fprintf(out, "]}}");
 }
