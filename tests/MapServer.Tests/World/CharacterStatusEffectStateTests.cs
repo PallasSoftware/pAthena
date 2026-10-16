@@ -62,18 +62,46 @@ public sealed class CharacterStatusEffectStateTests
     }
 
     [Fact]
-    public void ReapplyingAStatusOverwritesItsValuesAndDurationRatherThanStacking()
+    public void ReapplyingAStrongerOrEqualStatusOverwritesItsValuesAndDurationRatherThanStacking()
+    {
+        var clock = new FakeTimeProvider();
+        var state = new CharacterStatusEffectState(clock);
+        Assert.Equal(StatusStartOutcome.Started, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 3));
+        Assert.Equal(StatusStartOutcome.Replaced, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 10));
+
+        var effective = state.Recalculate(BaseState());
+
+        Assert.Equal((ushort)(BaseState().Strength + 10), effective.Strength);
+        clock.Advance(TimeSpan.FromMilliseconds(100001));
+        Assert.False(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
+    }
+
+    // Pinned status_change_start default overlap branch (status.cpp:10803): an active higher val1 wins and the
+    // weaker start is a no-op - level, value and deadline stay (fixture VF-07 [10,3]).
+    [Fact]
+    public void WeakerStartKeepsStrongerActiveStatusAndItsDeadline()
     {
         var clock = new FakeTimeProvider();
         var state = new CharacterStatusEffectState(clock);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
-        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3);
+        Assert.Equal(StatusStartOutcome.Retained, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3));
 
-        var effective = state.Recalculate(BaseState());
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
+        Assert.Equal((10, 10), (status.Val1, status.Val2));
+        clock.Advance(TimeSpan.FromMilliseconds(239999));
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
+    }
 
-        Assert.Equal((ushort)(BaseState().Strength + 3), effective.Strength);
-        clock.Advance(TimeSpan.FromMilliseconds(100001));
-        Assert.False(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
+    [Fact]
+    public void WeakerStartReplacesAnAlreadyExpiredStrongerEntry()
+    {
+        var clock = new FakeTimeProvider();
+        var state = new CharacterStatusEffectState(clock);
+        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 10);
+        clock.Advance(TimeSpan.FromMilliseconds(1001)); // expired but not yet swept by ExpireDue
+        Assert.Equal(StatusStartOutcome.Replaced, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 3));
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
+        Assert.Equal(3, status.Val1);
     }
 
     [Fact]

@@ -31,6 +31,8 @@ public readonly record struct EffectiveCharacterStats(
 // that must observe one coherent snapshot (e.g. Blessing + IncreaseAgi both read for the
 // same Recalculate call, or "identify due statuses" + "remove those exact statuses" in
 // ExpireDue) take the lock once for the whole operation rather than once per sub-step.
+public enum StatusStartOutcome { Started, Replaced, Retained }
+
 public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
 {
     private readonly Dictionary<ushort, ActiveStatus> _statuses = [];
@@ -65,14 +67,30 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
     // Both statuses are therefore identical between the script-command and skill-cast paths;
     // this is a property of status_change_start_post_delay, not something either caller
     // computes, so it is applied unconditionally here rather than duplicated at call sites.
-    public void Start(ushort statusId, int durationMilliseconds, int val1, int val2 = 0, int val3 = 0)
+    //
+    // Overlap rule (status.cpp:10800-10804, default branch, for statuses without the
+    // OverlapIgnoreLevel flag - neither Blessing nor Increase AGI has it, db/re/status.yml): an
+    // active entry with a HIGHER val1 makes the new start a no-op that still returns true; the
+    // existing val1/val2/deadline are untouched. Equal or lower active val1 is replaced and
+    // re-armed with the new duration. Verified by pinned-runner fixtures VF-07/VF-08.
+    public StatusStartOutcome Start(ushort statusId, int durationMilliseconds, int val1, int val2 = 0, int val3 = 0)
     {
         if (durationMilliseconds <= 0) throw new ArgumentOutOfRangeException(nameof(durationMilliseconds), "Status duration must be positive.");
         if (statusId == StatusIds.Blessing) val2 = val1;
         else if (statusId == StatusIds.IncreaseAgi) val2 = 2 + val1;
         var expiresAt = _timeProvider.GetUtcNow().AddMilliseconds(durationMilliseconds);
         var status = new ActiveStatus(statusId, val1, val2, val3, expiresAt);
-        lock (_gate) { _statuses[statusId] = status; }
+        lock (_gate)
+        {
+            if (_statuses.TryGetValue(statusId, out var active))
+            {
+                if (active.ExpiresAt > _timeProvider.GetUtcNow() && active.Val1 > val1) return StatusStartOutcome.Retained;
+                _statuses[statusId] = status;
+                return StatusStartOutcome.Replaced;
+            }
+            _statuses[statusId] = status;
+            return StatusStartOutcome.Started;
+        }
     }
 
     // Treats an already-expired status as inactive without removing it. Reads (TryGet,

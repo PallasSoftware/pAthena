@@ -4350,7 +4350,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     async Task INpcScriptHost.StartStatusAsync(int statusId, int durationMilliseconds, int val1, CancellationToken cancellationToken)
     {
         var id = (ushort)statusId;
-        _statusEffects.Start(id, durationMilliseconds, val1);
+        // A weaker start over a stronger active status is a reference no-op (status_change_start returns
+        // before any icon/stat side effect), so nothing is re-sent to the client.
+        if (_statusEffects.Start(id, durationMilliseconds, val1) == StatusStartOutcome.Retained) return;
         // Wake the expiration loop: this may have moved the next deadline earlier. Best-effort -
         // SemaphoreFullException means a wake is already pending (the loop hasn't consumed it
         // yet), which is fine, it will re-read NextExpiration fresh when it does; the signal may

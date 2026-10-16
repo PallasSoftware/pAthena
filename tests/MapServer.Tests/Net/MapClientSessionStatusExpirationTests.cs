@@ -115,11 +115,11 @@ public sealed class MapClientSessionStatusExpirationTests
     public async Task RefreshBeforeExpirationPreventsOldDeadlineFromExpiringStatus()
     {
         await using var harness = await Harness.CreateAsync();
-        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 10, default);
+        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 3, default);
         await harness.DrainBlessingActivation();
 
         await harness.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(BlessingDurationMs - 5000));
-        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 3, default);
+        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 10, default);
         await harness.DrainBlessingActivation();
 
         // The OLD deadline (original activation + 240000ms) has now passed, but the refresh
@@ -128,7 +128,7 @@ public sealed class MapClientSessionStatusExpirationTests
         await harness.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(5001));
 
         Assert.True(harness.Session.StatusEffects.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
-        Assert.Equal(3, status.Val1);
+        Assert.Equal(10, status.Val1);
         Assert.Equal(0, harness.Client.Client.Available);
     }
 
@@ -136,11 +136,11 @@ public sealed class MapClientSessionStatusExpirationTests
     public async Task RefreshedStatusExpiresAtTheNewDeadline()
     {
         await using var harness = await Harness.CreateAsync();
-        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 10, default);
+        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, BlessingDurationMs, 3, default);
         await harness.DrainBlessingActivation();
 
         await harness.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(BlessingDurationMs - 5000));
-        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3, default);
+        await harness.StartStatusAndWaitForRescheduleAsync(CharacterStatusEffectState.StatusIds.Blessing, 100000, 10, default);
         await harness.DrainBlessingActivation();
 
         await harness.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(99999));

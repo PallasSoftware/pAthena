@@ -1,12 +1,11 @@
 using Athena.Net.MapServer.Tests.Testing;
+using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 
 public sealed class RathenaReferenceFixtureTests
 {
-    private const string Epic152 = "Known Athena.NET discrepancy, tracked for Epic 15.2 (docs/gameplay/renewal-status-implementation-plan.md).";
-
     private static string Valid(string evidence = "ReferenceExecuted", string commit = RathenaReferenceFixture.PinnedCommit) => $$$"""
         {"schema":1,"reference":{"commit":"{{{commit}}}","compiler":"g++","runner":"r","configuration":"c"},
          "scenarios":[{"id":"X","evidence":"{{{evidence}}}","scope":"s","input":{},"output":{}}]}
@@ -36,27 +35,42 @@ public sealed class RathenaReferenceFixtureTests
         Assert.Equal(expected, AttackDelayCalculator.AttackDelayMs(stats, null));
     }
 
-    // VF-07: replays each reference sequence through CharacterStatusEffectState and compares val1/val2.
-    public static TheoryData<int> BlessingSequences => [1, 2];
+    // VF-07/VF-08: replays each reference sequence through CharacterStatusEffectState and compares the
+    // retained val1/val2 and whether the second start moved the expiry (50ms later), then expiry.
+    public static TheoryData<string, ushort, int> StatusSequences
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort, int>();
+            foreach (var (id, status) in new[] { ("VF-07", CharacterStatusEffectState.StatusIds.Blessing), ("VF-08", CharacterStatusEffectState.StatusIds.IncreaseAgi) })
+                for (var i = 0; i < 3; i++) data.Add(id, status, i);
+            return data;
+        }
+    }
 
     [Theory]
-    [MemberData(nameof(BlessingSequences))]
-    public void Vf07_Blessing_RefreshMatchesReference(int sequence) => AssertBlessingSequence(sequence);
-
-    [Fact(Skip = Epic152 + " Blessing 10 then 3: reference keeps level 10, Athena.NET overwrites with level 3.")]
-    public void Vf07_Blessing_WeakerRefreshKeepsStronger() => AssertBlessingSequence(0);
-
-    private static void AssertBlessingSequence(int index)
+    [MemberData(nameof(StatusSequences))]
+    public void StatusRefresh_MatchesReference(string scenario, ushort statusId, int index)
     {
-        var seq = RathenaReferenceFixture.LoadCommitted().Output("VF-07").GetProperty("sequences")[index];
+        var seq = RathenaReferenceFixture.LoadCommitted().Output(scenario).GetProperty("sequences")[index];
         var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
-        var state = new CharacterStatusEffectState(new ControllableTimeProvider());
         var steps = seq.GetProperty("steps");
+        var clock = new FakeTimeProvider();
+        var state = new CharacterStatusEffectState(clock);
+        DateTimeOffset previousDeadline = default;
         for (var i = 0; i < levels.Length; i++)
         {
-            state.Start(CharacterStatusEffectState.StatusIds.Blessing, 120000, levels[i]);
-            Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
+            if (i > 0) clock.Advance(TimeSpan.FromMilliseconds(50));
+            state.Start(statusId, 120000, levels[i]);
+            Assert.True(state.TryGet(statusId, out var status));
             Assert.Equal((steps[i].GetProperty("val1").GetInt32(), steps[i].GetProperty("val2").GetInt32()), (status.Val1, status.Val2));
+            if (i > 0) Assert.Equal(steps[i].GetProperty("deadline_moved").GetInt32() == 1, status.ExpiresAt != previousDeadline);
+            previousDeadline = status.ExpiresAt;
         }
+        // Reference status_change_end: nothing active afterwards.
+        Assert.Equal(0, seq.GetProperty("after_end").GetProperty("present").GetInt32());
+        clock.Advance(TimeSpan.FromMilliseconds(120000));
+        state.ExpireDue(clock.GetUtcNow());
+        Assert.False(state.TryGet(statusId, out _));
     }
 }
