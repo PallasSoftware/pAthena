@@ -42,7 +42,8 @@ cat /out/reference.json
     $raw = ($result -join "`n") | ConvertFrom-Json
     $scope = @{
         'VF-01' = 'Fresh Novice status_calc_pc on prontera: stats, batk, hit/flee/crit, aspd, max HP/SP. No equipment, skills or statuses.'
-        'VF-07' = 'Blessing started twice via status_change_start on a fresh Novice: retained val1/val2 and resulting STR/INT/DEX/HIT. Timer/deadline not captured.'
+        'VF-07' = 'Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.'
+        'VF-08' = 'Increase AGI started twice via status_change_start on a fresh Novice: retained val1/val2, stats, speed, ASPD, timer deadline movement and state after status_change_end.'
         'VF-14' = 'Values stored by the real mob_db loader for mob 1002 (Poring). Does NOT cover the attack roll or its random bounds.'
     }
     $fixture = [ordered]@{

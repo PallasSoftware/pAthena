@@ -2,13 +2,16 @@
 // It only sets up inputs and calls real rAthena functions; no formulas live here.
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 #include "battle.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "pc.hpp"
 #include "status.hpp"
+#include "../common/timer.hpp"
 #include "unit.hpp"
 
 namespace rathena::server_map {
@@ -58,25 +61,45 @@ static void vf01() {
 	std::fprintf(out, "}}");
 }
 
-// VF-07: real status_change_start applied twice on the same target (Blessing).
-static void vf07() {
-	static const int seqs[][2] = {{10, 3}, {10, 10}, {3, 10}};
-	uint32 id = 2000010;
-	std::fprintf(out, "{\"id\":\"VF-07\",\"input\":{\"duration_ms\":120000,\"flag\":\"NOAVOID|NOICON|NOTICKDEF\"},\"output\":{\"sequences\":[");
-	for (int i = 0; i < 3; i++) {
-		map_session_data* sd = make_novice(id++);
+// Applies `type` twice via the real status_change_start and records what the reference does.
+// deadline_moved: the status timer's absolute expiry changed between the two starts (a 50ms pause
+// separates them), i.e. the second start re-armed the status; retained/refreshed is decided by that.
+static void status_sequences(const char* id, sc_type type, const int seqs[][2], int count, uint32 first_id) {
+	std::fprintf(out, "{\"id\":\"%s\",\"input\":{\"duration_ms\":120000,\"flag\":\"NOAVOID|NOICON|NOTICKDEF\"},\"output\":{\"sequences\":[", id);
+	for (int i = 0; i < count; i++) {
+		map_session_data* sd = make_novice(first_id + i);
 		std::fprintf(out, "%s{\"levels\":[%d,%d],\"steps\":[", i ? "," : "", seqs[i][0], seqs[i][1]);
+		t_tick previous_deadline = 0;
 		for (int j = 0; j < 2; j++) {
-			bool started = status_change_start(sd, sd, SC_BLESSING, 10000, seqs[i][j], 0, 0, 0, 120000, SCSTART_NOAVOID | SCSTART_NOICON | SCSTART_NOTICKDEF);
+			if (j) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			bool started = status_change_start(sd, sd, type, 10000, seqs[i][j], 0, 0, 0, 120000, SCSTART_NOAVOID | SCSTART_NOICON | SCSTART_NOTICKDEF);
 			status_calc_pc(sd, SCO_NONE);
-			status_change_entry* sce = sd->sc.getSCE(SC_BLESSING);
+			status_change_entry* sce = sd->sc.getSCE(type);
 			std::fprintf(out, "%s{\"returned\":%d,\"present\":%d", j ? "," : "", started, sce != nullptr);
-			if (sce) std::fprintf(out, ",\"val1\":%d,\"val2\":%d", sce->val1, sce->val2);
-			std::fprintf(out, ",\"str\":%d,\"int\":%d,\"dex\":%d,\"hit\":%d}", sd->battle_status.str, sd->battle_status.int_, sd->battle_status.dex, sd->battle_status.hit);
+			if (sce) {
+				const TimerData* td = get_timer(sce->timer);
+				t_tick deadline = td ? td->tick : 0;
+				std::fprintf(out, ",\"val1\":%d,\"val2\":%d,\"remaining_ms_1000\":%lld", sce->val1, sce->val2, (long long)((deadline - gettick() + 500) / 1000 * 1000));
+				if (j) std::fprintf(out, ",\"deadline_moved\":%d", deadline != previous_deadline);
+				previous_deadline = deadline;
+			}
+			const status_data& b = sd->battle_status;
+			std::fprintf(out, ",\"str\":%d,\"agi\":%d,\"int\":%d,\"dex\":%d,\"hit\":%d,\"flee\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}", b.str, b.agi, b.int_, b.dex, b.hit, b.flee, b.speed, b.amotion, b.adelay);
 		}
-		std::fprintf(out, "]}");
+		status_change_end(sd, type); // real end path (same function the expiry timer calls)
+		status_calc_pc(sd, SCO_NONE);
+		const status_data& b = sd->battle_status;
+		std::fprintf(out, "],\"after_end\":{\"present\":%d,\"str\":%d,\"agi\":%d,\"int\":%d,\"dex\":%d,\"hit\":%d,\"flee\":%d,\"speed\":%d,\"amotion\":%d,\"adelay\":%d}}",
+			sd->sc.getSCE(type) != nullptr, b.str, b.agi, b.int_, b.dex, b.hit, b.flee, b.speed, b.amotion, b.adelay);
 	}
 	std::fprintf(out, "]}}");
+}
+
+static void vf07_vf08() {
+	static const int seqs[][2] = {{10, 3}, {10, 10}, {3, 10}};
+	status_sequences("VF-07", SC_BLESSING, seqs, 3, 2000010);
+	std::fprintf(out, ",");
+	status_sequences("VF-08", SC_INCREASEAGI, seqs, 3, 2000020);
 }
 
 // VF-14 (loaded-values part only): what the real mob_db loader stores for Poring (1002).
@@ -98,7 +121,7 @@ void ra_reference_run() {
 	std::fprintf(out, "{\"renewal_compiled\":%d,\"scenarios\":[", renewal);
 	vf01();
 	std::fprintf(out, ",");
-	vf07();
+	vf07_vf08();
 	std::fprintf(out, ",");
 	vf14();
 	std::fprintf(out, "]}\n");
