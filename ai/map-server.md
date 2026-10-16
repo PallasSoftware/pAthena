@@ -1752,7 +1752,8 @@ trailing byte on `0x0368` is read but never validated, matching the wire doc's e
 
 Not implemented by this slice, and not claimed: local/public chat, whisper, party, guild, trade,
 vending, PvP, player-vs-player skills, pet/homunculus/mercenary lifecycle, `objectType=7`
-companion actors, cross-process MapServer presence replication/distribution, dynamic-equipment-
+companion actors, (cross-process presence replication is now implemented - see "Cross-replica
+player visibility and combat (item 14)" below), dynamic-equipment-
 appearance broadcast to nearby players (equip/unequip refreshes the wearer's OWN
 `PlayerPresence` and its own `0x01D7`/inventory resync, but does not yet re-broadcast the changed
 look to observers already seeing that player), player death/respawn interaction with presence,
@@ -1830,11 +1831,56 @@ pinned `clif_damage`'s own AREA-includes-source semantics) `_visibleActorIds.IsA
 the SAME visibility set the monster-attack fan-out already uses. Attacker-only effects (self HP-info,
 EXP/progression, quest drops) are untouched and never broadcast.
 
-**Limitation**: this fan-out only reaches sessions on the SAME MapServer gateway process. Two
-players connected through different MapServer replicas do not yet share player-combat-action
-visibility this way - that needs a World/Orleans player/combat event feed (the same migration
-`PlayerVisibilityCoordinator`/`PlayerPresenceRegistry` already need for player visibility in
-general), out of scope here.
+**Scope note**: this local fan-out is now only the attacker's same-process immediate echo. Other
+observers - on this replica or any other - receive the action from the World monster feed
+(`PlayerAttackAction` entry); see "Cross-replica player visibility and combat (item 14)" below.
+
+## Cross-replica player visibility and combat (item 14)
+
+Architecture, in one paragraph: WorldServer (`WorldPartitionGrain` + `WorldPlayerMapSimulation`) owns
+the per-map player feed (epoch, monotonic sequence, 4096-entry retention, atomic snapshot bootstrap,
+resync on foreign epoch / cursor outside retention / cursor ahead of World). Each MapServer replica
+has exactly one `PlayerFeedProjection` per active map, driven by the same per-map tick as the monster
+feed (`MapTcpServer.PollAndReconcilePlayersAsync`), and that projection is the ONLY writer of
+`PlayerPresenceRegistry`/`PlayerVisibilityCoordinator`. `MapClientSession` never mutates them
+directly. Local players are bound to their real session as observer; remote players get a
+`NullPlayerPresenceObserver`. Player attacks ride the monster feed as `PlayerAttackAction`,
+sequenced before `HealthChanged`/`Died` in one World mutation.
+
+Invariants and the tests that pin them:
+
+- **Observer binding race**: World appends a player's `Registered` entry inside the registration RPC,
+  before the session flips to `WorldVisible`. The projection therefore resolves observers from ALL
+  sessions with an allocated presence identity (`MapClientSession.IsPresenceObservable`), not just
+  world-eligible ones; otherwise the newcomer would be bound to a permanent null observer and never see
+  other players. `MapClientSessionPlayerPresenceTests.FeedTickBetweenWorldCommitAndSessionEligibility_StillBindsTheRealSessionAsObserver`.
+- **Cursor advances per applied entry** (and again to `AsOfSequence` after the page), so a page whose
+  later entry throws is resumed after the last fully applied entry instead of replaying earlier ones
+  (a replayed movement entry would re-broadcast a duplicate walk).
+- **Idempotency**: replayed `Registered`/`Unregistered`/`Moved`/`LookChanged` entries and repeated
+  resync snapshots produce no duplicate enter/leave and cannot resurrect a departed player
+  (`PlayerFeedProjectionTests`). World rejects stale/forged presence ids for look, public-state,
+  movement-confirm, advance and unregister without appending any entry (`WorldPlayerFeedTests`).
+- **Exactly-once combat delivery**: per socket, the number of player-attack `0x08C8` equals the number of
+  `PlayerAttackAction` entries World committed for that attacker (attacker echo deduplicated against its own
+  feed delivery); the lethal action precedes the Died vanish on the observer socket's arrival history
+  (`CrossReplicaPlayerVisibilityIntegrationTests`).
+- **Failure isolation**: `DeliverAllAsync` awaits every delivery; a dead observer socket (IOException /
+  disposed / cancelled) is ignored and cannot stall or corrupt other observers or the tick.
+
+Known gaps (not regressions, not hidden):
+
+- Appearance/public-state changes (`UpdatePlayerPublicStateAsync`) update World and every replica's
+  `PlayerPresenceRegistry` projection (new viewers, actor-info lookups), but there is still no
+  iRO-verified packet that re-broadcasts a changed look to clients ALREADY watching that player (the
+  pre-existing equipment-broadcast gap above). The feed delivers it as `LookChanged`, which sends only the
+  direction packet to existing viewers.
+- Monster -> player attack HP mutation stays MapServer-local; the cross-replica publish
+  (`PublishMonsterAttackActionAsync`) only informs observers.
+- A client that stops reading without closing its socket can still back-pressure `WriteAsync` (no write
+  timeout exists anywhere in MapServer); a closed/reset socket is handled.
+- Real stock-iRO two-client acceptance is a manual procedure (`docs/aspire.md`); automated tests do not
+  replace it.
 
 ## Lethal player attack vs the World Died feed (a second, cross-session ordering race)
 

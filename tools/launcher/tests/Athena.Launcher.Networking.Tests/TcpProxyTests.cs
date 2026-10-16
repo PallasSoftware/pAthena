@@ -34,6 +34,45 @@ public sealed class TcpProxyTests
     }
 
     [Fact]
+    public async Task MultipleTargetPorts_AreAssignedRoundRobinPerNewConnection_AndEachTunnelReachesItsOwnBackend()
+    {
+        var backendA = new TcpListener(IPAddress.Loopback, 0);
+        var backendB = new TcpListener(IPAddress.Loopback, 0);
+        backendA.Start();
+        backendB.Start();
+        var portA = ((IPEndPoint)backendA.LocalEndpoint).Port;
+        var portB = ((IPEndPoint)backendB.LocalEndpoint).Port;
+        var listenPort = FreePort();
+        await using var proxy = new TcpProxy(new ProxyEndpoint("map", IPAddress.Loopback, listenPort, "127.0.0.1", portA, [portA, portB]), new NullLog());
+        await proxy.StartAsync(CancellationToken.None);
+
+        // Connection 1 -> first backend, connection 2 -> second, connection 3 -> wraps to the first.
+        using var first = new TcpClient();
+        await first.ConnectAsync(IPAddress.Loopback, listenPort);
+        using var firstServer = await backendA.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        using var second = new TcpClient();
+        await second.ConnectAsync(IPAddress.Loopback, listenPort);
+        using var secondServer = await backendB.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        using var third = new TcpClient();
+        await third.ConnectAsync(IPAddress.Loopback, listenPort);
+        using var thirdServer = await backendA.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Bytes written by each client arrive only at the backend that connection was assigned to.
+        await first.GetStream().WriteAsync(new byte[] { 1 });
+        await second.GetStream().WriteAsync(new byte[] { 2 });
+        await third.GetStream().WriteAsync(new byte[] { 3 });
+        var buffer = new byte[1];
+        await firstServer.GetStream().ReadExactlyAsync(buffer);
+        Assert.Equal(1, buffer[0]);
+        await secondServer.GetStream().ReadExactlyAsync(buffer);
+        Assert.Equal(2, buffer[0]);
+        await thirdServer.GetStream().ReadExactlyAsync(buffer);
+        Assert.Equal(3, buffer[0]);
+        backendA.Stop();
+        backendB.Stop();
+    }
+
+    [Fact]
     public async Task PartialProxyStartupRollsBackEveryProxy()
     {
         var created = new List<FakeProxy>();
