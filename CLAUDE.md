@@ -36,11 +36,10 @@ Run focused tests first, then the owning test project/build. For WorldDataImport
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Graphify is an optional discovery accelerator, not evidence. Generated graph output (`graphify-out/`, `graphify-out-rathena-epic15/`) is gitignored local state: never commit it.
 
-Rules:
-- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+- When the CLI and a relevant local graph exist, `graphify query "<question>"` (or `path` / `explain`) is a cheap way to locate files before broad grep. Use the Athena.NET graph for Athena.NET code and the separate pinned-rAthena graph for `legacy/rathena`; do not mix scopes.
+- When Graphify is unavailable, stale, incomplete, or irrelevant to the question, use LSP or direct source search. Do not rebuild or refresh the graph just to proceed.
+- A missing graph node or edge is never proof that source behavior is absent. Read the source.
+- Rebuilding (`graphify update .`) is a local, optional step when you want a fresher graph; it is not required after edits.
+- Read `GRAPH_REPORT.md` only for broad architecture review.

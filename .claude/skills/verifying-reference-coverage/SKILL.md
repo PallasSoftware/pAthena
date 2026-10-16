@@ -70,7 +70,7 @@ Repeat a targeted source investigation and explicitly search for:
 - source-data/config-driven behavior;
 - state changes that occur before/after the obvious handler.
 
-Use Graphify/LSP for discovery if available, but verify against actual source.
+Use Graphify/LSP for discovery if available and relevant; a missing graph node is not evidence of absent behavior. Verify against actual source.
 
 ## Compare by behavior, not file shape
 
