@@ -1,0 +1,201 @@
+using Athena.Net.World.Contracts;
+
+namespace Athena.Net.MapServer.World;
+
+// Item 14 §4: exactly ONE per-map consumer owns the player-feed cursor/epoch, mirroring
+// MonsterFeedProjection's own contract exactly (see that type's doc comment for the binding
+// bootstrap/resync ordering this type reuses verbatim). MapClientSession never independently polls
+// PollPlayerFeedAsync or registers itself with PlayerVisibilityCoordinator any more - every player
+// on a map (local session OR remote replica projection) is registered/updated/unregistered through
+// THIS type's own ApplySnapshot/ApplyEntry, driven by MapTcpServer's shared tick loop, which then
+// drives PlayerPresenceRegistry/PlayerVisibilityCoordinator uniformly for all of them. This is what
+// makes PlayerPresenceRegistry/PlayerVisibilityCoordinator projections/caches rather than authority:
+// their content is now entirely DERIVED from World's own feed, never independently mutated by a
+// session's own packet-handling code.
+//
+// Binding bootstrap/resync ordering (never reordered - same rationale as MonsterFeedProjection):
+//   1. receive Snapshot + Epoch + AsOfSequence from PollPlayerFeedAsync
+//   2. reconcile PlayerPresenceRegistry/PlayerVisibilityCoordinator (this type's own ApplySnapshot/
+//      ApplyEntry, via the caller-supplied ResolveObserver callback)
+//   3. ONLY THEN advance Cursor (via CommitCursor)
+public sealed class PlayerFeedProjection(string mapId)
+{
+    private readonly Lock _gate = new();
+    private WorldPlayerFeedCursor? _cursor;
+    private WorldSimulationEpoch? _currentEpoch;
+    // Every ActorId this projection currently believes is registered in PlayerPresenceRegistry -
+    // used purely to compute snapshot/resync diffs (vanished-actor cleanup), never as a second
+    // source of presence truth (PlayerPresenceRegistry itself remains that).
+    private readonly HashSet<uint> _registeredActorIds = [];
+
+    public string MapId { get; } = mapId;
+    public WorldPlayerFeedCursor? Cursor { get { lock (_gate) return _cursor; } }
+
+    // Resolves the IPlayerPresenceObserver for a given ActorId/CharacterId - a live MapClientSession
+    // for a LOCAL player, or a fresh NullPlayerPresenceObserver for a remote one (see that type's
+    // own doc comment). MapTcpServer owns session enumeration, so this is supplied per-call rather
+    // than held by this type.
+    public delegate IPlayerPresenceObserver ResolveObserver(uint actorId, uint characterId);
+
+    // Applies an atomic bootstrap or full resync snapshot - registers every currently-present
+    // player into PlayerPresenceRegistry/PlayerVisibilityCoordinator (via RegisterAsync, so AOI
+    // enter-fanout fires exactly as it always has), unregisters anything this projection previously
+    // believed present but that the fresh snapshot no longer contains. Idempotent: a player already
+    // registered under the SAME identity is left untouched (ReplacePublicStateAsync only, no
+    // spurious leave/re-enter).
+    public async Task ApplySnapshotAsync(IReadOnlyList<WorldPlayerPresenceEntry> snapshot, WorldSimulationEpoch epoch,
+        PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator, ResolveObserver resolveObserver, CancellationToken cancellationToken)
+    {
+        HashSet<uint> previousActorIds;
+        lock (_gate)
+        {
+            previousActorIds = [.. _registeredActorIds];
+            _currentEpoch = epoch;
+        }
+
+        var freshActorIds = new HashSet<uint>();
+        foreach (var entry in snapshot)
+        {
+            freshActorIds.Add(entry.Presence.ActorId);
+            var presence = ToPlayerPresence(entry);
+            await RegisterOrRefreshAsync(presence, registry, coordinator, resolveObserver, cancellationToken);
+        }
+        foreach (var staleActorId in previousActorIds)
+        {
+            // Only a presence that is still registered on THIS map is stale here: the player may have
+            // moved to another map whose own projection has since registered it, and this map's resync
+            // must never remove that newer registration.
+            if (!freshActorIds.Contains(staleActorId) && IsRegisteredOnThisMap(registry, staleActorId))
+                await coordinator.UnregisterAsync(staleActorId, cancellationToken);
+        }
+
+        lock (_gate)
+        {
+            _registeredActorIds.Clear();
+            _registeredActorIds.UnionWith(freshActorIds);
+        }
+    }
+
+    // Applies one incremental feed entry, in feed order (callers must never batch-apply out of
+    // order - same convention as MonsterFeedProjection.ApplyEntry).
+    public async Task ApplyEntryAsync(WorldPlayerFeedEntry entry, PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator,
+        ResolveObserver resolveObserver, CancellationToken cancellationToken)
+    {
+        var presence = ToPlayerPresence(entry.Entry);
+        switch (entry.Kind)
+        {
+            case WorldPlayerFeedEntryKind.Registered:
+            case WorldPlayerFeedEntryKind.TransferredIn:
+                await RegisterOrRefreshAsync(presence, registry, coordinator, resolveObserver, cancellationToken);
+                lock (_gate) _registeredActorIds.Add(entry.ActorId);
+                break;
+
+            case WorldPlayerFeedEntryKind.Unregistered:
+            case WorldPlayerFeedEntryKind.TransferredOut:
+                // A departure only removes the registration it describes: if the registry already holds
+                // this player on a DIFFERENT map (a newer TransferredIn was applied first because this
+                // map's feed was not polled while it had no local sessions), this late entry is stale and
+                // must leave the current registration alone.
+                if (IsRegisteredOnThisMap(registry, entry.ActorId))
+                    await coordinator.UnregisterAsync(entry.ActorId, cancellationToken);
+                lock (_gate) _registeredActorIds.Remove(entry.ActorId);
+                break;
+
+            // A walk is ONE client-side animation: the stock client interpolates the whole route from the
+            // walking entry (0x09FD) it received at the start, exactly as with the pinned server, which
+            // sends it once per walk and never per crossed cell (unit_walktoxy_nextcell: sendMove=false
+            // for continuation cells). Re-sending it for every authoritative cell restarts/stutters the
+            // animation on observers. So only a walk START - and a genuine new route, which World always
+            // announces as a fresh MovementStarted - is broadcast. Every crossed cell (Moved) and the
+            // completion (MovementFinished) still update the registry and AOI (enter/leave) here;
+            // an observer that comes into range mid-walk is introduced at the current cell with a
+            // walking state by the coordinator's enter path, not by this broadcast flag.
+            case WorldPlayerFeedEntryKind.MovementStarted:
+                await coordinator.UpdateMovementAsync(presence, broadcastMovement: true, cancellationToken);
+                break;
+
+            case WorldPlayerFeedEntryKind.Moved:
+            case WorldPlayerFeedEntryKind.MovementFinished:
+                await coordinator.UpdateMovementAsync(presence, broadcastMovement: false, cancellationToken);
+                break;
+
+            case WorldPlayerFeedEntryKind.LookChanged:
+                await coordinator.UpdateLookAsync(presence, cancellationToken);
+                break;
+        }
+    }
+
+    // A gateway polls a map's player feed only while it has a session on that map, so once the last local
+    // session leaves, this projection stops being reconciled and everything it registered goes stale
+    // (players log out, die, or are expired by World while nobody here is looking). Rather than keep serving
+    // that to whoever logs in next - the new client would first be introduced to players who are not
+    // there - an idle map's projection is evicted: its registrations are dropped and its cursor reset, so the
+    // next activation starts from a fresh World snapshot. Nobody local observes the map while it is idle, so
+    // dropping loses nothing; remote players are re-learned from the snapshot.
+    public async Task EvictAsync(PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator, CancellationToken cancellationToken)
+    {
+        uint[] actorIds;
+        lock (_gate)
+        {
+            if (_cursor is null && _registeredActorIds.Count == 0) return;
+            actorIds = [.. _registeredActorIds];
+            _registeredActorIds.Clear();
+            _cursor = null;
+            _currentEpoch = null;
+        }
+        foreach (var actorId in actorIds)
+            if (IsRegisteredOnThisMap(registry, actorId))
+                await coordinator.UnregisterAsync(actorId, cancellationToken);
+    }
+
+    private bool IsRegisteredOnThisMap(PlayerPresenceRegistry registry, uint actorId) =>
+        registry.TryGetByActorId(actorId, out var current) && string.Equals(current.MapName, MapId, StringComparison.OrdinalIgnoreCase);
+
+    // Registers a player the registry does not know, or refreshes one it already holds on this same
+    // map. A player the registry still holds on ANOTHER map (it changed map on this replica and the old
+    // map's feed has not been polled yet) is first departed from there - neighbours on the old map are
+    // told - and then registered fresh here, so neighbours on this map are introduced exactly once.
+    private static async Task RegisterOrRefreshAsync(PlayerPresence presence, PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator,
+        ResolveObserver resolveObserver, CancellationToken cancellationToken)
+    {
+        if (registry.TryGetByActorId(presence.ActorId, out var existing))
+        {
+            if (string.Equals(existing.MapName, presence.MapName, StringComparison.OrdinalIgnoreCase))
+            {
+                await coordinator.ReplacePublicStateAsync(presence, cancellationToken);
+                return;
+            }
+            await coordinator.UnregisterAsync(presence.ActorId, cancellationToken);
+        }
+        var observer = resolveObserver(presence.ActorId, presence.CharacterId);
+        await coordinator.RegisterAsync(presence, observer, cancellationToken);
+    }
+
+    // Step 5 of the binding ordering - advances Cursor ONLY after the caller has confirmed the
+    // reconciliation above completed successfully. Never call this before that.
+    public void CommitCursor(WorldSimulationEpoch epoch, long asOfSequence)
+    {
+        lock (_gate) _cursor = new WorldPlayerFeedCursor(epoch, asOfSequence);
+    }
+
+    // Item 14 §5: assembles the FULL 27-field wire projection PlayerPresence from a
+    // WorldPlayerPresenceEntry (WorldPlayerPresence + WorldPlayerPublicState + optional
+    // WorldPlayerMovementProjection) - the exact shape IroPlayerActorPackets' existing builders
+    // already expect, with zero changes to those builders (item 14 §5's explicit requirement).
+    internal static PlayerPresence ToPlayerPresence(WorldPlayerPresenceEntry entry)
+    {
+        var presence = entry.Presence;
+        var publicState = entry.PublicState;
+        var movement = entry.Movement is { } m
+            ? new PlayerMovementPresence(m.StartX, m.StartY, m.DestinationX, m.DestinationY, unchecked((uint)m.StartedAtLocalTickStamp))
+            : null;
+        return new PlayerPresence(
+            presence.ActorId, presence.CharacterId, publicState.CharacterName, presence.MapId,
+            presence.X, presence.Y, publicState.Direction, publicState.HeadDirection,
+            movement, publicState.JobClass, publicState.Sex, publicState.BaseLevel, publicState.WalkSpeed,
+            publicState.HairStyle, publicState.HairColor, publicState.ClothesColor, publicState.BodyStyle,
+            publicState.WeaponAppearance, publicState.ShieldAppearance, publicState.HeadBottomAppearance,
+            publicState.HeadTopAppearance, publicState.HeadMidAppearance, publicState.RobeAppearance,
+            publicState.Manner, publicState.Karma, publicState.Option, publicState.Font);
+    }
+}

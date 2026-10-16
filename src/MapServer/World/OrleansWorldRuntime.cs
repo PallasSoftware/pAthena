@@ -5,9 +5,22 @@ using Orleans;
 
 namespace Athena.Net.MapServer.World;
 
-public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPartitionResolver resolver) : IWorldRuntime
+public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPartitionResolver resolver, Guid? gatewayId = null) : IWorldRuntime
 {
-    public async Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, CancellationToken cancellationToken)
+    // One identity per gateway PROCESS (per runtime instance): a restarted MapServer is a different gateway, so
+    // whatever the previous process left behind is owned by an identity that will never renew it again.
+    //
+    // `gatewayId` exists for harnesses that drive sessions WITHOUT a MapTcpServer tick loop (nothing would ever
+    // renew their leases): passing Guid.Empty registers presences without a lease. Production always uses the default.
+    public Guid GatewayId { get; } = gatewayId ?? Guid.NewGuid();
+
+    public async Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, IReadOnlyList<WorldPresenceLeaseRef> presences, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        return await Grain(resolver.ResolvePartition(normalized)).RenewPresenceLeasesAsync(normalized, GatewayId, presences).WaitAsync(cancellationToken);
+    }
+
+    public async Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState, CancellationToken cancellationToken)
     {
         var normalized = WorldMapId.Normalize(mapId);
         var partitionId = resolver.ResolvePartition(normalized);
@@ -15,7 +28,7 @@ public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPart
         var started = Stopwatch.GetTimestamp();
         try
         {
-            var result = await Grain(partitionId).RegisterPresenceAsync(presence with { MapId = normalized }).WaitAsync(cancellationToken);
+            var result = await Grain(partitionId).RegisterPresenceAsync(presence with { MapId = normalized, GatewayId = GatewayId }, publicState).WaitAsync(cancellationToken);
             if (result.Status == WorldPresenceRegistrationStatus.Conflict) Failure("register-presence-conflict");
             return result;
         }
@@ -145,6 +158,48 @@ public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPart
         try { return await Grain(partitionId).UpdatePresenceLifeStateAsync(update).WaitAsync(cancellationToken); }
         catch { Failure("update-presence-life-state"); throw; }
         finally { Duration(started, "update-presence-life-state", partitionId); }
+    }
+
+    public async Task<WorldPlayerFeedPage> PollPlayerFeedAsync(WorldPlayerFeedCursor? cursor, string mapId, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        var partitionId = resolver.ResolvePartition(normalized);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).PollPlayerFeedAsync(cursor, normalized).WaitAsync(cancellationToken); }
+        catch { Failure("poll-player-feed"); throw; }
+        finally { Duration(started, "poll-player-feed", partitionId); }
+    }
+
+    public Task<WorldPlayerLookUpdateResult> UpdatePlayerLookAsync(string mapId, uint characterId, Guid presenceId, byte direction, byte headDirection, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        return Grain(resolver.ResolvePartition(normalized)).UpdatePlayerLookAsync(characterId, presenceId, direction, headDirection).WaitAsync(cancellationToken);
+    }
+
+    public Task<WorldPlayerPublicStateUpdateResult> UpdatePlayerPublicStateAsync(string mapId, uint characterId, Guid presenceId, WorldPlayerPublicState publicState, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        return Grain(resolver.ResolvePartition(normalized)).UpdatePlayerPublicStateAsync(characterId, presenceId, publicState).WaitAsync(cancellationToken);
+    }
+
+    public async Task<WorldMovementProjectionResult> ConfirmMovementProjectionAsync(WorldMovementProjectionConfirmation confirmation, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(confirmation.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).ConfirmMovementProjectionAsync(confirmation with { MapId = mapId }).WaitAsync(cancellationToken); }
+        catch { Failure("confirm-movement-projection"); throw; }
+        finally { Duration(started, "confirm-movement-projection", partitionId); }
+    }
+
+    public async Task<WorldMonsterAttackPublishResult> PublishMonsterAttackActionAsync(WorldMonsterAttackActionCommand command, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(command.Life.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).PublishMonsterAttackActionAsync(command with { Life = command.Life with { MapId = mapId } }).WaitAsync(cancellationToken); }
+        catch { Failure("publish-monster-attack-action"); throw; }
+        finally { Duration(started, "publish-monster-attack-action", partitionId); }
     }
 
     private IWorldPartitionGrain Grain(string partitionId) => clusterClient.GetGrain<IWorldPartitionGrain>(partitionId);

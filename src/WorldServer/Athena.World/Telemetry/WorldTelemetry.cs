@@ -24,6 +24,7 @@ public static class WorldTelemetry
     public static readonly Histogram<double> MonsterTickElapsedSinceLast = Meter.CreateHistogram<double>("world.monster.tick.elapsed_since_last", "ms");
     public static readonly Histogram<double> MonsterTickProcessingDuration = Meter.CreateHistogram<double>("world.monster.tick.duration", "ms");
     public static readonly Counter<long> MonsterTickLate = Meter.CreateCounter<long>("world.monster.tick.late");
+    public static readonly Counter<long> PresenceLeasesExpired = Meter.CreateCounter<long>("world.presence.lease.expired");
 
     public static IServiceCollection AddWorldTelemetry(this IServiceCollection services)
     {

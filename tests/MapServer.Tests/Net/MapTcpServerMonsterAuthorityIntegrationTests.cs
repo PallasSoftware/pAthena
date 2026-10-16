@@ -62,7 +62,7 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
 
     private static async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, TcpListener Listener)> ConnectSessionAsync(
         MapTcpServer server, MapServerWorld world, IWorldRuntime worldRuntime, uint accountId, string mapId, ushort x, ushort y, CharacterGameplayState? gameplayState = null,
-        Func<PlayerAttackActionOutcome, CancellationToken, Task>? playerAttackFanout = null)
+        Func<PlayerAttackActionOutcome, long, CancellationToken, Task>? playerAttackFanout = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -375,18 +375,46 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // due respawn and append a genuine Respawned feed entry on its own.
         var grain = _cluster.GrainFactory.GetGrain<IWorldPartitionGrain>(Resolver().ResolvePartition(mapId));
         var killerPresenceId = Guid.NewGuid();
-        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 999, CharacterId: 999, mapId, X: original.X, Y: original.Y));
+        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 999, CharacterId: 999, mapId, X: original.X, Y: original.Y), new WorldPlayerPublicState("Test", 0, 0, 0, 0, 1, 150, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
         var lethalHit = await grain.ApplyMonsterDamageAsync(new WorldMonsterDamageCommand(oldLife, AttackerCharacterId: 999, killerPresenceId, AttackSequence: 1, Damage: 9999, AcquireEngagement: false));
         Assert.Equal(WorldMonsterDamageStatus.Applied, lethalHit.Status);
         Assert.True(lethalHit.KilledByThisHit);
+        // Item 14: this fake killer presence is a throwaway test fixture purely for
+        // ApplyMonsterDamageAsync's own attacker-presence validation. RegisterPresenceAsync also
+        // participates in the World-owned player feed, so unregistering it keeps it from lingering
+        // as a nearby player - but the session has not polled the player feed yet, so it still
+        // replays the Registered + Unregistered entries in feed order (a 0x09FE intro of actor 999
+        // followed by its 0x0080 vanish). The rediscovery read at the end of this test therefore
+        // retains and asserts that exact pair instead of assuming it never arrives.
+        await grain.UnregisterPresenceAsync(mapId, characterId: 999, killerPresenceId);
 
         // Drive ProcessOneMonsterTickAsync repeatedly (the real production polling loop's own unit
         // of work) until the death vanish (0x0080 reason=Died) reaches the wire - this is World's own
         // real Died feed entry, fanned out by FanOutEntryAsync's own EXISTING Died branch (unchanged
         // by this substep), and must be drained before looking for the later Respawned discovery
         // packet, or this read would misinterpret the vanish packet's own bytes as the rediscovery.
+        // Item 14: ApplyMonsterDamageAsync's own commit now ALWAYS appends a PlayerAttackAction
+        // entry immediately before HealthChanged/Died (see WorldMonsterMapSimulation.ApplyDamage's
+        // own doc comment) - a real 0x08C8 for the killer's own action (ActorId 999, the throwaway
+        // fixture presence, already unregistered above) therefore arrives on this stream BEFORE the
+        // vanish now, where none existed before this stage. Drain it (via the SAME per-tick polling
+        // loop the vanish itself needs, since neither packet exists until a tick actually polls the
+        // feed) before the vanish read.
         var deadlineForDeath = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         var observedDeathVanish = false;
+        var actionReadTask = ReadExact(stream, PacketConstants.ZcNotifyAct3Length);
+        while (DateTime.UtcNow < deadlineForDeath && !observedDeathVanish)
+        {
+            await server.ProcessOneMonsterTickAsync([session], CancellationToken.None);
+            observedDeathVanish = actionReadTask.IsCompletedSuccessfully;
+            if (!observedDeathVanish) await Task.Delay(20);
+        }
+        var actionPacket = await actionReadTask;
+        Assert.Equal((short)PacketConstants.ZcNotifyAct3, BinaryPrimitives.ReadInt16LittleEndian(actionPacket));
+        Assert.Equal(999u, BinaryPrimitives.ReadUInt32LittleEndian(actionPacket.AsSpan(2)));
+        Assert.Equal(original.ActorId, BinaryPrimitives.ReadUInt32LittleEndian(actionPacket.AsSpan(6)));
+
+        observedDeathVanish = false;
         var vanishReadTask = ReadExact(stream, PacketConstants.ZcNotifyVanishLength);
         while (DateTime.UtcNow < deadlineForDeath && !observedDeathVanish)
         {
@@ -424,9 +452,36 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // this test calling NotifyMonsterRespawnedAsync/NotifyMonsterMovedAsync itself. If
         // FanOutEntryAsync's own Respawned branch returned immediately after its cleanup call
         // (skipping this discovery tail), this read would time out and fail the test.
-        var rediscoveryPacket = await ReadDynamic(stream);
+        // Packets are framed one by one and every non-rediscovery packet is retained and asserted, never
+        // discarded: the session's first player-feed poll replays the throwaway killer's Registered +
+        // Unregistered entries in feed order, so a 0x09FE introduction of actor 999 followed by its
+        // 0x0080 vanish is the exact, deterministic extra traffic (relative to the rediscovery it may
+        // arrive before or after, depending on which tick polled the respawn).
+        var extras = new List<byte[]>();
+        byte[] rediscoveryPacket;
+        while (true)
+        {
+            var packet = await ReadFramedPacketAsync(stream);
+            if (BinaryPrimitives.ReadInt16LittleEndian(packet) == PacketConstants.ZcNotifyStandEntry && BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(5)) == original.ActorId)
+            {
+                rediscoveryPacket = packet;
+                break;
+            }
+            extras.Add(packet);
+            Assert.True(extras.Count <= 2, "Unexpected extra packets before the monster rediscovery.");
+        }
         Assert.Equal((short)PacketConstants.ZcNotifyStandEntry, BinaryPrimitives.ReadInt16LittleEndian(rediscoveryPacket));
         Assert.Equal(original.ActorId, BinaryPrimitives.ReadUInt32LittleEndian(rediscoveryPacket.AsSpan(5)));
+        // The killer's player-feed replay (if it arrived before the rediscovery) is intro-then-vanish.
+        // Whatever remains of it arrives after; drain and verify the pair is complete and ordered.
+        while (extras.Count < 2)
+        {
+            extras.Add(await ReadFramedPacketAsync(stream));
+        }
+        Assert.Equal(0x09fe, BinaryPrimitives.ReadUInt16LittleEndian(extras[0]));
+        Assert.Equal(999u, BinaryPrimitives.ReadUInt32LittleEndian(extras[0].AsSpan(5)));
+        Assert.Equal((short)PacketConstants.ZcNotifyVanish, BinaryPrimitives.ReadInt16LittleEndian(extras[1]));
+        Assert.Equal(999u, BinaryPrimitives.ReadUInt32LittleEndian(extras[1].AsSpan(2)));
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -511,9 +566,24 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
                 await Task.Delay(20);
                 var page = await grain.PollMonsterFeedAsync(cursor: null, mapId);
                 var candidate = page.Snapshot!.SingleOrDefault(i => i.ActorId == actorId);
-                confirmedDead = candidate is { Lifecycle: WorldMonsterLifecycleState.Dead, CurrentHp: 0 };
+                // World confirms the kill either by still reporting the Dead/HP==0 life, or - because the
+                // respawn delay (200ms) is shorter than a poll can be starved for on a loaded CI box - by
+                // already reporting a NEWER incarnation of the same spawn: a new incarnation can only exist
+                // once the one this cycle attacked died. Both are authoritative World state, never inferred
+                // from the session's own projection.
+                confirmedDead = candidate is { Lifecycle: WorldMonsterLifecycleState.Dead, CurrentHp: 0 }
+                    || (candidate is not null && candidate.IncarnationId.Value > currentIncarnation.Value);
             }
-            Assert.True(confirmedDead, $"Cycle {cycle}: expected World authority to confirm Dead/HP==0.");
+            if (!confirmedDead)
+            {
+                var diag = await grain.PollMonsterFeedAsync(cursor: null, mapId);
+                var instance = diag.Snapshot!.SingleOrDefault(i => i.ActorId == actorId);
+                var localView = world.MonsterProjections.TryGet(mapId, out var localProjection) ? localProjection.AllInstances.SingleOrDefault(i => i.ActorId == actorId) : null;
+                Assert.Fail($"Cycle {cycle}: expected World authority to confirm Dead/HP==0. attackDispatchedToWorld={inFlightObservedDuringDispatch} " +
+                    $"world=[{instance?.Lifecycle} hp={instance?.CurrentHp}/{instance?.MaxHp} incarnation={instance?.IncarnationId.Value}] " +
+                    $"expectedIncarnation={currentIncarnation.Value} sessionProjection=[{localView?.Lifecycle} hp={localView?.CurrentHp} incarnation={localView?.IncarnationId.Value}] " +
+                    $"pendingRetryAt={await session.SnapshotPendingNextRetryAtForTestAsync(CancellationToken.None)}");
+            }
 
             // E. the session resolves the logical attack/death projection - drive real ticks until
             // its own socket observes exactly the Died vanish for this ActorId (ReadUntilVanishAsync
@@ -638,7 +708,7 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         var actorId = bootstrap.Snapshot!.Single().ActorId;
         var staleLife = new WorldMonsterLifeReference(mapId, load.SimulationEpoch, actorId, WorldMonsterIncarnationId.First);
         var killerPresenceId = Guid.NewGuid();
-        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 999, CharacterId: 999, mapId, X: MonsterX, Y: MonsterY));
+        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 999, CharacterId: 999, mapId, X: MonsterX, Y: MonsterY), new WorldPlayerPublicState("Test", 0, 0, 0, 0, 1, 150, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
 
         var firstHit = await grain.ApplyMonsterDamageAsync(new WorldMonsterDamageCommand(staleLife, AttackerCharacterId: 999, killerPresenceId, AttackSequence: 1, Damage: 9999, AcquireEngagement: false));
         Assert.Equal(WorldMonsterDamageStatus.Applied, firstHit.Status);
@@ -665,13 +735,13 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
 
         var characterId = 55u;
         var originalPresenceId = Guid.NewGuid();
-        await grain.RegisterPresenceAsync(new WorldPlayerPresence(originalPresenceId, characterId + 1_000_000, characterId, mapId, MonsterX, MonsterY));
+        await grain.RegisterPresenceAsync(new WorldPlayerPresence(originalPresenceId, characterId + 1_000_000, characterId, mapId, MonsterX, MonsterY), new WorldPlayerPublicState("Test", 0, 0, 0, 0, 1, 150, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
         Assert.Equal(WorldMonsterAttackedStatus.Acquired,
             (await grain.NotifyMonsterAttackedAsync(new WorldMonsterAttackedCommand(life, characterId, originalPresenceId))).Status);
 
         var replacementPresenceId = Guid.NewGuid();
         await grain.UnregisterPresenceAsync(mapId, characterId, originalPresenceId);
-        await grain.RegisterPresenceAsync(new WorldPlayerPresence(replacementPresenceId, characterId + 1_000_000, characterId, mapId, MonsterX, MonsterY));
+        await grain.RegisterPresenceAsync(new WorldPlayerPresence(replacementPresenceId, characterId + 1_000_000, characterId, mapId, MonsterX, MonsterY), new WorldPlayerPublicState("Test", 0, 0, 0, 0, 1, 150, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
 
         // The OLD presenceId must never be usable to validate/attack again.
         var staleAttack = await grain.NotifyMonsterAttackedAsync(new WorldMonsterAttackedCommand(life, characterId, originalPresenceId));
@@ -1067,9 +1137,15 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         Assert.Equal(0u, finalInstance.CurrentHp);
         Assert.Equal(WorldMonsterLifecycleState.Dead, finalInstance.Lifecycle);
 
-        // A's side: no stale damage/HP tail, no EXP/progression/drop tail, exactly one deferred Died
-        // vanish (A never owned the kill).
-        await AssertExactlyOneDiedVanishNoRewardTailAsync(streamA);
+        // A's side: no stale damage/HP tail, no EXP/progression/drop tail (A never owned the kill),
+        // but - item 14 - A DOES now legitimately observe B's own killing action (srcActorId=301)
+        // exactly once, strictly before the deferred Died vanish, via the World feed. A ALSO
+        // receives its own local fast-path echo (srcActorId=300) for its own earlier non-lethal
+        // attack's ReplayedSequence retry (HandleDamageResultAsync's own non-lethal
+        // Applied-or-ReplayedSequence branch always echoes to the attacker's own session,
+        // regardless of replay status) - a SEPARATE, semantically distinct action from B's, never a
+        // duplicate of it.
+        await AssertExactlyOneDiedVanishNoRewardTailAllowingActionsAsync(streamA, 301u, 300u);
 
         // B's side: B is the real lethal owner, so its stream must show exactly one lethal
         // vanish/reward tail and no duplicate - bufferedB accumulated every byte B's session sent
@@ -1171,7 +1247,11 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // documented ordering) against a genuinely-removed presence, without requiring this
         // session's own attack loop to unwind first.
         var unregistration = await grain.UnregisterPresenceAsync(mapId, accountId, presenceIdA);
-        Assert.Equal(WorldPresenceUnregistrationStatus.Removed, unregistration.Status);
+        // Teardown now gives World the departure FIRST, before joining the loops (see StopCoreAsync), so even
+        // with the attack loop parked inside a World RPC the session unregisters itself: this direct call
+        // either wins the race (Removed) or finds the session's own unregister already done (AlreadyAbsent).
+        // Either way the presence is gone, which is what the rest of this test needs.
+        Assert.True(unregistration.Status is WorldPresenceUnregistrationStatus.Removed or WorldPresenceUnregistrationStatus.AlreadyAbsent, $"unexpected status {unregistration.Status}");
 
         var window = await grain.ValidateMonsterAttackWindowAsync(new WorldMonsterAttackWindowQuery(life, accountId, presenceIdA));
         Assert.NotEqual(WorldMonsterAttackWindowStatus.Valid, window.Status);
@@ -1438,9 +1518,13 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // StaleLifeReference_AfterRespawn_... pattern (proving World's own contract, not
         // re-exercising the session dispatch path).
         var killerPresenceId = Guid.NewGuid();
-        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 998, CharacterId: 998, mapId, X: original.X, Y: original.Y));
+        await grain.RegisterPresenceAsync(new WorldPlayerPresence(killerPresenceId, ActorId: 998, CharacterId: 998, mapId, X: original.X, Y: original.Y), new WorldPlayerPublicState("Test", 0, 0, 0, 0, 1, 150, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
         var staleAttempt = await grain.ApplyMonsterDamageAsync(new WorldMonsterDamageCommand(oldLife, AttackerCharacterId: 998, killerPresenceId, AttackSequence: 1, Damage: 9999, AcquireEngagement: false));
         Assert.Equal(WorldMonsterDamageStatus.StaleLifeReference, staleAttempt.Status);
+        // Item 14: throwaway fixture, not one of the two sessions under test - see the earlier
+        // Respawned_RealFeedEntry test's own identical doc comment for why this must be
+        // unregistered before any further ProcessOneMonsterTickAsync/session activity.
+        await grain.UnregisterPresenceAsync(mapId, characterId: 998, killerPresenceId);
 
         // The attacker session's own target resolution naturally re-resolves to the new
         // incarnation and can attack it normally.
@@ -1472,6 +1556,16 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
     // fixed-length opcode" - the caller falls back to the dynamic, self-describing length-prefixed
     // shape (ZcNotifyNewEntry/ZcNotifyStandEntry, matching ReadDynamic's own 4-byte-header/2-byte-
     // length shape used elsewhere in this file).
+    // Frames exactly one packet by its own true length (fixed table, else the length-prefixed shape).
+    private static async Task<byte[]> ReadFramedPacketAsync(Stream stream)
+    {
+        var header = await ReadExact(stream, 2);
+        var fixedLength = KnownFixedPacketLength(BinaryPrimitives.ReadInt16LittleEndian(header));
+        if (fixedLength >= 0) return [.. header, .. await ReadExact(stream, fixedLength - 2)];
+        var lengthField = await ReadExact(stream, 2);
+        return [.. header, .. lengthField, .. await ReadExact(stream, BinaryPrimitives.ReadUInt16LittleEndian(lengthField) - 4)];
+    }
+
     internal static int KnownFixedPacketLength(short opcode) => opcode switch
     {
         (short)PacketConstants.ZcNotifyAct3 => PacketConstants.ZcNotifyAct3Length,
@@ -1548,9 +1642,29 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
 
     // Substep 10 helper: reads exactly one Died vanish packet off the given stream and confirms no
     // damage/HP-info/reward/progression packet precedes or follows it within the bounded window.
-    private static async Task AssertExactlyOneDiedVanishNoRewardTailAsync(NetworkStream stream)
+    private static Task AssertExactlyOneDiedVanishNoRewardTailAsync(NetworkStream stream) =>
+        AssertExactlyOneDiedVanishAsync(stream, allowedActionSrcActorIds: []);
+
+    // Item 14: a BYSTANDER observer of a killing hit it did NOT itself land now legitimately
+    // receives exactly the killer's own PlayerAttackAction (0x08C8), sequenced strictly before the
+    // Died vanish, via the World feed's own structural ordering (see
+    // WorldMonsterMapSimulation.ApplyDamage's own doc comment) - this is the item 14 §6 cross-replica
+    // fanout requirement, not a regression AssertExactlyOneDiedVanishNoRewardTailAsync's own
+    // pre-item-14 "no damage packet at all" assumption predates. `allowedActionSrcActorIds` is
+    // multiset-checked by srcActorId (0x08C8's own offset 2 field): each distinct allowed source may
+    // appear AT MOST as many times as it is listed, so a caller whose observer ALSO independently
+    // replayed its own earlier (non-lethal, ReplayedSequence) attack in the same window can list its
+    // own ActorId once too, alongside the killer's - these are two semantically DIFFERENT actions
+    // (different srcActorId), never a duplicate of the same one. Still forbids everything else this
+    // bystander must never receive: its own HP-info, EXP/progression, item-pickup (all exclusively
+    // the killer's own reward tail).
+    private static Task AssertExactlyOneDiedVanishNoRewardTailAllowingActionsAsync(NetworkStream stream, params uint[] allowedActionSrcActorIds) =>
+        AssertExactlyOneDiedVanishAsync(stream, allowedActionSrcActorIds);
+
+    private static async Task AssertExactlyOneDiedVanishAsync(NetworkStream stream, IReadOnlyCollection<uint> allowedActionSrcActorIds)
     {
         var vanishSeen = false;
+        var remainingAllowedActions = allowedActionSrcActorIds.ToList();
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (DateTime.UtcNow < deadline)
         {
@@ -1573,6 +1687,15 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
                 vanishSeen = true;
                 continue;
             }
+            if (opcode == (short)PacketConstants.ZcNotifyAct3 && remainingAllowedActions.Count > 0)
+            {
+                var body = await ReadExact(stream, PacketConstants.ZcNotifyAct3Length - 2);
+                var srcActorId = BinaryPrimitives.ReadUInt32LittleEndian(body);
+                Assert.True(remainingAllowedActions.Remove(srcActorId), $"Received an unexpected/duplicate 0x08C8 action from srcActorId={srcActorId}.");
+                if (allowedActionSrcActorIds.Distinct().Count() == 1) // Single distinct killer id (the common bystander case): must precede the vanish.
+                    Assert.False(vanishSeen, "Expected the killing action to arrive BEFORE the Died vanish, never after.");
+                continue;
+            }
             Assert.False(
                 IsForbiddenRewardOpcode(opcode),
                 $"Expected no damage/HP-info/reward/progression packet on this stream, but observed opcode 0x{opcode:X4}.");
@@ -1582,6 +1705,7 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
             await SkipPacketBodyAsync(stream, opcode);
         }
         Assert.True(vanishSeen, "Expected exactly one deferred Died vanish packet to arrive.");
+        Assert.Empty(remainingAllowedActions);
     }
 
     // Substep 10 (review fix): accumulates every byte a session sends, from a background reader

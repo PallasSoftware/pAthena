@@ -1752,7 +1752,8 @@ trailing byte on `0x0368` is read but never validated, matching the wire doc's e
 
 Not implemented by this slice, and not claimed: local/public chat, whisper, party, guild, trade,
 vending, PvP, player-vs-player skills, pet/homunculus/mercenary lifecycle, `objectType=7`
-companion actors, cross-process MapServer presence replication/distribution, dynamic-equipment-
+companion actors, (cross-process presence replication is now implemented - see "Cross-replica
+player visibility and combat (item 14)" below), dynamic-equipment-
 appearance broadcast to nearby players (equip/unequip refreshes the wearer's OWN
 `PlayerPresence` and its own `0x01D7`/inventory resync, but does not yet re-broadcast the changed
 look to observers already seeing that player), player death/respawn interaction with presence,
@@ -1830,11 +1831,144 @@ pinned `clif_damage`'s own AREA-includes-source semantics) `_visibleActorIds.IsA
 the SAME visibility set the monster-attack fan-out already uses. Attacker-only effects (self HP-info,
 EXP/progression, quest drops) are untouched and never broadcast.
 
-**Limitation**: this fan-out only reaches sessions on the SAME MapServer gateway process. Two
-players connected through different MapServer replicas do not yet share player-combat-action
-visibility this way - that needs a World/Orleans player/combat event feed (the same migration
-`PlayerVisibilityCoordinator`/`PlayerPresenceRegistry` already need for player visibility in
-general), out of scope here.
+**Scope note**: this local fan-out is now only the attacker's same-process immediate echo. Other
+observers - on this replica or any other - receive the action from the World monster feed
+(`PlayerAttackAction` entry); see "Cross-replica player visibility and combat (item 14)" below.
+
+## Cross-replica player visibility and combat (item 14)
+
+Architecture, in one paragraph: WorldServer (`WorldPartitionGrain` + `WorldPlayerMapSimulation`) owns
+the per-map player feed (epoch, monotonic sequence, 4096-entry retention, atomic snapshot bootstrap,
+resync on foreign epoch / cursor outside retention / cursor ahead of World). Each MapServer replica
+has exactly one `PlayerFeedProjection` per active map, driven by the same per-map tick as the monster
+feed (`MapTcpServer.PollAndReconcilePlayersAsync`), and that projection is the ONLY writer of
+`PlayerPresenceRegistry`/`PlayerVisibilityCoordinator`. `MapClientSession` never mutates them
+directly. Local players are bound to their real session as observer; remote players get a
+`NullPlayerPresenceObserver`. Player attacks ride the monster feed as `PlayerAttackAction`,
+sequenced before `HealthChanged`/`Died` in one World mutation.
+
+Invariants and the tests that pin them:
+
+- **Observer binding race**: World appends a player's `Registered` entry inside the registration RPC,
+  before the session flips to `WorldVisible`. The projection therefore resolves observers from ALL
+  sessions with an allocated presence identity (`MapClientSession.IsPresenceObservable`), not just
+  world-eligible ones; otherwise the newcomer would be bound to a permanent null observer and never see
+  other players. `MapClientSessionPlayerPresenceTests.FeedTickBetweenWorldCommitAndSessionEligibility_StillBindsTheRealSessionAsObserver`.
+- **Cursor advances per applied entry** (and again to `AsOfSequence` after the page), so a page whose
+  later entry throws is resumed after the last fully applied entry instead of replaying earlier ones
+  (a replayed movement entry would re-broadcast a duplicate walk).
+- **Idempotency**: replayed `Registered`/`Unregistered`/`Moved`/`LookChanged` entries and repeated
+  resync snapshots produce no duplicate enter/leave and cannot resurrect a departed player
+  (`PlayerFeedProjectionTests`). World rejects stale/forged presence ids for look, public-state,
+  movement-confirm, advance and unregister without appending any entry (`WorldPlayerFeedTests`).
+- **Exactly-once combat delivery**: per socket, the number of player-attack `0x08C8` equals the number of
+  `PlayerAttackAction` entries World committed for that attacker (attacker echo deduplicated against its own
+  feed delivery); the lethal action precedes the Died vanish on the observer socket's arrival history
+  (`CrossReplicaPlayerVisibilityIntegrationTests`).
+- **One walk = one walking packet per observer**: World emits a feed entry per authoritative crossed cell
+  (`Moved`) and one on completion (`MovementFinished`); both only update the registry and AOI. Only
+  `MovementStarted` - World's announcement of a walk start or a genuine new route - is broadcast as `0x09FD`,
+  matching the pinned server (`unit_walktoxy_nextcell` never re-sends the walk for continuation cells) and the
+  pre-feed single-process behaviour (`broadcastMovement: false` for crossed cells). Live acceptance of PR #37
+  showed the earlier "broadcast every entry" behaviour stuttering walks on the observer's client. An observer
+  that enters range mid-walk is introduced at the CURRENT cell with a walking state. The walk entry's
+  `moveStartTime` is always the SENDING gateway's own tick at send time (pinned `clif_set_unit_walking`:
+  `client_tick(gettick())`), never the tick another gateway stamped - replicas on different machines have
+  unrelated tick counters. Tests: `UninterruptedWalk_...`, `PlayerEnteringAoiMidWalk_...`,
+  `PlayerLeavingAoiMidWalk_...`, `MidWalkRetarget_...`, `WalkEntry_NeverForwardsAnotherGatewaysTickStamp`,
+  `PlayerFeedProjectionTests.OnlyMovementStarted_...`. Auto-approach to attack is client-driven (the server
+  starts a walk only from a `0x035F` request), so each re-click is a genuine route change and correctly one
+  walk packet; with `MonsterDebugLog.Verbose` the log shows `Sent 0x09FD player walk ...` per observer and
+  `Player feed poll ... rpcMs=...` for the player feed's own latency, separate from the monster feed.
+- **Failure isolation**: `DeliverAllAsync` awaits every delivery; a dead observer socket (IOException /
+  disposed / cancelled) is ignored and cannot stall or corrupt other observers or the tick.
+
+### Presence lifecycle and ghost players
+
+What can leave a player visible after the real session ended, with the code evidence, the fix and the test:
+
+1. **Ordinary logout** reliably reaches World: `RunAsync`'s `finally` -> `StopAsync` -> `StopCoreAsync`, whose
+   FIRST step is now `LeavePlayerWorldAsync(Closed)` -> `UnregisterWorldPresenceAsync`. Before, it ran only after
+   cancelling and joining the background loops, so a loop parked inside a World RPC or a blocked write stalled the
+   unregister (the pre-existing `ReconnectMidCombat...` test documented exactly that deadlock and had to unregister
+   by hand). Tests: `NormalLogout_...`, `ClientClosesTheGame_...`, `AbruptConnectionReset_...`.
+2. **World removes exactly the active presence**: `UnregisterPresenceAsync` is keyed by `PresenceId` (unique per
+   session); `AlreadyAbsent`/`PresenceMismatch`/`MapMismatch` never touch another presence, `Removed` appends one
+   `Unregistered` entry. Idempotent (`RepeatedStopAndDispose_...`, `WorldPresenceLeaseTests.StaleUnregister...`).
+3. **The unregister result used to be ignored and failures swallowed into a permanent orphan**: a failed RPC became
+   the session's `firstError`, the `finally` cleared `_presenceId`, and nothing ever retried. Now each attempt has its
+   own 5 s timeout, 3 attempts, every outcome is logged (`[PRESENCE] event=world-unregister status=...`), `PresenceMismatch`
+   is logged as "a newer presence owns the character, left untouched", and exhausting the retries is logged as
+   `world-unregister-abandoned` and left to the lease (the session no longer renews it).
+4. **Registration racing shutdown**: if the session started closing while `RegisterPresenceAsync` was in flight, the
+   registration used to land after the unregister and flip a closing session back to WorldVisible. Now the late
+   registration is unregistered (`registration-after-close`).
+5. **Gateway process death** (kill, crash, power loss): nothing can send the unregister, so the presence stayed in
+   World - and on every other gateway's screen - until World restarted, and a re-login of the character was refused
+   (`Conflict`). Reproduced by `GatewayProcessDeath_...` before the fix. Fix: a World-owned **presence lease**
+   (`WorldPresenceLease`: TTL 15 s, renewed every 5 s). A presence carries the registering gateway's `GatewayId`
+   (one per MapServer process, `OrleansWorldRuntime.GatewayId`); `MapTcpServer.RenewPresenceLeasesIfDueAsync`
+   renews every world-visible session's lease from the existing tick; World expires lapsed leases on ITS clock
+   from the grain timer and at every entry point, through the same path as an unregister (an `Unregistered`
+   entry), so every gateway drops the player by the ordinary feed. A restarted MapServer is a new gateway, so
+   it recovers by itself; a reconnect of the character is refused (`Conflict`) for at most the TTL and then succeeds.
+6. **Fencing**: unregister is keyed by `PresenceId`; renewal by `PresenceId` and `GatewayId`
+   (`Renewed`/`Absent`/`PresenceMismatch`/`NotOwner`). A stale or expired session therefore can neither unregister nor
+   extend a newer presence. A renewal answer `PresenceMismatch`/`NotOwner` ends the stale session
+   (`presence-superseded`); `Absent` (lease lapsed during a stall, or World restarted) makes a still-connected
+   session re-assert the SAME presence, refused with `Conflict` if a newer one claimed the character.
+   Healthy players are never removed: renewal runs far inside the TTL and a missed pass is retried.
+7. **Half-open connections** (network vanished without FIN/RST) leave the read loop waiting forever on a LIVE
+   gateway, which keeps renewing the lease. Accepted sockets now get OS TCP keepalive (30 s + 3 x 10 s), which fails
+   the read and ends the session through the normal path. (No idle timeout on packets: nothing in
+   `ai/iro-2026-wire.md` establishes how often the stock client sends while idle.) Deterministic proof is limited
+   to the socket options; the consequence is the same path as a reset (`AbruptConnectionReset_...`).
+8. **Stale projection on an idle gateway** (the most likely cause of "B sees A although A is not logged in"): a
+   gateway polls a map's player feed only while it has a session there. When the last local session left, the
+   projection stopped being reconciled but kept its registry, and the next login was handed that stale registry by
+   the map-load replay (`SendVisiblePlayersAsync`) before any poll could correct it - a flash of a ghost, or a
+   permanent one if the character then re-registered (the stale registry entry was merely refreshed, never
+   re-introduced). Reproduced by `StaleRegistryOnAnIdleGateway_...` before the fix. Fix: a map with no eligible
+   session has its player projection evicted (registrations dropped, cursor reset) the moment the last session
+   ends and on every tick, and the replay is skipped for any map that is not currently reconciled (the first tick
+   then bootstraps from World's snapshot and introduces the real players once).
+9. **Feed epoch change / World restart / resync**: a consumer with a foreign epoch or out-of-retention cursor is
+   answered with a snapshot and `PlayerFeedProjection.ApplySnapshotAsync` removes what the snapshot lacks; expired
+   presences are already gone from that snapshot (`EpochRotationAndResync_...`, `EpochRotation_ResyncSnapshot_...`,
+   `LateJoiningGateway_...`). World losing its in-memory state also makes every renewal answer `Absent`, so live
+   sessions re-assert themselves.
+
+Diagnostics: every lifecycle step logs one `[PRESENCE] event=... session= account= char= gateway= map= presence= ...`
+line (`gateway-start`, `world-register`/`-conflict`, `session-ending reason=`, `world-unregister status=`/`-failed`/
+`-abandoned`, `lease-absent`/`-refused`, `world-reassert`, `session-terminate`, `registration-after-close`).
+`reason` is one of `client-closed-or-reset`, `client-gone-detected-by-<loop>-write`, `server-shutdown`,
+`session-stopped`, `error:<Type>`, `presence-superseded[:status]`. With `MonsterDebugLog.Verbose`:
+`feed-entry`/`feed-snapshot` (epoch, sequence, kind, actor, presence), `observer-intro`/`observer-vanish` with the
+client write result (failed writes are always logged), `observer-intro-deferred`/`observer-vanish-skipped`. Together
+they tell apart: an open TCP connection (no `session-ending`), a detected disconnect (`session-ending reason=`),
+a failed shutdown (`world-unregister-failed`/`-abandoned`), a successful unregister (`world-unregister status=Removed`),
+a delayed or missing feed event (World's `Unregistered` seq vs the gateway's `feed-entry`), a stale projection
+(`feed-snapshot` dropping an actor / registry present without a feed entry), a missing client vanish (`observer-vanish`
+write failed or skipped) and an orphaned presence after gateway failure (`gateway-start` of a new id while
+the old id's presence is still in World, followed by World's lease expiry).
+
+Known gaps (not regressions, not hidden):
+
+- Appearance/public-state changes (`UpdatePlayerPublicStateAsync`) update World and every replica's
+  `PlayerPresenceRegistry` projection (new viewers, actor-info lookups), but there is still no
+  iRO-verified packet that re-broadcasts a changed look to clients ALREADY watching that player (the
+  pre-existing equipment-broadcast gap above). The feed delivers it as `LookChanged`, which sends only the
+  direction packet to existing viewers.
+- Monster -> player attack HP mutation stays MapServer-local; the cross-replica publish
+  (`PublishMonsterAttackActionAsync`) only informs observers.
+- A client that stops reading without closing its socket can still back-pressure `WriteAsync` (no write
+  timeout exists anywhere in MapServer); a closed/reset socket and a vanished network (keepalive) are handled.
+- A character refused with `Conflict` right after its gateway died stays refused for up to the lease TTL (15 s);
+  the client sees a disconnect and can retry.
+- Lease renewal is driven by the gateway's 100 ms tick loop: a gateway whose tick loop is wedged (not dead) for
+  more than the TTL has its players expired, and recovers them by re-asserting once the loop runs again.
+- Real stock-iRO two-client acceptance is a manual procedure (`docs/aspire.md`); automated tests do not
+  replace it.
 
 ## Lethal player attack vs the World Died feed (a second, cross-session ordering race)
 

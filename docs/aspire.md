@@ -13,6 +13,84 @@ dotnet run --project src/AppHost
 
 SQL Server 2025 Developer is exposed on a fixed host port (58043) for local tooling. The image is pinned to `mcr.microsoft.com/mssql/server:2025-CU8-ubuntu-24.04`.
 
+## Local two-MapServer topology (item 14)
+
+`dotnet run --project src/AppHost` starts **two** MapServer gateway resources by default:
+`map-server` on port 5121 and `map-server-b` on port 5122, both against the same Orleans World
+cluster, the same CharServer, and the same SQL data - `map-server-b` passes `--map-port 5122` (a
+new CLI override on `map_athena.conf`'s own `map_port` key) so both processes can share one config
+file. This exercises the cross-replica player visibility/combat fanout described in
+`docs/orleans-world-runtime.md`.
+
+The Ragexe launcher (`tools/launcher/`) gets an opt-in `MapTargetPorts` list in its own config
+(`LauncherOptions`), round-robin-assigning each new inbound map connection across the listed backend
+ports (`TcpProxy.TunnelAsync`). The default single-`MapTargetPort` behavior is unchanged when this
+list is not configured.
+
+### Manual acceptance procedure
+
+This is the only real-client verification of the cross-replica work; the automated tests
+(`CrossReplicaPlayerVisibilityIntegrationTests` and friends) do not replace it. Record the result
+(pass/fail per step, MapServer log excerpts) before calling item 14 accepted.
+
+Prerequisites: two stock iRO accounts with a character each, the Ragexe launcher
+(`tools/launcher/`) on the client machine, and the Aspire stack running on a machine the client can
+reach. In `launcher.settings.json` set `AthenaHost` to that machine (the shipped value is the WAN
+address) and add `"MapTargetPorts": [5121, 5122]` next to `MapTargetPort`.
+
+1. Start Aspire (`dotnet run --project src/AppHost`). In the dashboard confirm `athena-world`, `char-server`,
+   `login-server`, `map-server` and `map-server-b` are all running, and that the console logs show
+   `Map server listening on ...:5121` and `...:5122` respectively.
+2. Start the launcher and log client A in. The launcher assigns each NEW inbound map connection to
+   the next port in `MapTargetPorts` (round-robin, global across connections): the launcher log line
+   `proxy.connection.target` carries `targetPort`, and the receiving MapServer logs
+   `Client connected`. Confirm A reached 5121 (`map-server`).
+3. Log client B in (second client, same launcher) and confirm it reached 5122 (`map-server-b`).
+   If both landed on the same replica (e.g. an earlier extra map connection advanced the cursor),
+   log B out and in again until the two clients are on different replicas; always verify from the logs,
+   never assume.
+4. Put both characters on the same map within AOI (14 cells) of each other. Verify each client shows
+   the other character, and neither shows it twice.
+5. Move A over a long straight walk (10+ cells, not a one-cell click); verify B sees ONE smooth walk to the
+   destination (no stutter or restarts), then the reverse. Repeat while A walks toward a monster so the client
+   issues re-clicks; each re-click is a real route change, so a restart per re-click is expected, but an
+   uninterrupted walk must not restart. With verbose MapServer logging enabled, count the
+   `Sent 0x09FD player walk observerAccountId=<B>` lines for one walk: it must be 1 (plus one per re-click).
+   Rotate A's head/body; verify B sees the turn.
+6. Walk A out of B's range and back; verify exactly one disappearance and one re-appearance on B.
+7. Open the status/info window on the other character (click it); verify the name resolves.
+8. Attack a monster with A (non-lethal first); verify B sees A's attack animation and the damage once.
+9. Kill the monster with A; verify B sees the killing hit before the monster disappears.
+10. Let a monster hit A; verify B sees that attack once.
+11. Make A change equipment (hat/weapon) and then have B walk out of and back into range; verify B sees
+    the new look on re-entry. (Live re-broadcast to a viewer who never left range is a known gap, see
+    `ai/map-server.md`; do not report it as a regression.)
+12. Disconnect client A (close the client, not log out cleanly); verify B sees A disappear within a few
+    seconds and `map-server`/`map-server-b` logs show no exception.
+13. Log A back in and verify it is discovered again by B exactly once.
+14. Throughout, confirm no duplicated actor spawn or combat action on either client and no
+    `[WORLD]` error loops in either MapServer log.
+
+### Manual acceptance: presence lifecycle (ghost players)
+
+Run this exact sequence with verbose MapServer logging; it is the real-client check for the lifecycle work, and
+automated tests do not replace it. Keep both MapServer consoles and the World console, and collect the `[PRESENCE]`
+lines.
+
+1. Start Aspire. Log client B in on MapServer B (5122) FIRST and put it on the test map. Verify character A is NOT
+   shown. (A ghost here is the failure this sequence exists to catch; note the `feed-snapshot actors=[...]` line.)
+2. Log client A in on MapServer A (5121), same map, within range. Verify both clients see each other once, at the
+   right positions. Walk one of them 10+ cells: the other sees one smooth walk.
+3. Log A out normally (and in a second run, close the client window; in a third, kill the network or the process).
+   Verify A vanishes from B within a second or two (a killed network takes about a minute: TCP keepalive). Expect
+   on MapServer A: `session-ending reason=...` then `world-unregister status=Removed`.
+4. Log A in again (any MapServer). Verify exactly one A on B, B visible to A, no duplicate or stale actor.
+5. Kill the MapServer A PROCESS (not the client) while A is online. Verify A disappears from B after at most ~15 s
+   (the lease TTL; the `world.presence.lease.expired` metric counts it and the other gateway logs the `feed-entry kind=Unregistered`). Start MapServer A again and log A in: if it is refused within that
+   window, retry after it; afterwards A and B see each other once, no ghost.
+6. Restart World with both clients online. Verify neither client keeps a ghost and both sessions recover (the
+   gateways log `lease-absent` then `world-reassert`).
+
 ## Secrets
 The AppHost reads the SQL Server SA password from `solutionfiles/secrets/secret.json`
 (`SqlServer.SaPassword`). You can still override it via environment variable:

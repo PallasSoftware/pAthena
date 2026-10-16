@@ -14,6 +14,9 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     private readonly Dictionary<Guid, TransferRecord> _outgoing = [];
     private readonly Dictionary<Guid, IncomingRecord> _incoming = [];
     private readonly Dictionary<uint, ActiveMovement> _movements = [];
+    // Presence ownership leases (see WorldPresenceLease): characterId -> when the owning gateway's lease lapses.
+    // Present only for presences registered with a GatewayId; World's own clock decides expiry.
+    private readonly Dictionary<uint, DateTimeOffset> _leaseExpiry = [];
     // Phase 2B monster simulation: one WorldMonsterMapSimulation per map this partition owns,
     // created lazily on first touch (LoadMonsterSpawnsAsync or an implicit PollMonsterFeedAsync
     // bootstrap) - never pre-created for every map the resolver could theoretically route here,
@@ -31,6 +34,15 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     // been unloaded.
     private readonly TimeSpan _touchedWindow = touchedWindowOptions?.Window ?? TimeSpan.FromMinutes(5);
     private readonly Dictionary<string, WorldMonsterMapSimulation> _monsterSimulations = new(StringComparer.OrdinalIgnoreCase);
+    // Item 14: one WorldPlayerMapSimulation per map, created lazily the first time that map's player
+    // feed is genuinely touched (a registration or a poll) - same "never pre-materialize state for a
+    // map nobody has touched" convention as _monsterSimulations. Deliberately never unloaded by the
+    // touched-window tick policy: unlike monster simulation state (which is expensive simulated
+    // behavior worth reaping when idle), a map's player feed is just an epoch+sequence+small
+    // per-character public-state dictionary - cheap to keep and, more importantly, MUST stay stable
+    // for as long as any player remains registered on that map, since unloading it would force a
+    // spurious resync (fresh epoch) on every currently-connected observer for no reason.
+    private readonly Dictionary<string, WorldPlayerMapSimulation> _playerSimulations = new(StringComparer.OrdinalIgnoreCase);
     private Orleans.Runtime.IGrainTimer? _monsterTickTimer;
     private DateTimeOffset? _lastMonsterTickAt;
     private string PartitionId => this.GetPrimaryKeyString();
@@ -78,6 +90,32 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         return simulation;
     }
 
+    private WorldPlayerMapSimulation PlayerSimulation(string mapId)
+    {
+        if (_playerSimulations.TryGetValue(mapId, out var simulation)) return simulation;
+        simulation = new WorldPlayerMapSimulation(mapId);
+        _playerSimulations[mapId] = simulation;
+        return simulation;
+    }
+
+    // Builds the full current WorldPlayerPresenceEntry for `characterId` from the three
+    // independent sources this grain already tracks for it: WorldPlayerPresence (Map(mapId).Players),
+    // WorldPlayerPublicState (PlayerSimulation(mapId)'s own dictionary), and, when this character is
+    // currently mid-walk, the live _movements entry (never a replay of a past MovementStarted feed
+    // entry - see WorldMovementProjectionConfirmation's own doc comment for why a snapshot must
+    // reflect CURRENT active-movement state, correct even long after the feed itself has trimmed the
+    // original MovementStarted entry out of its retention window).
+    private WorldPlayerPresenceEntry BuildPresenceEntry(WorldPlayerPresence presence, WorldPlayerPublicState publicState)
+    {
+        WorldPlayerMovementProjection? movement = null;
+        if (_movements.TryGetValue(presence.CharacterId, out var active) && Same(active.MapId, presence.MapId))
+        {
+            var destination = active.Path[^1];
+            movement = new WorldPlayerMovementProjection(presence.X, presence.Y, destination.X, destination.Y, active.LocalTickStamp);
+        }
+        return new WorldPlayerPresenceEntry(presence, publicState, movement);
+    }
+
     public override Task OnActivateAsync(CancellationToken cancellationToken)
     {
         WorldTelemetry.PartitionActivations.Add(1, new KeyValuePair<string, object?>("world.partition.id", PartitionId));
@@ -100,6 +138,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     {
         var tickStartedAt = timeProvider.GetTimestamp();
         var now = timeProvider.GetUtcNow();
+        ExpireLapsedPresenceLeases(now);
         if (_lastMonsterTickAt is { } previous)
         {
             var elapsedSinceLast = (now - previous).TotalMilliseconds;
@@ -140,9 +179,60 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
 
     private WorldPlayerPresence? ResolvePresenceForEngagement(uint characterId) => TryFind(characterId, out var presence) ? presence : null;
 
-    public Task<WorldPresenceRegistration> RegisterPresenceAsync(WorldPlayerPresence presence)
+    // Removes every presence whose owning gateway stopped renewing its lease, through the SAME path as an
+    // explicit unregister (an Unregistered feed entry, then Remove), so every observing gateway drops the
+    // player by the ordinary feed. Called from every entry point that reads or changes presence state AND
+    // from the grain timer, so expiry is decided on World's clock and never waits for a particular caller.
+    private void ExpireLapsedPresenceLeases(DateTimeOffset now)
+    {
+        if (_leaseExpiry.Count == 0) return;
+        List<uint>? lapsed = null;
+        foreach (var (characterId, expiresAt) in _leaseExpiry)
+            if (expiresAt <= now) (lapsed ??= []).Add(characterId);
+        if (lapsed is null) return;
+        foreach (var characterId in lapsed)
+        {
+            if (!TryFind(characterId, out var existing)) { _leaseExpiry.Remove(characterId); continue; }
+            AppendUnregistered(existing);
+            Remove(existing);
+            WorldTelemetry.PresenceLeasesExpired.Add(1, new KeyValuePair<string, object?>("world.partition.id", PartitionId));
+        }
+    }
+
+    private void AppendUnregistered(WorldPlayerPresence existing)
+    {
+        var publicState = PlayerSimulation(existing.MapId).TryGetPublicState(existing.CharacterId, out var ps) ? ps : EmptyPublicState;
+        PlayerSimulation(existing.MapId).Append(WorldPlayerFeedEntryKind.Unregistered, BuildPresenceEntry(existing, publicState));
+    }
+
+    private void GrantLease(WorldPlayerPresence presence)
+    {
+        if (presence.GatewayId == Guid.Empty) _leaseExpiry.Remove(presence.CharacterId);
+        else _leaseExpiry[presence.CharacterId] = timeProvider.GetUtcNow() + WorldPresenceLease.Ttl;
+    }
+
+    public Task<IReadOnlyList<WorldPresenceLeaseResult>> RenewPresenceLeasesAsync(string mapId, Guid gatewayId, IReadOnlyList<WorldPresenceLeaseRef> presences)
+    {
+        RequireOwnedMap(mapId);
+        // Expire first: a lease that had already lapsed on World's clock is gone, whatever the renewal says.
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
+        var results = new List<WorldPresenceLeaseResult>(presences.Count);
+        foreach (var requested in presences)
+        {
+            WorldPresenceLeaseStatus status;
+            if (!TryFind(requested.CharacterId, out var current)) status = WorldPresenceLeaseStatus.Absent;
+            else if (current.PresenceId != requested.PresenceId) status = WorldPresenceLeaseStatus.PresenceMismatch;
+            else if (current.GatewayId != gatewayId) status = WorldPresenceLeaseStatus.NotOwner;
+            else { GrantLease(current); status = WorldPresenceLeaseStatus.Renewed; }
+            results.Add(new WorldPresenceLeaseResult(requested.CharacterId, requested.PresenceId, status));
+        }
+        return Task.FromResult<IReadOnlyList<WorldPresenceLeaseResult>>(results);
+    }
+
+    public Task<WorldPresenceRegistration> RegisterPresenceAsync(WorldPlayerPresence presence, WorldPlayerPublicState publicState)
     {
         Validate(presence);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         var mapId = RequireOwnedMap(presence.MapId);
         presence = presence with { MapId = mapId };
         if (_incoming.Values.Any(x => !x.Committed && x.Presence.CharacterId == presence.CharacterId))
@@ -152,21 +242,30 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
             if (existing.PresenceId != presence.PresenceId || existing.ActorId != presence.ActorId || !Same(existing.MapId, mapId))
                 return Task.FromResult(Registration(mapId, WorldPresenceRegistrationStatus.Conflict));
             Map(mapId).Players[presence.CharacterId] = presence;
+            GrantLease(presence);
+            PlayerSimulation(mapId).SetPublicState(presence.CharacterId, publicState);
+            PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.Registered, BuildPresenceEntry(presence, publicState));
             return Task.FromResult(Registration(mapId, WorldPresenceRegistrationStatus.AlreadyRegistered));
         }
         Add(presence);
+        PlayerSimulation(mapId).SetPublicState(presence.CharacterId, publicState);
+        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.Registered, BuildPresenceEntry(presence, publicState));
         return Task.FromResult(Registration(mapId, WorldPresenceRegistrationStatus.Registered));
     }
 
     public Task<WorldPresenceUnregistration> UnregisterPresenceAsync(string mapId, uint characterId, Guid presenceId)
     {
         mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         if (!TryFind(characterId, out var existing)) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.AlreadyAbsent));
         if (existing.PresenceId != presenceId) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.PresenceMismatch));
         if (!Same(existing.MapId, mapId)) return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.MapMismatch));
+        AppendUnregistered(existing);
         Remove(existing);
         return Task.FromResult(Unregistration(mapId, WorldPresenceUnregistrationStatus.Removed));
     }
+
+    private static readonly WorldPlayerPublicState EmptyPublicState = new("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     public Task<WorldMovementResult> MovePlayerAsync(WorldMovementCommand command)
     {
@@ -216,8 +315,83 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         var advanced = current with { X = command.NewX, Y = command.NewY };
         Map(mapId).Players[command.CharacterId] = advanced;
         movement.Position = nextIndex;
-        if (nextIndex == movement.Path.Count - 1) _movements.Remove(command.CharacterId);
+        var finished = nextIndex == movement.Path.Count - 1;
+        if (finished) _movements.Remove(command.CharacterId);
+        var publicState = PlayerSimulation(mapId).TryGetPublicState(command.CharacterId, out var ps) ? ps : EmptyPublicState;
+        var entry = BuildPresenceEntry(advanced, publicState);
+        PlayerSimulation(mapId).Append(finished ? WorldPlayerFeedEntryKind.MovementFinished : WorldPlayerFeedEntryKind.Moved, entry);
         return Task.FromResult(new WorldMovementAdvanceResult(WorldMovementAdvanceStatus.Advanced, advanced));
+    }
+
+    // Item 14 §3: the ordering-critical movement-projection confirmation. Called by MapServer
+    // EXACTLY ONCE per accepted movement, strictly AFTER any TruncateMovementAsync call for the same
+    // MovementId has already resolved - this is the SOLE place a MovementStarted feed entry is ever
+    // produced (MovePlayerAsync/TruncateMovementAsync themselves append nothing), which is what
+    // makes "never leak a pre-truncation destination to remote replicas" structural rather than a
+    // caller-discipline convention: the append literally cannot happen before truncation is final,
+    // because this method is the only path to it, and it derives the confirmed destination from this
+    // grain's OWN current _movements[characterId].Path[^1] - the already-possibly-truncated
+    // authoritative route - never from anything the caller supplies (item 14's explicit "do not
+    // trust a MapServer-supplied arbitrary destination" requirement; there is no destination field on
+    // WorldMovementProjectionConfirmation for exactly this reason).
+    //
+    // Idempotent: a second call for the same MovementId (a caller retry after a transient RPC
+    // failure) returns AlreadyConfirmed without a second append - tracked via `Confirmed` on the
+    // existing ActiveMovement record so no separate ledger is needed.
+    public Task<WorldMovementProjectionResult> ConfirmMovementProjectionAsync(WorldMovementProjectionConfirmation confirmation)
+    {
+        var mapId = RequireOwnedMap(confirmation.MapId);
+        if (!TryFind(confirmation.CharacterId, out var current)) return Task.FromResult(new WorldMovementProjectionResult(WorldMovementProjectionStatus.NotFound, null));
+        if (current.PresenceId != confirmation.PresenceId) return Task.FromResult(new WorldMovementProjectionResult(WorldMovementProjectionStatus.PresenceMismatch, null));
+        if (!_movements.TryGetValue(confirmation.CharacterId, out var movement) || movement.MovementId != confirmation.MovementId || !Same(movement.MapId, mapId))
+            return Task.FromResult(new WorldMovementProjectionResult(WorldMovementProjectionStatus.SourceMismatch, null));
+        var publicState = PlayerSimulation(mapId).TryGetPublicState(confirmation.CharacterId, out var ps) ? ps : EmptyPublicState;
+        if (movement.Confirmed)
+        {
+            return Task.FromResult(new WorldMovementProjectionResult(WorldMovementProjectionStatus.AlreadyConfirmed, BuildPresenceEntry(current, publicState)));
+        }
+        movement.Confirmed = true;
+        movement.LocalTickStamp = confirmation.LocalTickStamp;
+        var entry = BuildPresenceEntry(current, publicState);
+        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.MovementStarted, entry);
+        return Task.FromResult(new WorldMovementProjectionResult(WorldMovementProjectionStatus.Confirmed, entry));
+    }
+
+    public Task<WorldPlayerLookUpdateResult> UpdatePlayerLookAsync(uint characterId, Guid presenceId, byte direction, byte headDirection)
+    {
+        if (!TryFind(characterId, out var current)) return Task.FromResult(new WorldPlayerLookUpdateResult(WorldPlayerLookUpdateStatus.NotFound));
+        if (current.PresenceId != presenceId) return Task.FromResult(new WorldPlayerLookUpdateResult(WorldPlayerLookUpdateStatus.StalePresence));
+        var mapId = current.MapId;
+        var previousPublicState = PlayerSimulation(mapId).TryGetPublicState(characterId, out var ps) ? ps : EmptyPublicState;
+        var updated = previousPublicState with { Direction = direction, HeadDirection = headDirection };
+        PlayerSimulation(mapId).SetPublicState(characterId, updated);
+        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.LookChanged, BuildPresenceEntry(current, updated));
+        return Task.FromResult(new WorldPlayerLookUpdateResult(WorldPlayerLookUpdateStatus.Updated));
+    }
+
+    public Task<WorldPlayerPublicStateUpdateResult> UpdatePlayerPublicStateAsync(uint characterId, Guid presenceId, WorldPlayerPublicState publicState)
+    {
+        if (!TryFind(characterId, out var current)) return Task.FromResult(new WorldPlayerPublicStateUpdateResult(WorldPlayerPublicStateUpdateStatus.NotFound));
+        if (current.PresenceId != presenceId) return Task.FromResult(new WorldPlayerPublicStateUpdateResult(WorldPlayerPublicStateUpdateStatus.StalePresence));
+        var mapId = current.MapId;
+        PlayerSimulation(mapId).SetPublicState(characterId, publicState);
+        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.LookChanged, BuildPresenceEntry(current, publicState));
+        return Task.FromResult(new WorldPlayerPublicStateUpdateResult(WorldPlayerPublicStateUpdateStatus.Updated));
+    }
+
+    public Task<WorldPlayerFeedPage> PollPlayerFeedAsync(WorldPlayerFeedCursor? cursor, string mapId)
+    {
+        mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
+        var simulation = PlayerSimulation(mapId);
+        var snapshot = Map(mapId).Players.Values
+            .Select(presence =>
+            {
+                var publicState = simulation.TryGetPublicState(presence.CharacterId, out var ps) ? ps : EmptyPublicState;
+                return BuildPresenceEntry(presence, publicState);
+            })
+            .ToArray();
+        return Task.FromResult(simulation.BuildPage(cursor, snapshot));
     }
 
     public Task<WorldMovementCancellationResult> CancelMovementAsync(WorldMovementCancellation command)
@@ -230,6 +404,8 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (movement.MovementId != command.MovementId || !Same(movement.MapId, mapId))
             return Task.FromResult(new WorldMovementCancellationResult(WorldMovementCancellationStatus.SourceMismatch, current));
         _movements.Remove(command.CharacterId);
+        var publicState = PlayerSimulation(mapId).TryGetPublicState(command.CharacterId, out var ps) ? ps : EmptyPublicState;
+        PlayerSimulation(mapId).Append(WorldPlayerFeedEntryKind.MovementFinished, BuildPresenceEntry(current, publicState));
         return Task.FromResult(new WorldMovementCancellationResult(WorldMovementCancellationStatus.Cancelled, current));
     }
 
@@ -253,7 +429,12 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         _outgoing.Add(command.TransferId, record);
         if (type == WorldTransferType.SamePartition)
         {
-            RequireOwnedMap(destinationMap); Remove(current); Add(destination); record.Finalized = true;
+            RequireOwnedMap(destinationMap);
+            var publicState = PlayerSimulation(sourceMap).TryGetPublicState(current.CharacterId, out var ps) ? ps : EmptyPublicState;
+            PlayerSimulation(sourceMap).Append(WorldPlayerFeedEntryKind.TransferredOut, BuildPresenceEntry(current, publicState));
+            Remove(current); Add(destination); record.Finalized = true;
+            PlayerSimulation(destinationMap).SetPublicState(destination.CharacterId, publicState);
+            PlayerSimulation(destinationMap).Append(WorldPlayerFeedEntryKind.TransferredIn, BuildPresenceEntry(destination, publicState));
             return new(WorldTransferStatus.Completed, type, destination);
         }
         return await ContinueCrossPartitionAsync(record);
@@ -299,6 +480,18 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
             return Task.FromResult(new IncomingTransferResult(IncomingTransferStatus.Conflict, owner));
         if (owner is not null) Remove(owner);
         Add(incoming.Presence); incoming.Committed = true;
+        // The source partition's own public state travelled inside IncomingWorldTransfer only as
+        // far as this grain's TryFind/Remove/Add boundary above cares about (WorldPlayerPresence
+        // alone) - public state itself is not part of the cross-partition transfer payload (item 14
+        // stays within existing transfer-payload shape; a cross-partition public-state carry-over is
+        // not required by the task and would need a new field on IncomingWorldTransfer). The
+        // destination's own player-feed public state is populated from whatever this presence's
+        // NEXT RegisterPresenceAsync/UpdatePlayerPublicStateAsync call supplies - MapServer already
+        // re-registers with full public state on every map transition (EnterPlayerWorldAsync), so
+        // this is a transient, self-correcting gap of at most one feed entry, never a durable one.
+        var publicState = PlayerSimulation(incoming.Presence.MapId).TryGetPublicState(incoming.Presence.CharacterId, out var ps) ? ps : EmptyPublicState;
+        PlayerSimulation(incoming.Presence.MapId).SetPublicState(incoming.Presence.CharacterId, publicState);
+        PlayerSimulation(incoming.Presence.MapId).Append(WorldPlayerFeedEntryKind.TransferredIn, BuildPresenceEntry(incoming.Presence, publicState));
         return Task.FromResult(new IncomingTransferResult(IncomingTransferStatus.Committed, incoming.Presence));
     }
 
@@ -308,6 +501,8 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (outgoing.Finalized) return Task.FromResult(new OutgoingTransferResult(OutgoingTransferStatus.AlreadyFinalized));
         if (!TryFind(outgoing.Source.CharacterId, out var current) || current.PresenceId != outgoing.Source.PresenceId || !Same(current.MapId, outgoing.Source.MapId))
             return Task.FromResult(new OutgoingTransferResult(OutgoingTransferStatus.Stale));
+        var publicState = PlayerSimulation(current.MapId).TryGetPublicState(current.CharacterId, out var ps) ? ps : EmptyPublicState;
+        PlayerSimulation(current.MapId).Append(WorldPlayerFeedEntryKind.TransferredOut, BuildPresenceEntry(current, publicState));
         Remove(current); outgoing.Finalized = true;
         return Task.FromResult(new OutgoingTransferResult(OutgoingTransferStatus.Finalized));
     }
@@ -315,6 +510,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     public Task<WorldMapSnapshot> GetMapSnapshotAsync(string mapId)
     {
         mapId = RequireOwnedMap(mapId);
+        ExpireLapsedPresenceLeases(timeProvider.GetUtcNow());
         var players = _maps.TryGetValue(mapId, out var map) ? map.Players.Values.OrderBy(x => x.CharacterId).ToArray() : [];
         return Task.FromResult(new WorldMapSnapshot(PartitionId, mapId, players));
     }
@@ -457,7 +653,18 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (!instance.IsAlive)
             return Task.FromResult(new WorldMonsterDamageResult(WorldMonsterDamageStatus.AlreadyDead, 0, 0, instance.Spawn.Mob.MaxHp, false, null));
 
-        var (hpBefore, hpAfter, killed, maxHp) = simulation.ApplyDamage(instance, command.Damage);
+        // Item 14 §7: the attacker ActorId comes from World's OWN already-resolved current
+        // registration for this attacker (attackerPresence, validated above) - never a
+        // caller-supplied value. Hit/Lethal are derived from this same commit's own outcome, not
+        // trusted from the command.
+        var attackAction = new WorldPlayerAttackAction(
+            attackerPresence.ActorId, command.AttackerCharacterId, command.AttackerPresenceId,
+            command.Damage, SourceAttackMotion: 0, TargetDamageMotion: 0, Hit: command.Damage > 0, Lethal: false);
+        var (hpBefore, hpAfter, killed, maxHp) = simulation.ApplyDamage(instance, command.Damage, attackAction);
+        // The PlayerAttackAction entry is always the FIRST of the (up to two) entries ApplyDamage
+        // just appended for this call (see that method's own doc comment) - AsOfSequence minus 1 if
+        // a HealthChanged/Died entry also followed it, or AsOfSequence itself if not.
+        var attackActionSequence = simulation.AsOfSequence - (killed || hpAfter != hpBefore ? 1 : 0);
 
         WorldMonsterAttackedStatus? engagement = null;
         if (command.AcquireEngagement)
@@ -470,9 +677,33 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
             engagement = simulation.TryAcquireEngagement(instance, target, attackerPresence, IsWalking(command.AttackerCharacterId));
         }
 
-        var result = new WorldMonsterDamageResult(WorldMonsterDamageStatus.Applied, hpBefore, hpAfter, maxHp, killed, engagement);
+        var result = new WorldMonsterDamageResult(WorldMonsterDamageStatus.Applied, hpBefore, hpAfter, maxHp, killed, engagement, attackActionSequence);
         simulation.RecordAttackSequenceResult(command, result);
         return Task.FromResult(result);
+    }
+
+    // Item 14 §6 "Monster -> player": cross-replica projection-only publish - HP mutation/cadence
+    // themselves already happened MapServer-locally before this is ever called (see
+    // WorldMonsterAttackActionCommand's own doc comment). ActionId-keyed idempotency lives on
+    // WorldMonsterMapSimulation (TryPublishMonsterAttackAction) - a bounded local retry of the SAME
+    // already-resolved attack returns AlreadyPublished rather than appending a second
+    // MonsterAttackAction feed entry.
+    public Task<WorldMonsterAttackPublishResult> PublishMonsterAttackActionAsync(WorldMonsterAttackActionCommand command)
+    {
+        var reference = command.Life;
+        var mapId = RequireOwnedMap(reference.MapId);
+        var simulation = MonsterSimulation(mapId);
+        if (!simulation.SimulationEpoch.Equals(reference.SimulationEpoch) || !simulation.TryFind(reference.ActorId, out var instance) || !simulation.MatchesLife(instance, reference))
+            return Task.FromResult(new WorldMonsterAttackPublishResult(WorldMonsterAttackPublishStatus.StaleLifeReference));
+        if (!TryFind(command.TargetCharacterId, out var targetPresence) || targetPresence.PresenceId != command.TargetPresenceId)
+            return Task.FromResult(new WorldMonsterAttackPublishResult(WorldMonsterAttackPublishStatus.StaleTargetPresence));
+        // TargetActorId is the VICTIM's wire actor id, resolved from World's own presence (never from the
+        // caller and never the attacking monster's id): remote replicas build the 0x08C8 from it.
+        var action = new WorldMonsterAttackAction(
+            targetPresence.ActorId, command.TargetCharacterId, command.TargetPresenceId,
+            command.Damage, command.SourceAttackMotion, command.TargetDamageMotion, command.Lethal, command.ActionId);
+        var published = simulation.TryPublishMonsterAttackAction(instance, command.ActionId, action, command.TargetPresenceId);
+        return Task.FromResult(new WorldMonsterAttackPublishResult(published ? WorldMonsterAttackPublishStatus.Published : WorldMonsterAttackPublishStatus.AlreadyPublished));
     }
 
     public Task<WorldMonsterAttackedResult> NotifyMonsterAttackedAsync(WorldMonsterAttackedCommand command)
@@ -551,7 +782,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     }
     private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     private MapRuntime Map(string mapId) => _maps.TryGetValue(mapId, out var map) ? map : _maps[mapId] = new();
-    private void Add(WorldPlayerPresence presence) { Map(presence.MapId).Players[presence.CharacterId] = presence; _mapByCharacter[presence.CharacterId] = presence.MapId; }
+    private void Add(WorldPlayerPresence presence) { Map(presence.MapId).Players[presence.CharacterId] = presence; _mapByCharacter[presence.CharacterId] = presence.MapId; GrantLease(presence); }
     private bool TryFind(uint characterId, [NotNullWhen(true)] out WorldPlayerPresence? presence)
     { if (_mapByCharacter.TryGetValue(characterId, out var mapId) && Map(mapId).Players.TryGetValue(characterId, out var found)) { presence = found; return true; } presence = null; return false; }
     // Step 7 substep 3: the single chokepoint every presence-departure path (UnregisterPresenceAsync,
@@ -577,10 +808,16 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     private void Remove(WorldPlayerPresence presence)
     {
         if (_monsterSimulations.TryGetValue(presence.MapId, out var simulation))
+        {
             simulation.RemoveAttackSequencesForPresence(presence.CharacterId, presence.PresenceId);
+            simulation.RemoveAttackActionsForPresence(presence.PresenceId);
+        }
+        if (_playerSimulations.TryGetValue(presence.MapId, out var playerSimulation))
+            playerSimulation.RemovePublicState(presence.CharacterId);
         Map(presence.MapId).Players.Remove(presence.CharacterId);
         _mapByCharacter.Remove(presence.CharacterId);
         _movements.Remove(presence.CharacterId);
+        _leaseExpiry.Remove(presence.CharacterId);
     }
     private int Count => _mapByCharacter.Count;
     private WorldPresenceRegistration Registration(string mapId, WorldPresenceRegistrationStatus status) => new(PartitionId, mapId, status, Count);
@@ -591,5 +828,18 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     { public WorldTransferCommand Command { get; } = command; public WorldPlayerPresence Source { get; } = source; public WorldPlayerPresence Destination { get; } = destination; public string DestinationPartition { get; } = destinationPartition; public WorldTransferType Type { get; } = type; public bool Finalized { get; set; } }
     private sealed class IncomingRecord(IncomingWorldTransfer transfer, WorldPlayerPresence presence) { public IncomingWorldTransfer Transfer { get; } = transfer; public WorldPlayerPresence Presence { get; } = presence; public bool Committed { get; set; } }
     private sealed class ActiveMovement(Guid movementId, Guid presenceId, string mapId, IReadOnlyList<WorldPosition> path)
-    { public Guid MovementId { get; } = movementId; public Guid PresenceId { get; } = presenceId; public string MapId { get; } = mapId; public IReadOnlyList<WorldPosition> Path { get; set; } = path; public int Position { get; set; } }
+    {
+        public Guid MovementId { get; } = movementId;
+        public Guid PresenceId { get; } = presenceId;
+        public string MapId { get; } = mapId;
+        public IReadOnlyList<WorldPosition> Path { get; set; } = path;
+        public int Position { get; set; }
+        // Item 14 §3: set true by ConfirmMovementProjectionAsync's first (non-replayed) call for
+        // this MovementId - guards against a caller retry appending a second MovementStarted entry.
+        public bool Confirmed { get; set; }
+        // Item 14 §3: the opaque local Ragexe tick MapServer stamped when it confirmed this
+        // movement - carried through BuildPresenceEntry's own WorldPlayerMovementProjection for a
+        // snapshot/resync taken mid-walk. Never read/interpreted by World itself.
+        public long LocalTickStamp { get; set; }
+    }
 }

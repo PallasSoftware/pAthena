@@ -12,6 +12,26 @@ public sealed class ConfigurationTests
     public void InvalidPortsAreRejected(int port) => Assert.Throws<InvalidOperationException>(() => new LauncherOptions { AthenaHost = "server.example", LoginTargetPort = port }.Validate());
 
     [Fact]
+    public void MapTargetPorts_BindFromSettingsJson_AndEmptyOrInvalidListsAreRejected()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"launcher-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, """{ "AthenaHost": "127.0.0.1", "MapTargetPort": 5121, "MapTargetPorts": [5121, 5122] }""");
+            var options = LauncherOptions.Load(path);
+            Assert.Equal([5121, 5122], options.MapTargetPorts);
+            options.Validate(); // valid.
+
+            File.WriteAllText(path, """{ "AthenaHost": "127.0.0.1" }""");
+            Assert.Null(LauncherOptions.Load(path).MapTargetPorts); // unset keeps today's single-port behaviour.
+        }
+        finally { File.Delete(path); }
+
+        Assert.Throws<InvalidOperationException>(() => new LauncherOptions { AthenaHost = "127.0.0.1", MapTargetPorts = [] }.Validate());
+        Assert.Throws<InvalidOperationException>(() => new LauncherOptions { AthenaHost = "127.0.0.1", MapTargetPorts = [5121, 70000] }.Validate());
+    }
+
+    [Fact]
     public void DuplicateCharacterAndMapEndpointsAreRejected() => Assert.Throws<InvalidOperationException>(() => new LauncherOptions
     {
         AthenaHost = "server.example",
