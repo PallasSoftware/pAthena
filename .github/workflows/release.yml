@@ -4,7 +4,8 @@ name: release
 #
 #   validate        tests, vulnerable packages, release rules   (pull requests too: same steps, the required check "Validate")
 #                   Pull requests that only touch docs/.claude/markdown (Get-CodeImpact.ps1) skip the heavy steps of validate and
-#                   retag-digest but both jobs still run and pass, so the required checks never stay Pending. Pushes to main always validate.
+#                   retag-digest; CI-only (.github/) pull requests still run the release script tests and retag-digest but not the
+#                   server tests. Both jobs still run and pass, so the required checks never stay Pending. Pushes to main always validate.
 #   retag-digest    proves on a real registry that re-tagging keeps the digest (pull requests too)
 #   version         next version tag vMAJOR.MINOR.PATCH on the commit (immutable; an existing tag of the commit is reused)
 #   publish         the four ghcr.io/pallassoftware/pathena/<server>:<tag> images: changed servers are built, unchanged servers get
@@ -54,7 +55,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - name: Test the release scripts and the workflow rules
-        if: steps.scope.outputs.code == 'true'
+        if: steps.scope.outputs.ci == 'true'
         shell: pwsh
         run: |
           ./.github/scripts/Test-ReleaseVersion.ps1
@@ -94,7 +95,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: ./.github/scripts/Get-CodeImpact.ps1 -Base $env:BASE -Head $env:HEAD
       - uses: docker/setup-buildx-action@v3
-        if: steps.scope.outputs.code == 'true'
+        if: steps.scope.outputs.ci == 'true'
         with:
           driver-opts: network=host
           buildkitd-config-inline: |
@@ -102,7 +103,7 @@ jobs:
               http = true
               insecure = true
       - name: Build, push and re-tag a single-platform image on a throw-away registry, compare digests
-        if: steps.scope.outputs.code == 'true'
+        if: steps.scope.outputs.ci == 'true'
         shell: pwsh
         run: ./.github/scripts/Test-RetagRegistry.ps1
 
