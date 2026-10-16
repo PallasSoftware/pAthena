@@ -101,10 +101,22 @@ public sealed class PlayerFeedProjection(string mapId)
                 lock (_gate) _registeredActorIds.Remove(entry.ActorId);
                 break;
 
-            case WorldPlayerFeedEntryKind.Moved:
+            // A walk is ONE client-side animation: the stock client interpolates the whole route from the
+            // walking entry (0x09FD) it received at the start, exactly as with the pinned server, which
+            // sends it once per walk and never per crossed cell (unit_walktoxy_nextcell: sendMove=false
+            // for continuation cells). Re-sending it for every authoritative cell restarts/stutters the
+            // animation on observers. So only a walk START - and a genuine new route, which World always
+            // announces as a fresh MovementStarted - is broadcast. Every crossed cell (Moved) and the
+            // completion (MovementFinished) still update the registry and AOI (enter/leave) here;
+            // an observer that comes into range mid-walk is introduced at the current cell with a
+            // walking state by the coordinator's enter path, not by this broadcast flag.
             case WorldPlayerFeedEntryKind.MovementStarted:
-            case WorldPlayerFeedEntryKind.MovementFinished:
                 await coordinator.UpdateMovementAsync(presence, broadcastMovement: true, cancellationToken);
+                break;
+
+            case WorldPlayerFeedEntryKind.Moved:
+            case WorldPlayerFeedEntryKind.MovementFinished:
+                await coordinator.UpdateMovementAsync(presence, broadcastMovement: false, cancellationToken);
                 break;
 
             case WorldPlayerFeedEntryKind.LookChanged:

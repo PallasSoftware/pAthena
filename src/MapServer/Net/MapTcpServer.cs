@@ -714,12 +714,22 @@ public sealed class MapTcpServer
         var projection = _world.PlayerProjectionsOrDefault.GetOrCreate(mapId);
         var cursorBeforePoll = projection.Cursor;
         WorldPlayerFeedPage page;
+        var pollStartedAt = Stopwatch.GetTimestamp();
         try
         {
             page = await _worldRuntime.PollPlayerFeedAsync(cursorBeforePoll, mapId, cancellationToken);
         }
         catch (IOException) { return; }
         catch (OperationCanceledException) { return; }
+        // DEBUG-LOG-ONLY (verbose toggle, same as the monster feed's): the PLAYER feed's own RPC latency and
+        // backlog, measured separately from the monster feed so one cannot be mistaken for the other.
+        if (MonsterDebugLog.Verbose && (page.Snapshot is not null || page.Entries is { Count: > 0 }))
+        {
+            MapLogger.Info(
+                $"[iRO MAP DEBUG] Player feed poll map={mapId} status={page.Status} rpcMs={Stopwatch.GetElapsedTime(pollStartedAt).TotalMilliseconds.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} " +
+                $"entries={page.Entries?.Count ?? 0} snapshot={(page.Snapshot is null ? "no" : page.Snapshot.Count.ToString())} " +
+                $"cursorLag={(cursorBeforePoll is { } cursor ? (page.AsOfSequence - cursor.Sequence).ToString() : "bootstrap")}");
+        }
 
         // Resolves the observer for a given ActorId: a LOCAL session's own instance (so IT receives
         // deliveries when others enter its view, exactly as it always has), or a fresh

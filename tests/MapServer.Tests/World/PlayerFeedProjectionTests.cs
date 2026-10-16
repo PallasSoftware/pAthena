@@ -222,4 +222,55 @@ public sealed class PlayerFeedProjectionTests
         Assert.Equal(Map, registered.MapName);
         Assert.Equal(0, Snapshot(newNeighbour).Count(e => e == "leave:1"));
     }
+
+    // Which World movement entries may reach an observer's CLIENT as a walking packet: only a walk start
+    // (MovementStarted - also World's announcement of a genuine new route). Every crossed cell (Moved) and
+    // the completion (MovementFinished) are authority/AOI updates only: the registry follows each cell, but
+    // the observer's already-running client-side animation is not restarted.
+    [Fact]
+    public async Task OnlyMovementStarted_BroadcastsAWalk_CrossedCellsAndCompletionOnlyUpdateRegistryAndAoi()
+    {
+        var f = new Fixture();
+        var observer = f.AddLocal(1);
+        await f.SnapshotAsync(Entry(1, 100, 100), Entry(2, 101, 100));
+        var route = new WorldPlayerMovementProjection(101, 100, 101, 105, 7);
+
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.MovementStarted, Entry(2, 101, 100, movement: route)));
+        Assert.Equal(1, Snapshot(observer).Count(e => e.StartsWith("move:2")));
+
+        foreach (var y in new ushort[] { 101, 102, 103, 104 })
+            await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.Moved, Entry(2, 101, y, movement: route with { StartY = y })));
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.MovementFinished, Entry(2, 101, 105)));
+
+        Assert.Equal(1, Snapshot(observer).Count(e => e.StartsWith("move:2"))); // no further walk broadcasts...
+        Assert.True(f.Registry.TryGetByActorId(2, out var tracked));             // ...but every cell was applied.
+        Assert.Equal(((ushort)101, (ushort)105), (tracked.X, tracked.Y));
+        Assert.Null(tracked.Movement);
+
+        // A genuine new route is a new MovementStarted and is broadcast again.
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.MovementStarted, Entry(2, 101, 105, movement: new WorldPlayerMovementProjection(101, 105, 108, 105, 9))));
+        Assert.Equal(2, Snapshot(observer).Count(e => e.StartsWith("move:2")));
+    }
+
+    [Fact]
+    public async Task CrossedCellsStillDriveAoiTransitions_WithoutAnyWalkBroadcast()
+    {
+        var f = new Fixture();
+        var observer = f.AddLocal(1);
+        await f.SnapshotAsync(Entry(1, 100, 100), Entry(2, 101, 113));
+        var route = new WorldPlayerMovementProjection(101, 113, 101, 120, 7);
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.MovementStarted, Entry(2, 101, 113, movement: route)));   // in range: one walk broadcast.
+
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.Moved, Entry(2, 101, 114, movement: route)));            // still in range (14).
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.Moved, Entry(2, 101, 115, movement: route)));            // out of range: leave.
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.Moved, Entry(2, 101, 116, movement: route)));            // still out: nothing.
+        var events = Snapshot(observer);
+
+        Assert.Equal(1, events.Count(e => e.StartsWith("move:2")));
+        Assert.Equal(1, events.Count(e => e == "leave:2"));
+        // Coming back into range mid-walk introduces the walker (walking state is built from the presence) once.
+        await f.ApplyAsync(Feed(WorldPlayerFeedEntryKind.Moved, Entry(2, 101, 114, movement: route)));
+        Assert.Equal(2, Snapshot(observer).Count(e => e.StartsWith("enter:2:")));
+        Assert.Equal(1, Snapshot(observer).Count(e => e.StartsWith("move:2")));
+    }
 }

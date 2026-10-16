@@ -5735,7 +5735,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             ? IroPlayerActorPackets.BuildSpawnEntry(presence)
             : presence.Movement is null
                 ? IroPlayerActorPackets.BuildStandEntry(presence)
-                : IroPlayerActorPackets.BuildWalkEntry(presence);
+                : BuildLocalWalkEntry(presence);
         return WriteAsync(packet, cancellationToken);
     }
 
@@ -5743,7 +5743,22 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     {
         if (!ClientAcceptsActorPackets) return Task.CompletedTask;
         if (presence.ActorId == _accountId || !_visibleActorIds.IsActorVisible(presence.ActorId) || presence.Movement is null) return Task.CompletedTask;
-        return WriteAsync(IroPlayerActorPackets.BuildWalkEntry(presence), cancellationToken);
+        return WriteAsync(BuildLocalWalkEntry(presence), cancellationToken);
+    }
+
+    // The walking entry's moveStartTime is the SENDING server's clock at send time with the unit's current
+    // cell (pinned clif_set_unit_walking: client_tick(gettick())). The tick carried by the presence belongs
+    // to whichever gateway first stamped the walk; with replicas on different machines it is unrelated to
+    // this gateway's clock, which is the only tick base this client ever learned (0x0087, ping, map enter),
+    // so forwarding it would make the client interpolate from a wrong start time.
+    private byte[] BuildLocalWalkEntry(PlayerPresence presence)
+    {
+        var packet = IroPlayerActorPackets.BuildWalkEntry(presence with { Movement = presence.Movement! with { StartTick = unchecked((uint)Environment.TickCount) } });
+        // DEBUG-LOG-ONLY: one line per 0x09FD an observer is sent - counting these per observer and per
+        // walk is how a stuttering walk is told apart from slow feed delivery.
+        if (MonsterDebugLog.Verbose)
+            MapLogger.Info($"[iRO MAP DEBUG] Sent 0x09FD player walk observerAccountId={_accountId} actorId={presence.ActorId} from=({presence.X},{presence.Y}) to=({presence.Movement!.DestinationX},{presence.Movement.DestinationY}) t={DebugNowMs()}ms");
+        return packet;
     }
 
     public Task PlayerLookChangedAsync(PlayerPresence presence, CancellationToken cancellationToken)

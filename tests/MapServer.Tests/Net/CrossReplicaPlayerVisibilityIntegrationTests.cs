@@ -671,6 +671,209 @@ public sealed class CrossReplicaPlayerVisibilityIntegrationTests : IAsyncLifetim
         Assert.Equal(1, HistoryOf(stayer.Stream).Count(packet => IsPlayerEntry(packet, 30)));
     }
 
+    // ---- Live-client regression: a continuously walking player must reach an observer as ONE walk. ----
+    // World emits a feed entry for every authoritative crossed cell (needed for position/AOI authority),
+    // but the stock client animates a 0x09FD walk entry on its own along the whole route; re-sending it
+    // for each ordinary cell restarts/stutters that animation. Only a walk START (and a genuine new
+    // route) may produce a walking packet; crossed cells and completion update the registry/AOI only.
+
+    private static (int StartX, int StartY, int DestX, int DestY) DecodeWalk(byte[] packet)
+    {
+        var b = packet.AsSpan(67, 6);
+        return ((b[0] << 2) | (b[1] >> 6), ((b[1] & 0x3f) << 4) | (b[2] >> 4), ((b[2] & 0x0f) << 6) | (b[3] >> 2), ((b[3] & 0x03) << 8) | b[4]);
+    }
+
+    private static bool IsWalkEntry(byte[] packet, uint actorId) =>
+        BinaryPrimitives.ReadInt16LittleEndian(packet) == 0x09fd && BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(5)) == actorId;
+
+    private static List<byte[]> WalkEntries(Stream stream, uint actorId) => HistoryOf(stream).Where(p => IsWalkEntry(p, actorId)).ToList();
+
+    private async Task<int> CommittedPlayerEntriesAsync(string mapId, uint actorId, WorldPlayerFeedEntryKind kind)
+    {
+        var grain = _cluster.Client.GetGrain<IWorldPartitionGrain>(Resolver().ResolvePartition(mapId));
+        var baseline = await grain.PollPlayerFeedAsync(null, mapId);
+        var page = await grain.PollPlayerFeedAsync(new WorldPlayerFeedCursor(baseline.Epoch, 0), mapId);
+        Assert.NotNull(page.Entries);
+        return page.Entries!.Count(e => e.Kind == kind && e.ActorId == actorId);
+    }
+
+    // Ticks both replicas until World reports the player idle at (x,y), recording every distinct cell the
+    // OBSERVER replica's local registry held for the player on the way (proof that intermediate
+    // authoritative cells still reach the observer's registry/AOI, just not as client packets).
+    private async Task<HashSet<(ushort, ushort)>> TickWalkToIdleAsync(Replica observerReplica, string mapId, uint actorId, ushort x, ushort y, Func<Task> tick)
+    {
+        var seen = new HashSet<(ushort, ushort)>();
+        var grain = _cluster.Client.GetGrain<IWorldPartitionGrain>(Resolver().ResolvePartition(mapId));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            await tick();
+            if (observerReplica.World.Players.TryGetByActorId(actorId, out var seenPresence)) seen.Add((seenPresence.X, seenPresence.Y));
+            var entry = (await grain.PollPlayerFeedAsync(null, mapId)).Snapshot!.Single(e => e.Presence.ActorId == actorId);
+            if (entry.Movement is null && entry.Presence.X == x && entry.Presence.Y == y)
+            {
+                await tick();
+                await tick();
+                return seen;
+            }
+            await Task.Delay(15);
+        }
+        throw new TimeoutException($"Actor {actorId} never became idle at ({x},{y}).");
+    }
+
+    [Fact]
+    public async Task UninterruptedWalk_ProducesExactlyOneWalkingStartPacketToAnAlreadyVisibleObserver_WhileEveryCellStillUpdatesRegistryAndAoi()
+    {
+        const string mapId = "izlude";
+        var replicaA = MakeReplica(mapId);
+        var replicaB = MakeReplica(mapId);
+        var a = await ConnectAsync(replicaA, accountId: 50, mapId, 99, 100);
+        var b = await ConnectAsync(replicaB, accountId: 51, mapId, 101, 100);
+        using var _a = a.Client;
+        using var _b = b.Client;
+        var tick = TickBoth(replicaA, a.Session, replicaB, b.Session);
+        await ReadUntilAsync(b.Stream, packet => IsPlayerIntro(packet, 50), tick: tick);
+
+        await a.Stream.WriteAsync(BuildMovementRequest(99, 106));
+        await ReadOpcodeAsync(a.Stream, PacketConstants.ZcNotifyPlayerMove);
+        var cellsSeenByObserver = await TickWalkToIdleAsync(replicaB, mapId, 50, 99, 106, tick);
+        await BarrierAsync(b.Stream);
+
+        // World still authoritatively emitted every crossed cell...
+        Assert.True(await CommittedPlayerEntriesAsync(mapId, 50, WorldPlayerFeedEntryKind.Moved) >= 4);
+        // ...the observer's registry/AOI followed along (several distinct intermediate cells, final cell, walk ended)...
+        Assert.True(cellsSeenByObserver.Count >= 3, $"observer registry only ever held {cellsSeenByObserver.Count} cell(s)");
+        Assert.True(replicaB.World.Players.TryGetByActorId(50, out var finalPresence));
+        Assert.Equal(((ushort)99, (ushort)106), (finalPresence.X, finalPresence.Y));
+        Assert.Null(finalPresence.Movement);
+        // ...but the observer's CLIENT got exactly one walking packet for the whole walk, describing the whole route.
+        var walks = WalkEntries(b.Stream, 50);
+        var only = Assert.Single(walks);
+        Assert.Equal((99, 100, 99, 106), DecodeWalk(only));
+        // Completion does not restart it, and nothing further arrives.
+        await tick();
+        await BarrierAsync(b.Stream);
+        Assert.Single(WalkEntries(b.Stream, 50));
+    }
+
+    [Fact]
+    public async Task PlayerEnteringAoiMidWalk_IsIntroducedOnceAtItsCurrentCell_WithAWalkingStateAndThisGatewaysOwnTick()
+    {
+        const string mapId = "izlude";
+        var replicaA = MakeReplica(mapId);
+        var replicaB = MakeReplica(mapId);
+        var a = await ConnectAsync(replicaA, accountId: 52, mapId, 101, 120);   // 20 cells away: outside AOI (14).
+        var b = await ConnectAsync(replicaB, accountId: 53, mapId, 101, 100);
+        using var _a = a.Client;
+        using var _b = b.Client;
+        var tick = TickBoth(replicaA, a.Session, replicaB, b.Session);
+        await tick();
+
+        await a.Stream.WriteAsync(BuildMovementRequest(101, 108));
+        await ReadOpcodeAsync(a.Stream, PacketConstants.ZcNotifyPlayerMove);
+        var localTickBefore = unchecked((uint)Environment.TickCount);
+        await TickWalkToIdleAsync(replicaB, mapId, 52, 101, 108, tick);
+        await BarrierAsync(b.Stream);
+
+        var entry = Assert.Single(HistoryOf(b.Stream), packet => IsPlayerEntry(packet, 52));
+        Assert.True(IsWalkEntry(entry, 52), "entering mid-walk must be introduced with a walking state, not a stand/spawn entry");
+        var (startX, startY, destX, destY) = DecodeWalk(entry);
+        Assert.Equal((101, 108), (destX, destY));
+        Assert.Equal(101, startX);
+        Assert.InRange(startY, 108, 119);   // the CURRENT cell on the route when it came into view, never the walk's original start (120).
+        // Stamped with THIS gateway's clock at send time (pinned clif_set_unit_walking: client_tick(gettick())).
+        var stamp = BinaryPrimitives.ReadUInt32LittleEndian(entry.AsSpan(37));
+        Assert.True(unchecked(stamp - localTickBefore) < 60_000, $"walk start tick {stamp} is not this gateway's tick ({localTickBefore})");
+        Assert.Empty(HistoryOf(b.Stream).Where(packet => IsPlayerVanish(packet, 52)));
+    }
+
+    [Fact]
+    public async Task PlayerLeavingAoiMidWalk_DisappearsExactlyOnce_AndNoWalkPacketFollowsTheVanish()
+    {
+        const string mapId = "izlude";
+        var replicaA = MakeReplica(mapId);
+        var replicaB = MakeReplica(mapId);
+        var a = await ConnectAsync(replicaA, accountId: 54, mapId, 101, 110);
+        var b = await ConnectAsync(replicaB, accountId: 55, mapId, 101, 100);
+        using var _a = a.Client;
+        using var _b = b.Client;
+        var tick = TickBoth(replicaA, a.Session, replicaB, b.Session);
+        await ReadUntilAsync(b.Stream, packet => IsPlayerIntro(packet, 54), tick: tick);
+
+        await a.Stream.WriteAsync(BuildMovementRequest(101, 122));
+        await ReadOpcodeAsync(a.Stream, PacketConstants.ZcNotifyPlayerMove);
+        await TickWalkToIdleAsync(replicaB, mapId, 54, 101, 122, tick);
+        await BarrierAsync(b.Stream);
+
+        var history = HistoryOf(b.Stream).ToList();
+        var vanishIndex = history.FindIndex(packet => IsPlayerVanish(packet, 54));
+        Assert.True(vanishIndex >= 0, "the walker never left the observer's view");
+        Assert.Equal(1, history.Count(packet => IsPlayerVanish(packet, 54)));
+        Assert.Empty(history.Skip(vanishIndex + 1).Where(packet => IsPlayerEntry(packet, 54)));
+        Assert.Single(WalkEntries(b.Stream, 54));   // the single walk start, sent while still in view.
+    }
+
+    [Fact]
+    public async Task MidWalkRetarget_ProjectsTheNewRouteOnce_WithoutStaleOrDuplicateWalks()
+    {
+        const string mapId = "izlude";
+        var replicaA = MakeReplica(mapId);
+        var replicaB = MakeReplica(mapId);
+        var a = await ConnectAsync(replicaA, accountId: 56, mapId, 99, 100);
+        var b = await ConnectAsync(replicaB, accountId: 57, mapId, 101, 100);
+        using var _a = a.Client;
+        using var _b = b.Client;
+        var tick = TickBoth(replicaA, a.Session, replicaB, b.Session);
+        await ReadUntilAsync(b.Stream, packet => IsPlayerIntro(packet, 56), tick: tick);
+        var grain = _cluster.Client.GetGrain<IWorldPartitionGrain>(Resolver().ResolvePartition(mapId));
+
+        await a.Stream.WriteAsync(BuildMovementRequest(99, 112));
+        await ReadOpcodeAsync(a.Stream, PacketConstants.ZcNotifyPlayerMove);
+        // Let the walker get a few cells along before re-clicking.
+        for (var i = 0; i < 400; i++)
+        {
+            await tick();
+            var snap = (await grain.PollPlayerFeedAsync(null, mapId)).Snapshot!.Single(e => e.Presence.ActorId == 56);
+            if (snap.Presence.Y >= 103) break;
+            await Task.Delay(15);
+        }
+        await a.Stream.WriteAsync(BuildMovementRequest(105, 104));
+        await TickWalkToIdleAsync(replicaB, mapId, 56, 105, 104, tick);
+        await BarrierAsync(b.Stream);
+
+        var walks = WalkEntries(b.Stream, 56).Select(DecodeWalk).ToList();
+        Assert.Equal(2, walks.Count);                                   // the original start + the genuine new route, nothing else.
+        Assert.Equal((99, 100, 99, 112), walks[0]);
+        Assert.Equal(105, walks[1].DestX);
+        Assert.Equal(104, walks[1].DestY);
+        Assert.InRange(walks[1].StartY, 103, 112);                      // starts from where the walker really was, not the stale origin.
+        Assert.True(replicaB.World.Players.TryGetByActorId(56, out var final));
+        Assert.Equal(((ushort)105, (ushort)104), (final.X, final.Y));
+        Assert.Null(final.Movement);
+    }
+
+    // The tick in a walk entry must be the SENDING gateway's clock: replicas on different machines have
+    // unrelated Environment.TickCount values, and the client interpolates against the tick base it learned
+    // from ITS OWN gateway. A presence carrying another gateway's stamp must not leak it onto the wire.
+    [Fact]
+    public async Task WalkEntry_NeverForwardsAnotherGatewaysTickStamp()
+    {
+        const string mapId = "izlude";
+        var replica = MakeReplica(mapId);
+        var observer = await ConnectAsync(replica, accountId: 58, mapId, 100, 100);
+        using var _o = observer.Client;
+        var foreignStamp = unchecked((uint)Environment.TickCount + 1_000_000_007u);
+        var walker = new PlayerPresence(59, 59, "Walker", mapId, 101, 101, 0, 0, new PlayerMovementPresence(101, 101, 101, 105, foreignStamp),
+            0, 0, 50, 150, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+        await observer.Session.PlayerEnteredViewAsync(walker, PlayerEntryKind.ExistingStandingOrWalking, CancellationToken.None);
+        var entry = await ReadOpcodeAsync(observer.Stream, 0x09fd);
+
+        var stamp = BinaryPrimitives.ReadUInt32LittleEndian(entry.AsSpan(37));
+        Assert.NotEqual(foreignStamp, stamp);
+        Assert.True(unchecked((uint)Environment.TickCount - stamp) < 10_000);
+    }
+
     // Point 9-11: a player -> monster combat action originating on replica A reaches an observer on
     // replica B exactly once, and neither replica ever produces a same-gateway duplicate from feed
     // replay (the attacker's own fast-path echo is deduplicated against its own later feed delivery

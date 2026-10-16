@@ -1865,6 +1865,21 @@ Invariants and the tests that pin them:
   `PlayerAttackAction` entries World committed for that attacker (attacker echo deduplicated against its own
   feed delivery); the lethal action precedes the Died vanish on the observer socket's arrival history
   (`CrossReplicaPlayerVisibilityIntegrationTests`).
+- **One walk = one walking packet per observer**: World emits a feed entry per authoritative crossed cell
+  (`Moved`) and one on completion (`MovementFinished`); both only update the registry and AOI. Only
+  `MovementStarted` - World's announcement of a walk start or a genuine new route - is broadcast as `0x09FD`,
+  matching the pinned server (`unit_walktoxy_nextcell` never re-sends the walk for continuation cells) and the
+  pre-feed single-process behaviour (`broadcastMovement: false` for crossed cells). Live acceptance of PR #37
+  showed the earlier "broadcast every entry" behaviour stuttering walks on the observer's client. An observer
+  that enters range mid-walk is introduced at the CURRENT cell with a walking state. The walk entry's
+  `moveStartTime` is always the SENDING gateway's own tick at send time (pinned `clif_set_unit_walking`:
+  `client_tick(gettick())`), never the tick another gateway stamped - replicas on different machines have
+  unrelated tick counters. Tests: `UninterruptedWalk_...`, `PlayerEnteringAoiMidWalk_...`,
+  `PlayerLeavingAoiMidWalk_...`, `MidWalkRetarget_...`, `WalkEntry_NeverForwardsAnotherGatewaysTickStamp`,
+  `PlayerFeedProjectionTests.OnlyMovementStarted_...`. Auto-approach to attack is client-driven (the server
+  starts a walk only from a `0x035F` request), so each re-click is a genuine route change and correctly one
+  walk packet; with `MonsterDebugLog.Verbose` the log shows `Sent 0x09FD player walk ...` per observer and
+  `Player feed poll ... rpcMs=...` for the player feed's own latency, separate from the monster feed.
 - **Failure isolation**: `DeliverAllAsync` awaits every delivery; a dead observer socket (IOException /
   disposed / cancelled) is ignored and cannot stall or corrupt other observers or the tick.
 

@@ -51,7 +51,12 @@ address) and add `"MapTargetPorts": [5121, 5122]` next to `MapTargetPort`.
    never assume.
 4. Put both characters on the same map within AOI (14 cells) of each other. Verify each client shows
    the other character, and neither shows it twice.
-5. Move A; verify B sees the walk (and the reverse). Rotate A's head/body; verify B sees the turn.
+5. Move A over a long straight walk (10+ cells, not a one-cell click); verify B sees ONE smooth walk to the
+   destination (no stutter or restarts), then the reverse. Repeat while A walks toward a monster so the client
+   issues re-clicks; each re-click is a real route change, so a restart per re-click is expected, but an
+   uninterrupted walk must not restart. With verbose MapServer logging enabled, count the
+   `Sent 0x09FD player walk observerAccountId=<B>` lines for one walk: it must be 1 (plus one per re-click).
+   Rotate A's head/body; verify B sees the turn.
 6. Walk A out of B's range and back; verify exactly one disappearance and one re-appearance on B.
 7. Open the status/info window on the other character (click it); verify the name resolves.
 8. Attack a monster with A (non-lethal first); verify B sees A's attack animation and the damage once.
