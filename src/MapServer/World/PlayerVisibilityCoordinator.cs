@@ -158,12 +158,20 @@ public sealed class PlayerVisibilityCoordinator
         return true;
     }
 
-    private static async Task DeliverAllAsync(IEnumerable<Task> deliveries)
+    // Awaits EVERY delivery even when one fails, so one client's failure can neither leave another
+    // observer's already-started delivery unobserved nor stop later observers from being awaited. A
+    // dead/closing client (IOException/ObjectDisposedException/cancellation) is expected and ignored;
+    // anything else is a genuine defect and is rethrown only after all deliveries have completed.
+    private static async Task DeliverAllAsync(List<Task> deliveries)
     {
+        List<Exception>? unexpected = null;
         foreach (var delivery in deliveries)
         {
             try { await delivery; }
             catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException) { }
+            catch (Exception ex) { (unexpected ??= []).Add(ex); }
         }
+        if (unexpected is { Count: 1 }) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(unexpected[0]).Throw();
+        if (unexpected is { Count: > 1 }) throw new AggregateException(unexpected);
     }
 }

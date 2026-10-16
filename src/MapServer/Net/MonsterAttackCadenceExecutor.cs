@@ -31,7 +31,8 @@ namespace Athena.Net.MapServer.Net;
 // MapServer only decides Attack/Wait cadence on top of an already-InAttackRange projection".
 internal sealed class MonsterAttackCadenceExecutor(
     MonsterFeedProjectionRegistry projections, MonsterAttackCadenceStore combatState, IWorldRuntime worldRuntime, TimeProvider timeProvider,
-    Func<Task>? beforeFinalAttackRevalidation = null)
+    Func<Task>? beforeFinalAttackRevalidation = null,
+    LocalMonsterAttackEchoes? localEchoes = null)
 {
     private readonly Func<Task> _beforeFinalAttackRevalidation = beforeFinalAttackRevalidation ?? (() => Task.CompletedTask);
 
@@ -164,16 +165,24 @@ internal sealed class MonsterAttackCadenceExecutor(
         // bounded retry of the SAME ActionId, which this executor does not currently perform (a
         // transient failure here simply means other replicas miss this one action's cross-replica
         // echo; the victim's own local wire projection below is entirely unaffected).
+        // This gateway projects the attack to its own sessions below; World's feed will hand the very same
+        // entry back to this gateway too, so the ActionId is registered BEFORE the publish (a poll can
+        // race the RPC's return) and consumed by MapTcpServer.FanOutEntryAsync to skip that echo.
+        var actionId = Guid.NewGuid();
+        localEchoes?.Register(actionId);
         try
         {
-            await worldRuntime.PublishMonsterAttackActionAsync(
-                new WorldMonsterAttackActionCommand(life, target.CharacterId, target.PresenceId, Guid.NewGuid(),
+            var published = await worldRuntime.PublishMonsterAttackActionAsync(
+                new WorldMonsterAttackActionCommand(life, target.CharacterId, target.PresenceId, actionId,
                     result.Damage, SourceAttackMotion: (uint)staticMob.AttackMotion, TargetDamageMotion: (uint)PlayerDamageMotionCalculator.Calculate(combatSnapshot.Agility),
                     Lethal: hpOutcome.HpAfter == 0),
                 cancellationToken);
+            // Only a Published entry will ever come back through the feed; anything else leaves nothing to skip.
+            if (published.Status != WorldMonsterAttackPublishStatus.Published) localEchoes?.Forget(actionId);
         }
-        catch (IOException) { /* Transient World RPC failure - other replicas simply miss this one action's echo; never blocks the victim's own local projection below. */ }
-        catch (OperationCanceledException) { /* Shutdown. */ }
+        catch (IOException) { localEchoes?.Forget(actionId); /* Transient World RPC failure - other replicas simply miss this one action's echo; never blocks the victim's own local projection below. */ }
+        catch (OperationCanceledException) { localEchoes?.Forget(actionId); /* Shutdown. */ }
+        catch { localEchoes?.Forget(actionId); throw; }
 
         // srcSpeed/dstSpeed: pinned clif_damage's own attacker-amotion/target-dmotion pair - the
         // mob's own DamageMotion is NEVER used here (that field serves the opposite direction).

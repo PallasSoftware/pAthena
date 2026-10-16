@@ -125,7 +125,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         // distinct from and later than MovePlayerAsync) to genuinely land before ticking, since a
         // packet's own wire arrival gives no ordering guarantee against A's own in-flight
         // packet-processing task.
-        await runtime.WaitForEntriesAsync(1);
+        await runtime.WaitForEntriesAsync(WorldPlayerFeedEntryKind.MovementStarted, 1);
         await server.ProcessOnePlayerTickAsync([a.Session, b.Session], CancellationToken.None);
         var movement = await ReadVariablePacketAsync(b.Stream);
         Assert.Equal((short)0x09fd, BinaryPrimitives.ReadInt16LittleEndian(movement));
@@ -134,7 +134,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         await a.Stream.WriteAsync(new byte[] { 0x61, 0x03, 0x02, 0x00, 0x01, 0x7f });
         // Item 14 §2/§4: the look-change broadcast (0x009C) is feed-driven - waits for
         // UpdatePlayerLookAsync to genuinely land (same race as above) before ticking.
-        await runtime.WaitForEntriesAsync(2);
+        await runtime.WaitForEntriesAsync(WorldPlayerFeedEntryKind.LookChanged, 1);
         await server.ProcessOnePlayerTickAsync([a.Session, b.Session], CancellationToken.None);
         Assert.Equal(Convert.FromHexString("9C0001000000020001"), await ReadExactAsync(b.Stream, 9));
 
@@ -158,6 +158,52 @@ public sealed class MapClientSessionPlayerPresenceTests
         var vanish = await ReadExactAsync(b.Stream, 7);
         Assert.Equal(Convert.FromHexString("80000100000000"), vanish);
         Assert.False(players.TryGetByActorId(1, out _));
+    }
+
+    // Production race: World appends a player's Registered feed entry INSIDE the registration RPC,
+    // i.e. before the registering session is marked world-eligible. A tick that polls the feed in that
+    // window must still bind the REAL session as that player's observer (not a permanent
+    // NullPlayerPresenceObserver), or the newcomer never discovers the players already on the map.
+    [Fact]
+    public async Task FeedTickBetweenWorldCommitAndSessionEligibility_StillBindsTheRealSessionAsObserver()
+    {
+        var players = new PlayerPresenceRegistry();
+        var coordinator = new PlayerVisibilityCoordinator(players);
+        var runtime = new RecordingWorldRuntime();
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules()),
+            EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(),
+            players, coordinator, WorldVisibilityOptions.Default, new PlayerFeedProjectionRegistry());
+        var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), world, runtime);
+
+        await using var b = await ConnectAsync(2, 102, "Bob", 105, 105, players, coordinator, runtime);
+        await EnterWorldAsync(b);
+        await runtime.WaitForRegistrationsAsync(1);
+        await server.ProcessOnePlayerTickAsync([b.Session], CancellationToken.None);
+
+        var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        runtime.AfterRegistrationCommittedBeforeReturn = async presence =>
+        {
+            if (presence.ActorId != 1) return;
+            committed.TrySetResult();
+            await release.Task;
+        };
+        await using var a = await ConnectAsync(1, 101, "Alice", 100, 100, players, coordinator, runtime);
+        var entering = EnterWorldAsync(a);
+        await committed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(a.Session.IsWorldMapEligible);
+
+        // The tick that observes Alice's already-committed Registered entry while Alice is not eligible.
+        await server.ProcessOnePlayerTickAsync([a.Session, b.Session], CancellationToken.None);
+        release.SetResult();
+        await entering;
+
+        var aSeesB = await ReadVariablePacketAsync(a.Stream);
+        Assert.Equal((short)0x09ff, BinaryPrimitives.ReadInt16LittleEndian(aSeesB));
+        Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(aSeesB.AsSpan(5)));
+        var bSeesA = await ReadVariablePacketAsync(b.Stream);
+        Assert.Equal((short)0x09fe, BinaryPrimitives.ReadInt16LittleEndian(bSeesA));
+        Assert.Equal(1u, BinaryPrimitives.ReadUInt32LittleEndian(bSeesA.AsSpan(5)));
     }
 
     private static async Task EnterWorldAsync(TestSession session)
@@ -269,7 +315,19 @@ public sealed class MapClientSessionPlayerPresenceTests
         public IReadOnlyList<(uint CharacterId, Guid PresenceId)> Unregistrations { get { lock (_gate) return _unregistrations.ToArray(); } }
         public IReadOnlyList<WorldMovementCommand> Movements { get { lock (_gate) return _movements.ToArray(); } }
 
-        public Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState, CancellationToken cancellationToken)
+        // Optional: holds the registration RPC's RETURN (after World has already committed the
+        // Registered feed entry), modelling the real window between the grain's commit and the
+        // caller observing the response.
+        public Func<WorldPlayerPresence, Task>? AfterRegistrationCommittedBeforeReturn { get; set; }
+
+        public async Task<WorldPresenceRegistration> RegisterPresenceAsync(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState, CancellationToken cancellationToken)
+        {
+            var result = RegisterCore(mapId, presence, publicState);
+            if (AfterRegistrationCommittedBeforeReturn is { } hook) await hook(presence);
+            return result;
+        }
+
+        private WorldPresenceRegistration RegisterCore(string mapId, WorldPlayerPresence presence, WorldPlayerPublicState publicState)
         {
             lock (_gate)
             {
@@ -277,9 +335,13 @@ public sealed class MapClientSessionPlayerPresenceTests
                     ? WorldPresenceRegistrationStatus.AlreadyRegistered
                     : WorldPresenceRegistrationStatus.Registered;
                 _registrations.Add(presence);
-                _currentByCharacterId[presence.CharacterId] = presence with { MapId = mapId };
+                var registered = presence with { MapId = mapId };
+                _currentByCharacterId[presence.CharacterId] = registered;
                 _publicStateByCharacterId[presence.CharacterId] = publicState;
-                return Task.FromResult(new WorldPresenceRegistration("test-partition", mapId, status, 1));
+                // Mirrors WorldPartitionGrain.RegisterPresenceAsync: a Registered entry is appended for
+                // the first registration AND for an idempotent replay (AlreadyRegistered).
+                _entries.Add(new WorldPlayerFeedEntry(_nextSequence++, WorldPlayerFeedEntryKind.Registered, registered.ActorId, registered.CharacterId, new WorldPlayerPresenceEntry(registered, publicState)));
+                return new WorldPresenceRegistration("test-partition", mapId, status, 1);
             }
         }
 
@@ -288,6 +350,15 @@ public sealed class MapClientSessionPlayerPresenceTests
             lock (_gate)
             {
                 _unregistrations.Add((characterId, presenceId));
+                // Mirrors WorldPartitionGrain.UnregisterPresenceAsync: only the owning presence identity
+                // removes the player, and ONLY then is an Unregistered entry appended to the feed -
+                // otherwise observers on other gateways would never learn the player left.
+                if (!_currentByCharacterId.TryGetValue(characterId, out var existing))
+                    return Task.FromResult(new WorldPresenceUnregistration("test-partition", mapId, WorldPresenceUnregistrationStatus.AlreadyAbsent, 0));
+                if (existing.PresenceId != presenceId)
+                    return Task.FromResult(new WorldPresenceUnregistration("test-partition", mapId, WorldPresenceUnregistrationStatus.PresenceMismatch, 0));
+                var publicState = _publicStateByCharacterId.TryGetValue(characterId, out var ps) ? ps : EmptyPublicState;
+                _entries.Add(new WorldPlayerFeedEntry(_nextSequence++, WorldPlayerFeedEntryKind.Unregistered, existing.ActorId, characterId, new WorldPlayerPresenceEntry(existing, publicState)));
                 _currentByCharacterId.Remove(characterId);
                 _publicStateByCharacterId.Remove(characterId);
                 return Task.FromResult(new WorldPresenceUnregistration("test-partition", mapId, WorldPresenceUnregistrationStatus.Removed, 0));
@@ -300,7 +371,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         // the receiving session's own packet-processing task actually calls this RPC - a test tick
         // must wait for the RPC to genuinely land before polling, or it can race ahead of the
         // session's own in-flight packet handling and observe nothing.
-        public Task WaitForEntriesAsync(int count) => WaitUntilAsync(() => { lock (_gate) return _entries.Count >= count; });
+        public Task WaitForEntriesAsync(WorldPlayerFeedEntryKind kind, int count) => WaitUntilAsync(() => { lock (_gate) return _entries.Count(entry => entry.Kind == kind) >= count; });
 
         public Task<WorldMovementResult> MovePlayerAsync(WorldMovementCommand command, CancellationToken cancellationToken)
         {

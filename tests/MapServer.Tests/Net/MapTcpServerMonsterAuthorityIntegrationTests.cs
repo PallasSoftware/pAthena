@@ -380,13 +380,12 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         Assert.Equal(WorldMonsterDamageStatus.Applied, lethalHit.Status);
         Assert.True(lethalHit.KilledByThisHit);
         // Item 14: this fake killer presence is a throwaway test fixture purely for
-        // ApplyMonsterDamageAsync's own attacker-presence validation - it is NOT the session under
-        // test. Since RegisterPresenceAsync now also participates in the real World-owned player
-        // feed (item 14 stage 1), leaving it registered would make the session's own subsequent
-        // ProcessOneMonsterTickAsync calls (which poll BOTH the monster and player feeds each tick)
-        // discover it as a genuine nearby player and write an unplanned spawn packet into `stream`,
-        // corrupting the later monster-feed-only byte reads below. Unregister it immediately so this
-        // test continues to exercise ONLY the monster feed, exactly as before this stage existed.
+        // ApplyMonsterDamageAsync's own attacker-presence validation. RegisterPresenceAsync also
+        // participates in the World-owned player feed, so unregistering it keeps it from lingering
+        // as a nearby player - but the session has not polled the player feed yet, so it still
+        // replays the Registered + Unregistered entries in feed order (a 0x09FE intro of actor 999
+        // followed by its 0x0080 vanish). The rediscovery read at the end of this test therefore
+        // retains and asserts that exact pair instead of assuming it never arrives.
         await grain.UnregisterPresenceAsync(mapId, characterId: 999, killerPresenceId);
 
         // Drive ProcessOneMonsterTickAsync repeatedly (the real production polling loop's own unit
@@ -453,9 +452,36 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
         // this test calling NotifyMonsterRespawnedAsync/NotifyMonsterMovedAsync itself. If
         // FanOutEntryAsync's own Respawned branch returned immediately after its cleanup call
         // (skipping this discovery tail), this read would time out and fail the test.
-        var rediscoveryPacket = await ReadDynamic(stream);
+        // Packets are framed one by one and every non-rediscovery packet is retained and asserted, never
+        // discarded: the session's first player-feed poll replays the throwaway killer's Registered +
+        // Unregistered entries in feed order, so a 0x09FE introduction of actor 999 followed by its
+        // 0x0080 vanish is the exact, deterministic extra traffic (relative to the rediscovery it may
+        // arrive before or after, depending on which tick polled the respawn).
+        var extras = new List<byte[]>();
+        byte[] rediscoveryPacket;
+        while (true)
+        {
+            var packet = await ReadFramedPacketAsync(stream);
+            if (BinaryPrimitives.ReadInt16LittleEndian(packet) == PacketConstants.ZcNotifyStandEntry && BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(5)) == original.ActorId)
+            {
+                rediscoveryPacket = packet;
+                break;
+            }
+            extras.Add(packet);
+            Assert.True(extras.Count <= 2, "Unexpected extra packets before the monster rediscovery.");
+        }
         Assert.Equal((short)PacketConstants.ZcNotifyStandEntry, BinaryPrimitives.ReadInt16LittleEndian(rediscoveryPacket));
         Assert.Equal(original.ActorId, BinaryPrimitives.ReadUInt32LittleEndian(rediscoveryPacket.AsSpan(5)));
+        // The killer's player-feed replay (if it arrived before the rediscovery) is intro-then-vanish.
+        // Whatever remains of it arrives after; drain and verify the pair is complete and ordered.
+        while (extras.Count < 2)
+        {
+            extras.Add(await ReadFramedPacketAsync(stream));
+        }
+        Assert.Equal(0x09fe, BinaryPrimitives.ReadUInt16LittleEndian(extras[0]));
+        Assert.Equal(999u, BinaryPrimitives.ReadUInt32LittleEndian(extras[0].AsSpan(5)));
+        Assert.Equal((short)PacketConstants.ZcNotifyVanish, BinaryPrimitives.ReadInt16LittleEndian(extras[1]));
+        Assert.Equal(999u, BinaryPrimitives.ReadUInt32LittleEndian(extras[1].AsSpan(2)));
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -542,7 +568,16 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
                 var candidate = page.Snapshot!.SingleOrDefault(i => i.ActorId == actorId);
                 confirmedDead = candidate is { Lifecycle: WorldMonsterLifecycleState.Dead, CurrentHp: 0 };
             }
-            Assert.True(confirmedDead, $"Cycle {cycle}: expected World authority to confirm Dead/HP==0.");
+            if (!confirmedDead)
+            {
+                var diag = await grain.PollMonsterFeedAsync(cursor: null, mapId);
+                var instance = diag.Snapshot!.SingleOrDefault(i => i.ActorId == actorId);
+                var localView = world.MonsterProjections.TryGet(mapId, out var localProjection) ? localProjection.AllInstances.SingleOrDefault(i => i.ActorId == actorId) : null;
+                Assert.Fail($"Cycle {cycle}: expected World authority to confirm Dead/HP==0. attackDispatchedToWorld={inFlightObservedDuringDispatch} " +
+                    $"world=[{instance?.Lifecycle} hp={instance?.CurrentHp}/{instance?.MaxHp} incarnation={instance?.IncarnationId.Value}] " +
+                    $"expectedIncarnation={currentIncarnation.Value} sessionProjection=[{localView?.Lifecycle} hp={localView?.CurrentHp} incarnation={localView?.IncarnationId.Value}] " +
+                    $"pendingRetryAt={await session.SnapshotPendingNextRetryAtForTestAsync(CancellationToken.None)}");
+            }
 
             // E. the session resolves the logical attack/death projection - drive real ticks until
             // its own socket observes exactly the Died vanish for this ActorId (ReadUntilVanishAsync
@@ -1511,6 +1546,16 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
     // fixed-length opcode" - the caller falls back to the dynamic, self-describing length-prefixed
     // shape (ZcNotifyNewEntry/ZcNotifyStandEntry, matching ReadDynamic's own 4-byte-header/2-byte-
     // length shape used elsewhere in this file).
+    // Frames exactly one packet by its own true length (fixed table, else the length-prefixed shape).
+    private static async Task<byte[]> ReadFramedPacketAsync(Stream stream)
+    {
+        var header = await ReadExact(stream, 2);
+        var fixedLength = KnownFixedPacketLength(BinaryPrimitives.ReadInt16LittleEndian(header));
+        if (fixedLength >= 0) return [.. header, .. await ReadExact(stream, fixedLength - 2)];
+        var lengthField = await ReadExact(stream, 2);
+        return [.. header, .. lengthField, .. await ReadExact(stream, BinaryPrimitives.ReadUInt16LittleEndian(lengthField) - 4)];
+    }
+
     internal static int KnownFixedPacketLength(short opcode) => opcode switch
     {
         (short)PacketConstants.ZcNotifyAct3 => PacketConstants.ZcNotifyAct3Length,

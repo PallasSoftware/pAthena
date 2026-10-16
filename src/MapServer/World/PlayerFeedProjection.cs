@@ -58,19 +58,14 @@ public sealed class PlayerFeedProjection(string mapId)
         {
             freshActorIds.Add(entry.Presence.ActorId);
             var presence = ToPlayerPresence(entry);
-            if (registry.TryGetByActorId(entry.Presence.ActorId, out _))
-            {
-                await coordinator.ReplacePublicStateAsync(presence, cancellationToken);
-            }
-            else
-            {
-                var observer = resolveObserver(entry.Presence.ActorId, entry.Presence.CharacterId);
-                await coordinator.RegisterAsync(presence, observer, cancellationToken);
-            }
+            await RegisterOrRefreshAsync(presence, registry, coordinator, resolveObserver, cancellationToken);
         }
         foreach (var staleActorId in previousActorIds)
         {
-            if (!freshActorIds.Contains(staleActorId))
+            // Only a presence that is still registered on THIS map is stale here: the player may have
+            // moved to another map whose own projection has since registered it, and this map's resync
+            // must never remove that newer registration.
+            if (!freshActorIds.Contains(staleActorId) && IsRegisteredOnThisMap(registry, staleActorId))
                 await coordinator.UnregisterAsync(staleActorId, cancellationToken);
         }
 
@@ -91,21 +86,18 @@ public sealed class PlayerFeedProjection(string mapId)
         {
             case WorldPlayerFeedEntryKind.Registered:
             case WorldPlayerFeedEntryKind.TransferredIn:
-                if (registry.TryGetByActorId(entry.ActorId, out _))
-                {
-                    await coordinator.ReplacePublicStateAsync(presence, cancellationToken);
-                }
-                else
-                {
-                    var observer = resolveObserver(entry.ActorId, entry.CharacterId);
-                    await coordinator.RegisterAsync(presence, observer, cancellationToken);
-                    lock (_gate) _registeredActorIds.Add(entry.ActorId);
-                }
+                await RegisterOrRefreshAsync(presence, registry, coordinator, resolveObserver, cancellationToken);
+                lock (_gate) _registeredActorIds.Add(entry.ActorId);
                 break;
 
             case WorldPlayerFeedEntryKind.Unregistered:
             case WorldPlayerFeedEntryKind.TransferredOut:
-                await coordinator.UnregisterAsync(entry.ActorId, cancellationToken);
+                // A departure only removes the registration it describes: if the registry already holds
+                // this player on a DIFFERENT map (a newer TransferredIn was applied first because this
+                // map's feed was not polled while it had no local sessions), this late entry is stale and
+                // must leave the current registration alone.
+                if (IsRegisteredOnThisMap(registry, entry.ActorId))
+                    await coordinator.UnregisterAsync(entry.ActorId, cancellationToken);
                 lock (_gate) _registeredActorIds.Remove(entry.ActorId);
                 break;
 
@@ -119,6 +111,29 @@ public sealed class PlayerFeedProjection(string mapId)
                 await coordinator.UpdateLookAsync(presence, cancellationToken);
                 break;
         }
+    }
+
+    private bool IsRegisteredOnThisMap(PlayerPresenceRegistry registry, uint actorId) =>
+        registry.TryGetByActorId(actorId, out var current) && string.Equals(current.MapName, MapId, StringComparison.OrdinalIgnoreCase);
+
+    // Registers a player the registry does not know, or refreshes one it already holds on this same
+    // map. A player the registry still holds on ANOTHER map (it changed map on this replica and the old
+    // map's feed has not been polled yet) is first departed from there - neighbours on the old map are
+    // told - and then registered fresh here, so neighbours on this map are introduced exactly once.
+    private static async Task RegisterOrRefreshAsync(PlayerPresence presence, PlayerPresenceRegistry registry, PlayerVisibilityCoordinator coordinator,
+        ResolveObserver resolveObserver, CancellationToken cancellationToken)
+    {
+        if (registry.TryGetByActorId(presence.ActorId, out var existing))
+        {
+            if (string.Equals(existing.MapName, presence.MapName, StringComparison.OrdinalIgnoreCase))
+            {
+                await coordinator.ReplacePublicStateAsync(presence, cancellationToken);
+                return;
+            }
+            await coordinator.UnregisterAsync(presence.ActorId, cancellationToken);
+        }
+        var observer = resolveObserver(presence.ActorId, presence.CharacterId);
+        await coordinator.RegisterAsync(presence, observer, cancellationToken);
     }
 
     // Step 5 of the binding ordering - advances Cursor ONLY after the caller has confirmed the

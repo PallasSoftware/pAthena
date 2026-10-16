@@ -26,6 +26,7 @@ public sealed class MapTcpServer
     private readonly IWorldRuntime _worldRuntime;
     private readonly TcpListener _listener;
     private readonly ConcurrentDictionary<int, MapClientSession> _sessions = new();
+    private readonly LocalMonsterAttackEchoes _localMonsterAttackEchoes = new();
     private readonly MonsterAttackCadenceExecutor _cadenceExecutor;
     // Cross-session (this gateway process only) ordering primitive for a lethal player attack action
     // vs this SAME process's own Died feed dispatch - see LethalAttackProjectionGate's own doc comment.
@@ -58,7 +59,7 @@ public sealed class MapTcpServer
         _worldRuntime = worldRuntime;
         var config = _configStore.Current;
         _listener = new TcpListener(config.BindIp, config.MapPort);
-        _cadenceExecutor = new MonsterAttackCadenceExecutor(_world.MonsterProjections, _world.CombatState, _worldRuntime, timeProvider ?? TimeProvider.System);
+        _cadenceExecutor = new MonsterAttackCadenceExecutor(_world.MonsterProjections, _world.CombatState, _worldRuntime, timeProvider ?? TimeProvider.System, localEchoes: _localMonsterAttackEchoes);
         // Reconstructs this process's contribution to CharServer's own aggregate the instant a
         // (re)connection to CharServer succeeds - see CharServerConnector.CurrentUserCountProvider's
         // own doc comment for why this is necessary on top of the per-event reports below.
@@ -78,6 +79,11 @@ public sealed class MapTcpServer
     // Test-only read of the exact count ReportAuthenticatedUserCount would report - lets a test
     // assert the counting logic itself (authenticated-only, disconnect-decrements, never negative)
     // without needing a live CharServerConnector connection. Never called from any production path.
+    // Test-only: registers a session that a test constructed directly (instead of through the accept
+    // loop) in the same table HandleClientAsync uses, so server-level fan-out (e.g. the attacker's own
+    // local echo in FanOutPlayerAttackActionAsync) finds it exactly as it would in production.
+    internal void RegisterSessionForTest(MapClientSession session) => _sessions[(int)session.AccountId] = session;
+
     internal int AuthenticatedSessionCountForTest => _sessions.Values.Count(session => session.IsAuthenticated);
 
     // Focused tests which exercise the existing process-local simulation do not start an Orleans
@@ -517,7 +523,7 @@ public sealed class MapTcpServer
             // player OR monster reconciliation this tick).
             try
             {
-                await PollAndReconcilePlayersAsync(mapGroup.Key, mapGroup.ToArray(), cancellationToken);
+                await PollAndReconcilePlayersAsync(mapGroup.Key, sessions, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -603,7 +609,7 @@ public sealed class MapTcpServer
     {
         var eligibleSessions = sessions.Where(session => session.IsWorldMapEligible).ToArray();
         foreach (var mapGroup in eligibleSessions.GroupBy(session => session.CurrentMapName, StringComparer.OrdinalIgnoreCase))
-            await PollAndReconcilePlayersAsync(mapGroup.Key, mapGroup.ToArray(), cancellationToken);
+            await PollAndReconcilePlayersAsync(mapGroup.Key, sessions, cancellationToken);
     }
 
     // DEBUG-LOG-ONLY per-tick timing (no behavior, not guarded by the verbose toggle): raw
@@ -703,7 +709,7 @@ public sealed class MapTcpServer
     // PlayerPresenceRegistry/PlayerVisibilityCoordinator for EVERY player on this map, local or
     // remote, via PlayerFeedProjection - see that type's own doc comment for why MapClientSession no
     // longer registers itself with those directly.
-    private async Task PollAndReconcilePlayersAsync(string mapId, IReadOnlyCollection<MapClientSession> mapSessions, CancellationToken cancellationToken)
+    private async Task PollAndReconcilePlayersAsync(string mapId, IReadOnlyCollection<MapClientSession> allSessions, CancellationToken cancellationToken)
     {
         var projection = _world.PlayerProjectionsOrDefault.GetOrCreate(mapId);
         var cursorBeforePoll = projection.Cursor;
@@ -719,8 +725,12 @@ public sealed class MapTcpServer
         // deliveries when others enter its view, exactly as it always has), or a fresh
         // NullPlayerPresenceObserver for a player this map's session set does not include (a remote
         // replica's player, discovered only via this feed).
+        // Candidates are ALL sessions of this gateway whose presence identity is allocated, not just the
+        // world-eligible ones: World appends the Registered entry inside the registration RPC, before
+        // the session flips to WorldVisible, so a tick can legitimately see a local player's own
+        // Registered entry while that session is not yet eligible (see IsPresenceObservable).
         PlayerFeedProjection.ResolveObserver resolveObserver = (actorId, _) =>
-            mapSessions.FirstOrDefault(session => session.AccountId == actorId) is { } localSession
+            allSessions.FirstOrDefault(session => session.AccountId == actorId && session.IsPresenceObservable) is { } localSession
                 ? localSession
                 : new NullPlayerPresenceObserver(actorId);
 
@@ -734,7 +744,13 @@ public sealed class MapTcpServer
 
         if (page.Entries is not { Count: > 0 } entries) return;
         foreach (var entry in entries)
+        {
             await projection.ApplyEntryAsync(entry, _world.Players, _world.PlayerVisibility, resolveObserver, cancellationToken);
+            // Per-entry commit: if a later entry in this page throws, the next poll resumes after the
+            // last entry that was fully applied instead of replaying it (a replayed movement entry
+            // would re-broadcast a duplicate walk packet to observers).
+            projection.CommitCursor(page.Epoch, entry.Sequence);
+        }
         projection.CommitCursor(page.Epoch, page.AsOfSequence);
     }
 
@@ -940,6 +956,10 @@ public sealed class MapTcpServer
         // local gateway's responsibility).
         if (entry.Kind == WorldMonsterFeedEntryKind.MonsterAttackAction && entry.MonsterAttack is { } monsterAttack)
         {
+            // This gateway published the attack itself and already projected it to every local session
+            // when it resolved (NotifyMonsterAttackOutcomeAsync): the feed's echo of its OWN publish must
+            // not be written a second time. Entries from other gateways are never registered here.
+            if (_localMonsterAttackEchoes.TryConsume(monsterAttack.ActionId)) return;
             foreach (var session in mapSessions)
             {
                 try { await session.NotifyMonsterAttackActionCrossReplicaAsync(entry.ActorId, entry.Instance.MapId, monsterAttack, cancellationToken); }

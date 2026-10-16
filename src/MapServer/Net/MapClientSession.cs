@@ -628,6 +628,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // ProcessOneMonsterTickAsync's own doc comment for why grouping/polling by map id must first
     // filter to sessions where this is true.
     internal bool IsWorldMapEligible { get { lock (_playerPresenceGate) return _playerLifecycle == PlayerSessionLifecycle.WorldVisible && _presenceId is not null; } }
+    // True from the moment this session has allocated its logical presence identity (the very start
+    // of EnterPlayerWorldAsync, BEFORE the World registration RPC is even sent) until it starts
+    // leaving the world. Distinct from IsWorldMapEligible, which only flips AFTER the registration
+    // RPC returns: World appends the Registered feed entry inside that RPC, so a per-map tick can
+    // poll that entry while this session is still not world-eligible. PlayerFeedProjection must bind
+    // THIS session as the player's observer in that window - binding a NullPlayerPresenceObserver
+    // instead would be permanent (the coordinator keeps the first observer for an ActorId) and the
+    // player would never receive another player's packets. `_presenceId` is only ever allocated
+    // after authentication succeeded, so an unauthenticated connection that merely claims some
+    // account id can never satisfy this.
+    internal bool IsPresenceObservable { get { lock (_playerPresenceGate) return _presenceId is not null && _playerLifecycle is PlayerSessionLifecycle.AuthenticatedButNotWorldVisible or PlayerSessionLifecycle.WorldVisible; } }
     // Online-user-count reporting seam (MapTcpServer.ReportAuthenticatedUserCount): true once this
     // session's map authentication has succeeded - the same condition CompleteIroAuthenticationAsync's
     // own success tail sets _authenticated for. Never true for an accepted-but-not-yet-authenticated
@@ -1343,6 +1354,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                     var touchOutcome = await TryFireImmediateSpawnTouchAsync(cancellationToken);
                     if (touchOutcome == ImmediateSpawnTouchOutcome.MapChanged) break;
                     await RefreshVisibleWorldActorsAsync(cancellationToken);
+                    await SendVisiblePlayersAsync(cancellationToken);
                     foreach (var navigation in _worldMapRegistry.GetNavigationAt(_mapName, _x, _y))
                     {
                         MapLogger.Info(
@@ -5694,8 +5706,30 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             $"[iRO MAP DEBUG] Unsupported map client packet=0x{packetType:X4} len={packet.Length}");
     }
 
+    // The client only accepts actor packets for a map once it has finished loading it, i.e. after its
+    // load-end acknowledgement has taken this session to WorldVisible. The player feed can deliver
+    // AOI events to this session's observer EARLIER than that (World appends Registered/TransferredIn
+    // inside the registration/transfer RPC, and a tick may poll it before the client is ready, or
+    // before the map-change packet itself has been written). Such deliveries are dropped here WITHOUT
+    // marking the actor visible; SendVisiblePlayersAsync replays the registry's current view at the
+    // moment the client becomes ready, so nothing is lost and nothing is sent twice (TryMarkVisible).
+    private bool ClientAcceptsActorPackets { get { lock (_playerPresenceGate) return _playerLifecycle == PlayerSessionLifecycle.WorldVisible; } }
+
+    // The player counterpart of SendVisibleWarpActorsAsync/SendVisibleMonsterActorsAsync: after the
+    // client reports the map loaded, introduce every player the local feed-derived registry already
+    // places in range. Players that appear later arrive through the ordinary observer callbacks.
+    private async Task SendVisiblePlayersAsync(CancellationToken cancellationToken)
+    {
+        foreach (var presence in _players.QueryNearby(_mapName, _x, _y))
+        {
+            if (presence.ActorId == _accountId) continue;
+            await PlayerEnteredViewAsync(presence, PlayerEntryKind.ExistingStandingOrWalking, cancellationToken);
+        }
+    }
+
     public Task PlayerEnteredViewAsync(PlayerPresence presence, PlayerEntryKind kind, CancellationToken cancellationToken)
     {
+        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
         if (presence.ActorId == _accountId || !_visibleActorIds.TryMarkVisible(presence.ActorId)) return Task.CompletedTask;
         var packet = kind == PlayerEntryKind.NewlySpawned
             ? IroPlayerActorPackets.BuildSpawnEntry(presence)
@@ -5707,18 +5741,21 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
     public Task PlayerMovementChangedAsync(PlayerPresence presence, CancellationToken cancellationToken)
     {
+        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
         if (presence.ActorId == _accountId || !_visibleActorIds.IsActorVisible(presence.ActorId) || presence.Movement is null) return Task.CompletedTask;
         return WriteAsync(IroPlayerActorPackets.BuildWalkEntry(presence), cancellationToken);
     }
 
     public Task PlayerLookChangedAsync(PlayerPresence presence, CancellationToken cancellationToken)
     {
+        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
         if (presence.ActorId == _accountId || !_visibleActorIds.IsActorVisible(presence.ActorId)) return Task.CompletedTask;
         return WriteAsync(IroPlayerActorPackets.BuildDirection(presence.ActorId, presence.HeadDirection, presence.Direction), cancellationToken);
     }
 
     public Task PlayerLeftViewAsync(uint actorId, CancellationToken cancellationToken)
     {
+        if (!ClientAcceptsActorPackets) return Task.CompletedTask;
         if (actorId == _accountId || !_visibleActorIds.TryMarkNotVisible(actorId)) return Task.CompletedTask;
         return WriteAsync(IroPlayerActorPackets.BuildVanish(actorId), cancellationToken);
     }
