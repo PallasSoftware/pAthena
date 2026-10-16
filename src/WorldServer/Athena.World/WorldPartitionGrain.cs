@@ -639,9 +639,11 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
             return Task.FromResult(new WorldMonsterAttackPublishResult(WorldMonsterAttackPublishStatus.StaleLifeReference));
         if (!TryFind(command.TargetCharacterId, out var targetPresence) || targetPresence.PresenceId != command.TargetPresenceId)
             return Task.FromResult(new WorldMonsterAttackPublishResult(WorldMonsterAttackPublishStatus.StaleTargetPresence));
+        // TargetActorId is the VICTIM's wire actor id, resolved from World's own presence (never from the
+        // caller and never the attacking monster's id): remote replicas build the 0x08C8 from it.
         var action = new WorldMonsterAttackAction(
-            instance.ActorId, command.TargetCharacterId, command.TargetPresenceId,
-            command.Damage, command.SourceAttackMotion, command.TargetDamageMotion, command.Lethal);
+            targetPresence.ActorId, command.TargetCharacterId, command.TargetPresenceId,
+            command.Damage, command.SourceAttackMotion, command.TargetDamageMotion, command.Lethal, command.ActionId);
         var published = simulation.TryPublishMonsterAttackAction(instance, command.ActionId, action, command.TargetPresenceId);
         return Task.FromResult(new WorldMonsterAttackPublishResult(published ? WorldMonsterAttackPublishStatus.Published : WorldMonsterAttackPublishStatus.AlreadyPublished));
     }

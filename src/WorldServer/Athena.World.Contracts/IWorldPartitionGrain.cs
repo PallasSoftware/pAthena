@@ -425,7 +425,11 @@ public sealed record WorldMonsterAttackAction(
     [property: Id(3)] uint Damage,
     [property: Id(4)] uint SourceAttackMotion,
     [property: Id(5)] uint TargetDamageMotion,
-    [property: Id(6)] bool Lethal);
+    [property: Id(6)] bool Lethal,
+    // The publisher's own idempotency key (WorldMonsterAttackActionCommand.ActionId), carried on the
+    // feed entry so the gateway that already projected this attack to its own sessions can recognise
+    // - and skip - the echo of its own publish when the feed hands the entry back to it.
+    [property: Id(7)] Guid ActionId = default);
 
 // The Ragexe wire-projection-relevant distinction WorldMonsterFeedEntryKind alone cannot express:
 // whether a movement transition is a FRESH walk beginning (a real 0x09FD walk-entry packet is
