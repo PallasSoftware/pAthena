@@ -52,14 +52,15 @@ public sealed class LoginConfig
     public int UsercountMedium { get; init; } = 500;
     public int UsercountHigh { get; init; } = 1000;
 
-    private static int ParseProxyPort()
+    private static int ParseProxyPort() => ParseProxyPort(Environment.GetEnvironmentVariable("ATHENA_NET_LOGIN_PROXY_PORT"));
+
+    /// <summary>The parsing of ATHENA_NET_LOGIN_PROXY_PORT: unset/blank = 0 (no proxy listener), otherwise a port or a startup error.</summary>
+    public static int ParseProxyPort(string? value)
     {
-        const string name = "ATHENA_NET_LOGIN_PROXY_PORT";
-        var value = Environment.GetEnvironmentVariable(name);
         if (string.IsNullOrWhiteSpace(value)) return 0;
         return int.TryParse(value, out var port) && port is > 0 and <= ushort.MaxValue
             ? port
-            : throw new InvalidOperationException($"{name} must be a port number (1-65535), got '{value}'.");
+            : throw new InvalidOperationException($"ATHENA_NET_LOGIN_PROXY_PORT must be a port number (1-65535), got '{value}'.");
     }
 
     private static int ParseIntEnvironment(string name, int fallback)

@@ -1,0 +1,157 @@
+name: release
+
+# THE release workflow. Every push to main that passes validation becomes a complete release, with no manual step:
+#
+#   validate        tests, vulnerable packages, release rules   (pull requests too: same steps, the required check "Validate")
+#   retag-digest    proves on a real registry that re-tagging keeps the digest (pull requests too)
+#   version         next version tag vMAJOR.MINOR.PATCH on the commit (immutable; an existing tag of the commit is reused)
+#   publish         the four ghcr.io/pallassoftware/pathena/<server>:<tag> images: changed servers are built, unchanged servers get
+#                   the new tag on their existing digest (no rebuild)
+#   github-release  the GitHub Release, only after all four image tags exist
+#
+# Each job needs the previous one without always()/!cancelled(), so a failure anywhere stops the chain: a failed validation creates
+# no tag, a missing tag publishes nothing, a missing image creates no release. All of it is visible in this one run. To finish a
+# failed release use "Re-run failed jobs" of the run: the commit keeps its tag, images that were already published are neither
+# rebuilt nor overwritten, and the release is created if it is missing.
+# MAJOR.MINOR come from the VERSION file (edited by hand; a change starts the series at PATCH 0, the very first release is
+# 0.0.1); PATCH is derived from the existing tags, so no version commit is made. Nothing here deploys anything.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  # A pull request cancels its own superseded run. Runs on main are never cancelled and not serialized (a queue would drop
+  # intermediate commits); concurrent tag creation is handled by retrying with the next free version.
+  group: release-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test the release scripts and the workflow rules
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-ReleaseVersion.ps1
+          ./.github/scripts/Test-ReleaseImages.ps1
+          ./.github/scripts/Test-ReleaseWorkflowRules.ps1
+      - name: No vulnerable packages (direct and transitive)
+        shell: pwsh
+        run: ./.github/scripts/Test-NoVulnerablePackages.ps1
+      - name: Test the servers
+        shell: pwsh
+        run: |
+          foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') {
+            dotnet test "tests/$project.Tests/$project.Tests.csproj" --configuration Release
+            if ($LASTEXITCODE -ne 0) { throw "$project tests failed" }
+          }
+
+  retag-digest:
+    name: Re-tag keeps the digest
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."localhost:5000"]
+              http = true
+              insecure = true
+      - name: Build, push and re-tag a single-platform image on a throw-away registry, compare digests
+        shell: pwsh
+        run: ./.github/scripts/Test-RetagRegistry.ps1
+
+  version:
+    name: Tag the release
+    needs: [validate, retag-digest]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the next version tag (or reuse the tag of this commit)
+        id: tag
+        shell: pwsh
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./.github/scripts/New-ReleaseTag.ps1 -Commit $env:COMMIT
+
+  publish:
+    name: Publish the images
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.version.outputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check out the rAthena data the WorldServer image carries
+        run: git submodule update --init --depth 1 legacy/rathena
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the four images
+        shell: pwsh
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: ./.github/scripts/Publish-ReleaseImages.ps1 -Tag $env:TAG -SourceUrl $env:SOURCE_URL
+
+  github-release:
+    name: GitHub Release
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.version.outputs.tag }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the release once all four images exist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: ./.github/scripts/New-GitHubRelease.ps1 -Tag $env:TAG

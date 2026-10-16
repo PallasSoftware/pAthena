@@ -4,6 +4,7 @@ namespace Athena.Net.MapServer.Tests.Startup;
 
 // MapServer ends (exit code 75) when it loses the World after having been connected to it, so that the orchestrator restarts it
 // against the current World: a new process re-resolves the gateway, leases a new actor-id block and registers again.
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class WorldConnectionWatchdogTests
 {
     [Fact]

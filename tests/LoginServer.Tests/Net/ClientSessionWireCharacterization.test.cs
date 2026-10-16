@@ -242,18 +242,13 @@ public sealed class ClientSessionWireCharacterizationTests
         var handlePacket = typeof(ClientSession).GetMethod("HandlePacketAsync", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(handlePacket);
 
-        var originalOut = Console.Out;
         var captured = new StringWriter();
-        Console.SetOut(captured);
-        try
+        // Only what this flow logs is captured: no process-wide Console.SetOut, so parallel tests cannot interfere.
+        using (Athena.Net.LoginServer.Logging.LoginLogger.UseScope(captured, new Athena.Net.LoginServer.Config.LoginConfig { TimestampFormat = string.Empty, ConsoleSilent = 0, ConsoleMsgLog = 0 }))
         {
             // Act
             var task = (Task)handlePacket!.Invoke(fixture.Session, new object[] { CaLogin, packet, CancellationToken.None })!;
             await task;
-        }
-        finally
-        {
-            Console.SetOut(originalOut);
         }
 
         // Assert

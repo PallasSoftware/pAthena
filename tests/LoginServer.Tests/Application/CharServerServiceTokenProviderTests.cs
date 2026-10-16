@@ -11,6 +11,7 @@ namespace Athena.Net.LoginServer.Tests.Application;
 /// configured" - service authentication fails closed rather than accepting
 /// a weak secret.
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class CharServerServiceTokenProviderTests
 {
     private const string EnvVar = CharServerServiceTokenProvider.EnvironmentVariableName;

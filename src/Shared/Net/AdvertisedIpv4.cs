@@ -108,9 +108,12 @@ public sealed class AdvertisedIpv4
     /// ATHENA_NET_* style setting: unset or blank uses the fallback IPv4; a value is a literal IPv4 or a hostname.
     /// A value that is neither, or a hostname that does not resolve to IPv4, throws.
     /// </summary>
-    public static AdvertisedIpv4 FromEnvironment(string name, string fallbackIp)
+    public static AdvertisedIpv4 FromEnvironment(string name, string fallbackIp) =>
+        FromValue(name, Environment.GetEnvironmentVariable(name), fallbackIp);
+
+    /// <summary>The parsing of <see cref="FromEnvironment"/> for an already read value (testable without touching the process environment).</summary>
+    public static AdvertisedIpv4 FromValue(string name, string? value, string fallbackIp)
     {
-        var value = Environment.GetEnvironmentVariable(name);
         try
         {
             return new AdvertisedIpv4(string.IsNullOrWhiteSpace(value) ? fallbackIp : value);

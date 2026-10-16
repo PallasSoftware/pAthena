@@ -12,6 +12,7 @@ namespace Athena.Net.MapServer.Tests.Net;
 /// pre-existing, independent CharServer &lt;-&gt; LoginServer handshake.
 /// Deterministic 32-byte test tokens only - never a real secret.
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class MapServerServiceTokenProviderTests
 {
     private static readonly string ValidTokenBase64 = Convert.ToBase64String(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray());
