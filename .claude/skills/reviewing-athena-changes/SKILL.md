@@ -40,7 +40,7 @@ Ask:
 - Did lower-authority legacy behavior override verified iRO facts?
 - Are unknown wire semantics being presented as proven?
 
-For reference-derived features, invoke the logic of `verifying-reference-coverage`.
+For reference-derived features, check whether an independent `verifying-reference-coverage` audit exists. If not, report that as a finding and recommend it as a separate step; do not reconstruct expected behavior from the diff inside this review.
 
 ### 2. Authority and trust
 

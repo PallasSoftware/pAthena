@@ -36,7 +36,7 @@ Athena.NET is iRO-first. The highest-quality evidence wins even when several low
 Before reaching a conclusion:
 
 1. For client-facing claims, read the relevant section of `ai/iro-2026-wire.md`.
-4. Read the relevant workstream documentation and tests.
+2. Read the relevant workstream documentation and tests.
 
 ## Evidence priority
 
@@ -90,7 +90,7 @@ Use pinned `legacy/openkore` primarily for:
 - send/receive mappings;
 - community protocol clues.
 
-Inspect `src/Network/Receive`, `src/Network/Send`, regional `iRO` modules, and relevant tables.
+Inspect `legacy/openkore/src/Network/Receive/` and `legacy/openkore/src/Network/Send/` (including `iRO.pm` and the `iRO/` subdirectory in each), `legacy/openkore/tables/servers.txt` (iRO `serverType` entries), and `legacy/openkore/tables/iRO/`.
 
 Do not treat bot behavior as authoritative official-server behavior.
 

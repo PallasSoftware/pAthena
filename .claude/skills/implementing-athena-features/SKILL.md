@@ -22,7 +22,7 @@ Do not use as a substitute for research or design when packet semantics, relevan
 
 ## Hand off to
 
-- `verifying-reference-coverage` for an independent omission audit.
+- `verifying-reference-coverage` for an independent omission audit when the behavior is a material reference-derived gameplay change (it was based on a research brief). Skip it for documentation-only, configuration-only, or trivial pattern-following changes with no reference-derived behavior.
 - `verifying-iro-protocol` when client wire behavior changed.
 - `writing-regression-tests` for behavior that needs durable protection.
 - `reviewing-athena-changes` before merge for substantial work.
@@ -110,7 +110,7 @@ Avoid partial state when a downstream step fails.
 6. Compare the completed code against the implementation checklist.
 7. Inspect `git diff` for accidental scope expansion.
 8. Run `git diff --check`.
-9. Hand off to independent reference/protocol verification.
+9. Hand off to independent reference-coverage verification (material reference-derived behavior) and/or protocol verification (wire behavior changed), as applicable.
 
 ## Completion report
 
@@ -124,4 +124,4 @@ Report:
 - remaining unknowns;
 - any checklist item not implemented and why.
 
-A green build is necessary, not sufficient. The feature is not done until post-implementation coverage verification passes.
+A green build is necessary, not sufficient. For reference-derived behavior or changed wire behavior, the feature is not done until the applicable independent verification passes. Changes with neither need only focused tests and the work loop above.

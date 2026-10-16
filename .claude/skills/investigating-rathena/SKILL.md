@@ -1,6 +1,6 @@
 ---
 name: investigating-rathena
-description: Investigates relevant behavior in the pinned rAthena reference before Athena.NET implementation. Use when a task depends on understanding rAthena gameplay, validation, timers, scripts, persistence, packet-side effects, callers, or cross-server behavior completely. Do not use when authoritative project/iRO evidence already answers the question or when the task is unrelated to rAthena behavior.
+description: Investigates relevant behavior in the pinned rAthena reference before Athena.NET implementation. Use when a task depends on understanding rAthena gameplay, validation, timers, scripts, persistence, packet-side effects, callers, or cross-server behavior. Do not use when authoritative project/iRO evidence already answers the question or when the task is unrelated to rAthena behavior.
 ---
 
 # Investigating rAthena
@@ -22,7 +22,7 @@ Do not use when the behavior is already established by current Athena.NET/iRO ev
 
 - `designing-athena-features` for non-trivial architecture decisions.
 - `implementing-athena-features` when behavior is complete and architecture is already obvious.
-- `verifying-reference-coverage` after implementation for a fresh omission audit.
+- `verifying-reference-coverage` after implementation of a feature-level (full-trace) investigation, for a fresh omission audit.
 
 
 ## Purpose
@@ -34,10 +34,10 @@ This is a **research gate**. Do not start implementing the requested Athena.NET 
 ## Mandatory preflight
 
 1. Read `ai/iro-2026-wire.md` when the feature can affect client-facing behavior.
-4. Read the relevant `ai/login-server.md`, `ai/char-server.md`, `ai/map-server.md`, `ai/data-and-tools.md`, or `ai/world-data.md`.
-5. Inspect the relevant Athena.NET code and tests so the investigation asks the right questions.
-6. Inspect `git status` and `git diff`. Preserve unrelated user changes.
-7. Confirm `legacy/rathena` is initialized at the commit pinned by the parent repository. Never update it to upstream `main` as part of ordinary research.
+2. Read the relevant `ai/login-server.md`, `ai/char-server.md`, `ai/map-server.md`, `ai/data-and-tools.md`, or `ai/world-data.md`.
+3. Inspect the relevant Athena.NET code and tests so the investigation asks the right questions.
+4. Inspect `git status` and `git diff`. Preserve unrelated user changes.
+5. Confirm `legacy/rathena` is initialized at the commit pinned by the parent repository. Never update it to upstream `main` as part of ordinary research.
 
 Do not hard-code a remembered rAthena SHA. Read the current gitlink or `git submodule status`.
 
@@ -45,7 +45,7 @@ Do not hard-code a remembered rAthena SHA. Read the current gitlink or `git subm
 
 Use multiple navigation methods because no single method is complete:
 
-1. If Graphify is available, use its graph to discover likely symbols, call paths, and neighboring files.
+1. If the pinned-rAthena Graphify graph and CLI are available, use them to discover likely symbols, call paths, and neighboring files. Missing graph nodes are not evidence of absent behavior.
 2. Use C/C++ language-server navigation for definitions, references, callers, callees, and types where available.
 3. Use repository text search for:
    - packet IDs in hexadecimal and decimal form;
@@ -98,8 +98,8 @@ Inspect:
 
 - `chrif.*`
 - `intif.*`
-- `src/char/`
-- `src/login/`
+- `legacy/rathena/src/char/`
+- `legacy/rathena/src/login/`
 
 Do not stop at the MapServer side if the operation persists or coordinates through Char/Login.
 
@@ -113,6 +113,13 @@ Inspect as relevant:
 - `legacy/rathena/sql-files/`
 
 A script-driven or data-driven behavior may not be visible in the C++ call chain alone.
+
+## Scale to the task
+
+- **Narrow question** (one formula, constant, validation rule, or data field; no mutation or cross-server effect): trace only the items that bear on it, and state which items were skipped as not applicable. A short answer with exact source paths and symbols suffices; the full brief is not required.
+- **Feature or mutating behavior** (state changes, persistence, packets emitted, timers, inter-server effects, or anything that will be implemented as a feature): the full trace and the research closure criteria below are mandatory.
+
+When unsure which applies, treat it as a feature.
 
 ## Required trace
 
@@ -170,7 +177,7 @@ Explicitly hunt for these before declaring the investigation complete:
 
 ## Research closure criteria
 
-Do not hand off to implementation until all are true:
+For feature-level work, do not hand off to implementation until all are true:
 
 - The entry point is known.
 - Material callers/callees are traced.
@@ -187,6 +194,6 @@ Do not hand off to implementation until all are true:
 
 Use [RESEARCH-BRIEF.md](RESEARCH-BRIEF.md) as the output shape.
 
-The brief must include exact source paths and symbol names. Include line numbers when practical, but do not make line numbers the only locator because pinned-reference updates can move them.
+For feature-level work the brief must include exact source paths and symbol names. Include line numbers when practical, but do not make line numbers the only locator because pinned-reference updates can move them.
 
 Do not modify files under `legacy/rathena/`.

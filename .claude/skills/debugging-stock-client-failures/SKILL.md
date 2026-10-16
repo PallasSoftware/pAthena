@@ -126,4 +126,4 @@ For substantial or reusable work, use [DEBUG-LEDGER.md](DEBUG-LEDGER.md). For a 
 Once root cause is proven:
 - add a regression test first or with the fix;
 - update protocol documentation if a wire assumption changed;
-- run independent protocol/reference coverage verification.
+- run independent protocol verification if wire behavior changed, and reference-coverage verification only if the fix added reference-derived gameplay behavior.
