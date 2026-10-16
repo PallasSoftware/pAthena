@@ -160,3 +160,5 @@ ai/agent-status.md
 
 
 artifacts/
+/graphify-out/
+/graphify-out-rathena-epic15/
