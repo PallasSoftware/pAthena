@@ -40,14 +40,17 @@ static void dump_status(const char* name, const struct status_data& s) {
 	std::fprintf(out, "}");
 }
 
-struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; };
+// `job` stays last: vf02 builds specs with positional aggregate initializers (base_level, job_level, six stats).
+struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; int job = JOB_NOVICE; };
 
 static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec()) {
 	map_session_data* sd = new map_session_data();
-	pc_setnewpc(sd, id, id + 100000, 0, gettick(), SEX_MALE, 0);
+	// Dancer-line jobs are female-only; the job bonus table is selected by pc_mapid2jobid(class, sex), so a male Dancer
+	// would silently use the Bard row.
+	pc_setnewpc(sd, id, id + 100000, 0, gettick(), n.job == JOB_DANCER ? SEX_FEMALE : SEX_MALE, 0);
 	sd->m = map_mapname2mapid("prontera"); // plain map, no PvP/GvG/BG flags; player is not added to the grid
-	sd->status.class_ = JOB_NOVICE;
-	sd->class_ = pc_jobid2mapid(JOB_NOVICE);
+	sd->status.class_ = n.job;
+	sd->class_ = pc_jobid2mapid(n.job);
 	sd->status.base_level = n.base_level; sd->status.job_level = n.job_level;
 	sd->status.str = n.str; sd->status.agi = n.agi; sd->status.vit = n.vit;
 	sd->status.int_ = n.int_; sd->status.dex = n.dex; sd->status.luk = n.luk;
@@ -246,6 +249,69 @@ static void vf15() {
 	std::fprintf(out, "]}}");
 }
 
+// VF-16: job coverage - every job class the generated progression data carries, at two (base, job) level pairs with fixed
+// allocated stats and no equipment: six stats (base and battle), derived stats, max HP/SP and fist ASPD/motion.
+static void vf16() {
+	const int jobs[] = {JOB_NOVICE, JOB_SWORDMAN, JOB_MAGE, JOB_ARCHER, JOB_ACOLYTE, JOB_MERCHANT, JOB_THIEF, JOB_KNIGHT, JOB_PRIEST, JOB_WIZARD,
+		JOB_BLACKSMITH, JOB_HUNTER, JOB_ASSASSIN, JOB_CRUSADER, JOB_MONK, JOB_SAGE, JOB_ROGUE, JOB_ALCHEMIST, JOB_BARD, JOB_DANCER, JOB_SUPER_NOVICE,
+		JOB_GUNSLINGER, JOB_NINJA, JOB_TAEKWON, JOB_STAR_GLADIATOR, JOB_SOUL_LINKER, JOB_NOVICE_HIGH, JOB_SWORDMAN_HIGH, JOB_MAGE_HIGH, JOB_LORD_KNIGHT,
+		JOB_HIGH_WIZARD, JOB_BABY, JOB_BABY_SWORDMAN, JOB_BABY_KNIGHT, JOB_RUNE_KNIGHT, JOB_WARLOCK, JOB_ARCH_BISHOP, JOB_SUMMONER, JOB_SUPER_BABY,
+		JOB_DRAGON_KNIGHT, JOB_ARCH_MAGE, JOB_KAGEROU, JOB_REBELLION, JOB_HYPER_NOVICE};
+	const int levels[][2] = {{1, 1}, {70, 10}};
+	std::fprintf(out, "{\"id\":\"VF-16\",\"input\":{\"str\":30,\"agi\":20,\"vit\":40,\"int\":25,\"dex\":35,\"luk\":15},\"output\":{\"cases\":[");
+	uint32 id = 2001000;
+	bool first_case = true;
+	for (int job : jobs) {
+		for (const auto& lv : levels) {
+			NoviceSpec n; n.job = job; n.base_level = lv[0]; n.job_level = lv[1]; n.str = 30; n.agi = 20; n.vit = 40; n.int_ = 25; n.dex = 35; n.luk = 15;
+			map_session_data* sd = make_novice(id++, n);
+			std::fprintf(out, "%s{\"job\":%d,\"base_level\":%d,\"job_level\":%d,", first_case ? "" : ",", job, lv[0], lv[1]);
+			dump_status("base_status", sd->base_status);
+			std::fprintf(out, ",");
+			dump_status("battle_status", sd->battle_status);
+			std::fprintf(out, "}");
+			first_case = false;
+		}
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-17: attack motion per job and weapon type - the same jobs as VF-16 at base 1/job 1 with fixed stats, wearing no weapon
+// or one representative one-handed weapon per weapon_type (real item_db entries).
+static void vf17() {
+	const int jobs[] = {JOB_NOVICE, JOB_SWORDMAN, JOB_MAGE, JOB_ARCHER, JOB_ACOLYTE, JOB_MERCHANT, JOB_THIEF, JOB_KNIGHT, JOB_PRIEST, JOB_WIZARD,
+		JOB_BLACKSMITH, JOB_HUNTER, JOB_ASSASSIN, JOB_CRUSADER, JOB_MONK, JOB_SAGE, JOB_ROGUE, JOB_ALCHEMIST, JOB_BARD, JOB_DANCER, JOB_SUPER_NOVICE,
+		JOB_GUNSLINGER, JOB_NINJA, JOB_TAEKWON, JOB_STAR_GLADIATOR, JOB_SOUL_LINKER, JOB_NOVICE_HIGH, JOB_SWORDMAN_HIGH, JOB_MAGE_HIGH, JOB_LORD_KNIGHT,
+		JOB_HIGH_WIZARD, JOB_BABY, JOB_BABY_SWORDMAN, JOB_BABY_KNIGHT, JOB_RUNE_KNIGHT, JOB_WARLOCK, JOB_ARCH_BISHOP, JOB_SUMMONER, JOB_SUPER_BABY,
+		JOB_DRAGON_KNIGHT, JOB_ARCH_MAGE, JOB_KAGEROU, JOB_REBELLION, JOB_HYPER_NOVICE};
+	const int weapons[] = {0, 1201, 1101, 1301, 1401, 1501, 1601, 1701, 1801, 1901};
+	std::fprintf(out, "{\"id\":\"VF-17\",\"input\":{\"base_level\":1,\"job_level\":1,\"str\":30,\"agi\":20,\"vit\":40,\"int\":25,\"dex\":35,\"luk\":15},\"output\":{\"cases\":[");
+	uint32 id = 2002000;
+	bool first_case = true;
+	for (int job : jobs) {
+		for (int weapon : weapons) {
+			NoviceSpec n; n.job = job; n.str = 30; n.agi = 20; n.vit = 40; n.int_ = 25; n.dex = 35; n.luk = 15;
+			if (weapon) n.items = {weapon};
+			map_session_data* sd = make_novice(id++, n);
+			std::fprintf(out, "%s{\"job\":%d,\"weapon_item\":%d,\"weapon_type\":%d,\"amotion\":%d,\"adelay\":%d,\"range\":%d,\"watk\":%d}", first_case ? "" : ",", job, weapon, (int)sd->weapontype1,
+				sd->battle_status.amotion, sd->battle_status.adelay, sd->battle_status.rhw.range, sd->battle_status.rhw.atk);
+			first_case = false;
+		}
+	}
+	std::fprintf(out, "],\"cap_cases\":[");
+	// ASPD cap: an absurd Increase AGI level pushes the unclamped amotion far below the configured max_aspd (190), so
+	// the recorded amotion is the cap itself ((2000 - 190*10) * 2 / 2 = 100), not a formula result.
+	const int cap_levels[] = {10, 40, 100};
+	for (size_t i = 0; i < 3; i++) {
+		NoviceSpec n; n.job = JOB_SWORDMAN; n.base_level = 99; n.job_level = 10; n.str = 99; n.agi = 99; n.vit = 99; n.int_ = 99; n.dex = 99; n.luk = 99;
+		map_session_data* sd = make_novice(id++, n);
+		status_change_start(sd, sd, SC_INCREASEAGI, 10000, cap_levels[i], 0, 0, 0, 120000, SCSTART_NOAVOID | SCSTART_NOICON | SCSTART_NOTICKDEF);
+		status_calc_pc(sd, SCO_NONE);
+		std::fprintf(out, "%s{\"job\":%d,\"increase_agi_level\":%d,\"agi\":%d,\"dex\":%d,\"amotion\":%d,\"adelay\":%d}", i ? "," : "", JOB_SWORDMAN, cap_levels[i], sd->battle_status.agi, sd->battle_status.dex, sd->battle_status.amotion, sd->battle_status.adelay);
+	}
+	std::fprintf(out, "]}}");
+}
+
 // Applies `type` twice via the real status_change_start and records what the reference does.
 // deadline_moved: the status timer's absolute expiry changed between the two starts (a 50ms pause
 // separates them), i.e. the second start re-armed the status; retained/refreshed is decided by that.
@@ -344,6 +410,10 @@ void ra_reference_run() {
 	vf06();
 	std::fprintf(out, ",");
 	vf15();
+	std::fprintf(out, ",");
+	vf16();
+	std::fprintf(out, ",");
+	vf17();
 	std::fprintf(out, ",");
 	vf07_vf08();
 	std::fprintf(out, ",");

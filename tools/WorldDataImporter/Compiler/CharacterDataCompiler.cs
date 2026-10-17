@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Athena.WorldCompiler.Generation;
 
-internal sealed record CharacterDataSources(string MmoHeader, string ScriptConstants, string JobExperience, string JobBasePoints, string JobStats, string StatPoints, string SkillDatabase, string SkillTree, string PlayerConfig);
+internal sealed record CharacterDataSources(string MmoHeader, string ScriptConstants, string JobExperience, string JobBasePoints, string JobStats, string StatPoints, string SkillDatabase, string SkillTree, string PlayerConfig, string JobAspd);
 internal sealed record CharacterDataArtifact(string RelativePath, string Source);
 internal sealed record CharacterDataCompilation(IReadOnlyList<CharacterDataArtifact> Artifacts, CharacterDataCounts Counts, IReadOnlyList<string> Exclusions);
 internal sealed record CharacterDataCounts(int NumericJobIdentitiesDiscovered, int GeneratedJobDefinitions, int JobIdsWithProgression, int UniqueProgressionDefinitions, int CanonicalSkills, int DirectSkillTrees, int EffectiveSkillTrees);
@@ -29,6 +29,11 @@ internal static partial class CharacterDataCompiler
     {
         internal uint HpFactor; internal uint HpIncrease = 500; internal uint SpFactor; internal uint SpIncrease = 100;
     }
+    private static readonly string[] AspdWeaponNames =
+    [
+        "Fist", "Dagger", "1hSword", "2hSword", "1hSpear", "2hSpear", "1hAxe", "2hAxe", "Mace", "2hMace", "Staff", "Bow", "Knuckle", "Musical", "Whip",
+        "Book", "Katar", "Revolver", "Rifle", "Gatling", "Shotgun", "Grenade", "Huuma", "2hStaff", "Shield",
+    ];
     private sealed class ProgressionBuilder(JobIdentity job)
     {
         internal JobIdentity Job { get; } = job;
@@ -37,6 +42,8 @@ internal static partial class CharacterDataCompiler
         internal SortedDictionary<ushort, ulong> BaseHp = [], BaseSp = [];
         internal readonly HpSpFactors Factors = new();
         internal bool HasJobStatsBlock;
+        // Renewal BaseASPD per weapon_type plus a trailing Shield column; default AMOTION_ZERO_ASPD / AMOTION_INTERVAL = 200 (pc.cpp:13945-13999).
+        internal readonly int[] Aspd = Enumerable.Repeat(200, AspdWeaponNames.Length).ToArray();
         internal readonly SortedDictionary<ushort, StatBonus> Bonuses = [];
     }
     private readonly record struct StatBonus(int Str, int Agi, int Vit, int Int, int Dex, int Luk)
@@ -59,6 +66,7 @@ internal static partial class CharacterDataCompiler
         ApplyJobDatabase(sources.JobExperience, "db/re/job_exp.yml", aliases, builders, includeExperience: true, includeBasePoints: false, includeBonuses: false);
         ApplyJobDatabase(sources.JobBasePoints, "db/re/job_basepoints.yml", aliases, builders, includeExperience: false, includeBasePoints: true, includeBonuses: false);
         ApplyJobDatabase(sources.JobStats, "db/re/job_stats.yml", aliases, builders, includeExperience: false, includeBasePoints: false, includeBonuses: true);
+        ApplyJobDatabase(sources.JobAspd, "db/re/job_aspd.yml", aliases, builders, includeExperience: false, includeBasePoints: false, includeBonuses: false, includeAspd: true);
         var statPoints = ParseStatPoints(sources.StatPoints);
         // Pinned pc_jobid2mapid (src/map/pc.cpp): the exact, fixed set of job identities whose
         // mapid resolves to MAPID_SUMMONER (Summoner, Baby_Summoner) or matches
@@ -89,6 +97,7 @@ internal static partial class CharacterDataCompiler
             new("Jobs/GeneratedJobRegistry.cs", EmitJobs(jobs, commit)),
             new("Progression/GeneratedProgressionData.cs", EmitProgressions(progressions, commit)),
             new("Progression/GeneratedProgressionRegistry.cs", EmitProgressionRegistry(progressions, commit)),
+            new("Progression/GeneratedJobAspd.cs", EmitJobAspd(progressions, builders, commit)),
             new("Skills/GeneratedSkillRegistry.cs", EmitSkills(skills, commit)),
             new("Skills/GeneratedSkillTrees.cs", EmitTrees(effectiveTrees, commit)),
             new("Skills/GeneratedSkillTreeRegistry.cs", EmitTreeRegistry(effectiveTrees, commit)),
@@ -139,7 +148,7 @@ internal static partial class CharacterDataCompiler
         lookup[name] = job;
     }
 
-    private static void ApplyJobDatabase(string yaml, string sourceName, IReadOnlyDictionary<string, JobIdentity> jobs, IReadOnlyDictionary<ushort, ProgressionBuilder> builders, bool includeExperience, bool includeBasePoints, bool includeBonuses)
+    private static void ApplyJobDatabase(string yaml, string sourceName, IReadOnlyDictionary<string, JobIdentity> jobs, IReadOnlyDictionary<ushort, ProgressionBuilder> builders, bool includeExperience, bool includeBasePoints, bool includeBonuses, bool includeAspd = false)
     {
         var root = SimpleYaml.Parse(yaml, sourceName);
         var body = root.Required("Body", sourceName).Sequence($"{sourceName} Body");
@@ -178,6 +187,16 @@ internal static partial class CharacterDataCompiler
                     ApplyFactor(node, "HpIncrease", firstBlockForJob, value => target.Factors.HpIncrease = value, () => target.Factors.HpIncrease = 500, context);
                     ApplyFactor(node, "SpFactor", firstBlockForJob, value => target.Factors.SpFactor = value, () => target.Factors.SpFactor = 0, context);
                     ApplyFactor(node, "SpIncrease", firstBlockForJob, value => target.Factors.SpIncrease = value, () => target.Factors.SpIncrease = 100, context);
+                }
+                if (includeAspd && node.Optional("BaseASPD") is { } aspdNode)
+                {
+                    // JobDatabase: each named weapon overwrites the running value; unnamed ones keep it (pc.cpp:13962-13984).
+                    foreach (var pair in aspdNode.Map($"{context}.BaseASPD").Items)
+                    {
+                        var weapon = System.Array.IndexOf(AspdWeaponNames, pair.Key);
+                        if (weapon < 0) throw new ArgumentException($"{sourceName}: unknown BaseASPD weapon '{pair.Key}'.");
+                        target.Aspd[weapon] = int.Parse(pair.Value.Scalar($"{context}.BaseASPD.{pair.Key}"), CultureInfo.InvariantCulture);
+                    }
                 }
                 if (includeBonuses && node.Optional("BonusStats") is { } bonuses)
                 {
@@ -810,6 +829,19 @@ internal static partial class CharacterDataCompiler
         output.AppendLine("    internal static IEnumerable<CharacterProgressionDefinition> All => ByJobClass.Values;");
         output.AppendLine("    internal static CharacterProgressionDefinition Get(JobClass jobClass) => ByJobClass.TryGetValue(jobClass, out var value) ? value : throw new NotSupportedException($\"Progression data for job class {jobClass} is not generated.\");");
         output.AppendLine("    internal static CharacterProgressionDefinition Get(ushort jobClass) => Get((JobClass)jobClass);");
+        return output.AppendLine("}").ToString();
+    }
+
+    private static string EmitJobAspd(IReadOnlyList<Progression> progressions, IReadOnlyDictionary<ushort, ProgressionBuilder> builders, string commit)
+    {
+        var output = new StringBuilder(Header(commit, "db/re/job_aspd.yml")).AppendLine("using Athena.Net.MapServer.Generated.Jobs;").AppendLine("using Athena.Net.MapServer.World;").AppendLine("namespace Athena.Net.MapServer.Generated.Progression;").AppendLine()
+            .AppendLine("// Renewal BaseASPD per job (the penalty subtracted in status_base_amotion_pc): columns are WeaponType 0..23, then Shield.")
+            .AppendLine("internal static class GeneratedJobAspd").AppendLine("{").AppendLine("    private static readonly IReadOnlyDictionary<JobClass, int[]> ByJobClass = new Dictionary<JobClass, int[]>").AppendLine("    {");
+        foreach (var item in progressions)
+            output.Append("        [JobClass.").Append(item.Job.CSharpIdentifier).Append("] = [").Append(string.Join(", ", builders[item.Job.Id].Aspd)).AppendLine("],");
+        output.AppendLine("    };");
+        output.AppendLine("    internal static int Base(ushort jobClass, WeaponType weapon) => ByJobClass.TryGetValue((JobClass)jobClass, out var row) ? row[(int)weapon] : throw new NotSupportedException($\"No BaseASPD is generated for job class {jobClass}.\");");
+        output.AppendLine("    internal static int Shield(ushort jobClass) => ByJobClass.TryGetValue((JobClass)jobClass, out var row) ? row[^1] : throw new NotSupportedException($\"No BaseASPD is generated for job class {jobClass}.\");");
         return output.AppendLine("}").ToString();
     }
 
