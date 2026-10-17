@@ -5,6 +5,8 @@ using System.Text;
 using Athena.Net.CharServer.Config;
 using Athena.Net.CharServer.Db;
 using Athena.Net.CharServer.Db.Entities;
+using Athena.Net.CharServer.Inventory;
+using Athena.Net.Shared.Inventory;
 using Athena.Net.CharServer.Logging;
 using Athena.Net.Shared.MapIdentity;
 using Microsoft.EntityFrameworkCore;
@@ -39,6 +41,7 @@ public sealed class MapServerSession : IDisposable, ISession
     private readonly LoginServerConnector _loginConnector;
     private readonly MapAuthManager _authManager;
     private readonly Func<CharDbContext?> _dbFactory;
+    private readonly InventoryOperationExecutor _inventoryOperations;
     private readonly IMapServiceAuthenticationService _serviceAuth;
     private readonly HashSet<(uint AccountId, uint CharId)> _ownedCharacters = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -81,6 +84,7 @@ public sealed class MapServerSession : IDisposable, ISession
         _loginConnector = loginConnector;
         _authManager = authManager;
         _dbFactory = dbFactory;
+        _inventoryOperations = new InventoryOperationExecutor(dbFactory);
         _serviceAuth = serviceAuth;
         _prefetchedHeader = prefetchedHeader;
     }
@@ -153,6 +157,9 @@ public sealed class MapServerSession : IDisposable, ISession
                 break;
             case PacketConstants.MapGameplayStateUpdateRequest:
                 await HandleGameplayStateUpdateAsync(packet, cancellationToken);
+                break;
+            case InventoryOperationWire.RequestOpcode:
+                await HandleInventoryOperationAsync(packet, cancellationToken);
                 break;
             case PacketConstants.MapInventoryAddRequest:
                 await HandleInventoryAddRequestAsync(packet, cancellationToken);
@@ -493,6 +500,24 @@ public sealed class MapServerSession : IDisposable, ISession
         }
 
         await WriteAsync(MapQuestStateProtocol.BuildResponse(request.CharId, request.QuestId, state, success), cancellationToken);
+    }
+
+    // One idempotent, atomic batch of item mutations (see InventoryOperationExecutor). The response always echoes the OperationId,
+    // so MapServer can retry the SAME id after a lost acknowledgement or reconnect and receive the recorded outcome.
+    private async Task HandleInventoryOperationAsync(byte[] packet, CancellationToken cancellationToken)
+    {
+        if (!InventoryOperationWire.TryParseRequest(packet, out var request))
+        {
+            CharLogger.Warning($"Rejected malformed inventory-operation request session={SessionId} length={packet.Length}.");
+            return;
+        }
+
+        var response = IsGameplayStateRequestAuthorized(_authenticated, _ownedCharacters, request.AccountId, request.CharId)
+            ? await _inventoryOperations.ExecuteAsync(request, packet, cancellationToken)
+            : new InventoryOperationResponse(InventoryOperationStatus.Invalid, request.CharId, request.OperationId, -1, []);
+        if (response.Status is InventoryOperationStatus.Invalid)
+            CharLogger.Warning($"Inventory operation {request.OperationId} charId={request.CharId} rejected status={response.Status}.");
+        await WriteAsync(InventoryOperationWire.BuildResponse(response), cancellationToken);
     }
 
     private async Task HandleInventoryAddRequestAsync(byte[] packet, CancellationToken cancellationToken)
@@ -1034,7 +1059,7 @@ public sealed class MapServerSession : IDisposable, ISession
 
     private async Task<byte[]> ReadPacketAsync(short packetType, byte[] header, CancellationToken cancellationToken)
     {
-        if (packetType == PacketConstants.MapSendMaps)
+        if (packetType == PacketConstants.MapSendMaps || packetType == InventoryOperationWire.RequestOpcode)
         {
             var lengthBytes = await ReadExactAsync(2, cancellationToken);
             if (lengthBytes.Length == 0)
@@ -1043,7 +1068,7 @@ public sealed class MapServerSession : IDisposable, ISession
             }
 
             var packetLength = BinaryPrimitives.ReadUInt16LittleEndian(lengthBytes);
-            if (packetLength < 4)
+            if (packetLength < 4 || (packetType == InventoryOperationWire.RequestOpcode && packetLength > 8192))
             {
                 return Array.Empty<byte>();
             }

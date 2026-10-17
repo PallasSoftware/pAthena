@@ -17,6 +17,8 @@ public sealed class CharDbContext : DbContext
     public DbSet<CharSkill> Skills => Set<CharSkill>();
     public DbSet<CharHotkey> Hotkeys => Set<CharHotkey>();
     public DbSet<CharQuest> Quests => Set<CharQuest>();
+    public DbSet<CharContainerItem> ContainerItems => Set<CharContainerItem>();
+    public DbSet<CharInventoryOperation> InventoryOperations => Set<CharInventoryOperation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -148,6 +150,59 @@ public sealed class CharDbContext : DbContext
         inventory.Property(i => i.UniqueId).HasColumnName("unique_id");
         inventory.Property(i => i.EquipSwitch).HasColumnName("equip_switch");
         inventory.Property(i => i.EnchantGrade).HasColumnName("enchantgrade");
+        // Optimistic concurrency for every inventory mutation (Feature 16): a stale cache can never overwrite a newer row.
+        inventory.Property(i => i.Revision).HasColumnName("revision").IsConcurrencyToken();
+
+        var containerItems = modelBuilder.Entity<CharContainerItem>();
+        containerItems.ToTable(_tableNames.ContainerItemTable);
+        containerItems.HasKey(i => i.Id);
+        containerItems.HasIndex(i => new { i.Container, i.OwnerId });
+        containerItems.Property(i => i.Id).HasColumnName("id").ValueGeneratedOnAdd();
+        containerItems.Property(i => i.Container).HasColumnName("container");
+        containerItems.Property(i => i.OwnerId).HasColumnName("owner_id");
+        containerItems.Property(i => i.NameId).HasColumnName("nameid");
+        containerItems.Property(i => i.Amount).HasColumnName("amount");
+        containerItems.Property(i => i.Equip).HasColumnName("equip");
+        containerItems.Property(i => i.Identify).HasColumnName("identify");
+        containerItems.Property(i => i.Refine).HasColumnName("refine");
+        containerItems.Property(i => i.Attribute).HasColumnName("attribute");
+        containerItems.Property(i => i.Card0).HasColumnName("card0");
+        containerItems.Property(i => i.Card1).HasColumnName("card1");
+        containerItems.Property(i => i.Card2).HasColumnName("card2");
+        containerItems.Property(i => i.Card3).HasColumnName("card3");
+        containerItems.Property(i => i.ExpireTime).HasColumnName("expire_time");
+        containerItems.Property(i => i.Favorite).HasColumnName("favorite");
+        containerItems.Property(i => i.Bound).HasColumnName("bound");
+        containerItems.Property(i => i.UniqueId).HasColumnName("unique_id");
+        containerItems.Property(i => i.EquipSwitch).HasColumnName("equip_switch");
+        containerItems.Property(i => i.EnchantGrade).HasColumnName("enchantgrade");
+        containerItems.Property(i => i.OptionId0).HasColumnName("option_id0");
+        containerItems.Property(i => i.OptionVal0).HasColumnName("option_val0");
+        containerItems.Property(i => i.OptionParm0).HasColumnName("option_parm0");
+        containerItems.Property(i => i.OptionId1).HasColumnName("option_id1");
+        containerItems.Property(i => i.OptionVal1).HasColumnName("option_val1");
+        containerItems.Property(i => i.OptionParm1).HasColumnName("option_parm1");
+        containerItems.Property(i => i.OptionId2).HasColumnName("option_id2");
+        containerItems.Property(i => i.OptionVal2).HasColumnName("option_val2");
+        containerItems.Property(i => i.OptionParm2).HasColumnName("option_parm2");
+        containerItems.Property(i => i.OptionId3).HasColumnName("option_id3");
+        containerItems.Property(i => i.OptionVal3).HasColumnName("option_val3");
+        containerItems.Property(i => i.OptionParm3).HasColumnName("option_parm3");
+        containerItems.Property(i => i.OptionId4).HasColumnName("option_id4");
+        containerItems.Property(i => i.OptionVal4).HasColumnName("option_val4");
+        containerItems.Property(i => i.OptionParm4).HasColumnName("option_parm4");
+        containerItems.Property(i => i.Revision).HasColumnName("revision").IsConcurrencyToken();
+
+        var operations = modelBuilder.Entity<CharInventoryOperation>();
+        operations.ToTable(_tableNames.InventoryOperationTable);
+        operations.HasKey(o => o.OperationId);
+        operations.HasIndex(o => new { o.CharId, o.CreatedAt });
+        operations.Property(o => o.OperationId).HasColumnName("operation_id").ValueGeneratedNever();
+        operations.Property(o => o.CharId).HasColumnName("char_id");
+        operations.Property(o => o.Kind).HasColumnName("kind");
+        operations.Property(o => o.PayloadHash).HasColumnName("payload_hash").HasMaxLength(32);
+        operations.Property(o => o.ResponseBytes).HasColumnName("response_bytes");
+        operations.Property(o => o.CreatedAt).HasColumnName("created_at");
 
         var skills = modelBuilder.Entity<CharSkill>();
         skills.ToTable(_tableNames.SkillTable);
