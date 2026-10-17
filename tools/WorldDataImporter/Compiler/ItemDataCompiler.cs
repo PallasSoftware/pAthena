@@ -115,7 +115,7 @@ internal static class ItemDataCompiler
     // whose Script block matches the narrow getitem-only shape this compiler recognizes (see
     // TryParseGetItemScript) - null for every other row, including a Usable row with no Script
     // or with a script this compiler cannot represent (that case throws instead, see below).
-    internal sealed record ItemDefinitionData(int Id, string AegisName, string Name, string Type, bool Stackable, int ClientViewId, int? Attack, int? WeaponLevel, WeaponType? WeaponType, int? Range, uint? EquipLocation, IReadOnlyList<(int ItemId, uint Amount)>? Grants);
+    internal sealed record ItemDefinitionData(int Id, string AegisName, string Name, string Type, bool Stackable, int ClientViewId, int? Attack, int? WeaponLevel, WeaponType? WeaponType, int? Range, uint? EquipLocation, IReadOnlyList<(int ItemId, uint Amount)>? Grants, int? Defense = null);
 
     internal static ItemDefinitionData ReadItemDefinition(string itemDbYaml, int itemId)
     {
@@ -153,6 +153,10 @@ internal static class ItemDataCompiler
             weaponType = resolved;
         }
 
+        // Pinned `Defense` column (item_db_equip.yml header: "Armor's defense. (Default: 0)"): the item's hard DEF,
+        // summed into base_status->def by status_calc_pc_sub for every equipped item. Read for Armor rows only.
+        var defense = isArmor ? (OptionalScalar(block, "Defense") is { } defenseText ? int.Parse(defenseText, CultureInfo.InvariantCulture) : 0) : (int?)null;
+
         uint? equipLocation = null;
         if (isWeapon || isArmor)
         {
@@ -164,7 +168,7 @@ internal static class ItemDataCompiler
         // entirely and must not be misread as a container).
         var grants = type == "Usable" ? TryParseGetItemScript(block) : null;
 
-        return new ItemDefinitionData(itemId, aegisName, name, type, !NonStackableTypes.Contains(type), clientViewId, attack, weaponLevel, weaponType, range, equipLocation, grants);
+        return new ItemDefinitionData(itemId, aegisName, name, type, !NonStackableTypes.Contains(type), clientViewId, attack, weaponLevel, weaponType, range, equipLocation, grants, defense);
     }
 
     // Recognizes ONLY the narrow script shape this project models: a Script block consisting
@@ -317,6 +321,7 @@ internal static class ItemDataCompiler
         else if (isArmor)
         {
             builder
+                .Append("        Defense: ").Append(item.Defense!.Value.ToString(CultureInfo.InvariantCulture)).AppendLine(",")
                 .Append("        EquipLocation: 0x").Append(item.EquipLocation!.Value.ToString("X6", CultureInfo.InvariantCulture)).AppendLine(",");
         }
 

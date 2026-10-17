@@ -36,6 +36,7 @@ internal static partial class WorldDataImporterCli
                 "generate-canonical-maps" => await GenerateCanonicalMapsAsync(args[1..]),
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
+                "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
                 "compile-map-collision" => await CompileMapCollisionAsync(args[1..]),
                 "capabilities" => await CapabilitiesAsync(args[1..]),
                 _ => throw new ArgumentException($"Unknown command '{args[0]}'."),
@@ -962,6 +963,21 @@ internal static partial class WorldDataImporterCli
             new System.Text.UTF8Encoding(false));
 
         Console.WriteLine($"Generated quest {drop.QuestId} drop rule: mob {drop.MobId} -> item {drop.ItemId} x{drop.Count} @ rate {drop.Rate}/10000.");
+        return 0;
+    }
+
+    // Regenerates GameData/SizeFix/GeneratedSizeFix.cs from db/size_fix.yml and its Renewal Footer imports (incl. the
+    // optional db/import overlay), mirroring the pinned SizeFixDatabase merge order.
+    private static async Task<int> CompileSizeFixAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var table = SizeFixCompiler.BuildTable(relative => File.Exists(Path.Combine(root, relative)) ? File.ReadAllText(Path.Combine(root, relative)) : null);
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, SizeFixCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated size fix table for {table.GetLength(0)} weapon types.");
         return 0;
     }
 

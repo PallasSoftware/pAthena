@@ -37,9 +37,9 @@ namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
 //     atkmin/atkmax from item Attack (refine 0 = no bonus) +/- variance +
 //     STR-based base_stat_bonus, then rnd_value(atkmin,atkmax) inclusive,
 //     battle_add_weapon_damage (overrefine, no-op at refine 0), battle_calc_sizefix
-//     (Dagger has no db/re/size_fix.yml row; its own documented column default is
-//     100 for every unlisted weapon/size pair - a genuine no-op, not a
-//     capture-matched constant).
+//     (damage * atkmods[target size] / 100 from the generated size-fix table: db/size_fix.yml + Renewal imports; Dagger
+//     is Small 100 / Medium 75 / Large 50 - an earlier "genuine no-op" claim was wrong, corrected by executed fixture
+//     VF-06).
 //  4. wd.damage = statusAtk + weaponAtk + equipAtk(0) + percentAtk(0) (battle.cpp:5525).
 //     P.ATK mod: floor(damage*(100+patk)/100); patk is POW-derived, 0 for a fresh
 //     character (battle.cpp:5532) - no-op. wd.damage += masteryAtk(0) (battle.cpp:5538).
@@ -54,7 +54,7 @@ namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
 // approximated: hit/FLEE accuracy roll, elemental attribute table, cards, refine > 0,
 // left-hand/dual-wield, critical hits, skills, ammo/arrow attacks, weapon mastery
 // skills (correctly 0 for a fresh Novice, not "always 0"), P.ATK/POW (correctly 0
-// for a fresh Novice), and any non-Dagger weapon_type's size_fix.yml row.
+// for a fresh Novice), and weapon types other than Dagger/fist (their size-fix rows are generated, but no ASPD/range fixtures exist yet).
 //
 // This class owns RENEWAL-specific basic-attack gameplay mechanics only: it does not
 // mutate monster HP, award drops, or parse packets - MonsterCombatCoordinator owns

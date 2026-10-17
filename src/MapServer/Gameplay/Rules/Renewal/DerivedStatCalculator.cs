@@ -2,9 +2,9 @@ using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
 
-public readonly record struct DerivedStats(int BaseAttack, int Hit, int Flee, int PerfectFlee, int Critical, int SoftDefense, int SoftMagicDefense);
+public readonly record struct DerivedStats(int BaseAttack, int Hit, int Flee, int PerfectFlee, int Critical, int SoftDefense, int SoftMagicDefense, int HardDefense = 0);
 
-// Renewal PC derived stats for the supported scope: no equipment, passives, items or map penalties, and only the
+// Renewal PC derived stats for the supported scope: armor hard DEF only from equipment (no refine/cards/scripts), no passives or map penalties, and only the
 // Blessing / Increase AGI overlays. Mirrors status_calc_misc (base_status, status.cpp:2600-2746) and the delta
 // path of status_calc_bl_main (status.cpp:5964-6049). Integer divisions, float promotions and clamps are kept
 // exactly as in the source; fixtures VF-01/02/07/08 are the independent check. MATK, HP/SP and ASPD are separate.
@@ -12,7 +12,7 @@ internal static class DerivedStatCalculator
 {
     private const int ShortMax = short.MaxValue;
 
-    public static DerivedStats Calculate(CharacterStatusSnapshot snapshot)
+    public static DerivedStats Calculate(CharacterStatusSnapshot snapshot, EquipmentStats equipment = default)
     {
         var level = snapshot.State.BaseLevel;
         var b = StatusCalculator.BasePrimaryStats(snapshot.State);
@@ -43,7 +43,9 @@ internal static class DerivedStatCalculator
         mdef2 = Math.Clamp(mdef2, short.MinValue, ShortMax);
 
         // CRI and perfect FLEE have no overlay from the supported statuses (LUK is unchanged by them).
-        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2 };
+        // Hard DEF = summed equipped-armor DEF; status_calc_def with no active DEF status is cap_value(def, SHRT_MIN, SHRT_MAX).
+        var hardDef = Math.Clamp(equipment.HardDefense, short.MinValue, ShortMax);
+        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef };
     }
 
     // status_calc_misc, RENEWAL, BL_PC (status.cpp:2638-2745).

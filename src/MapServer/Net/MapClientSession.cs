@@ -3355,7 +3355,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         {
             SyncPositionToNow();
             var isWalking = _movement?.IsMoving ?? false;
-            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, Athena.Net.MapServer.Gameplay.Rules.Renewal.DerivedStatCalculator.Calculate(snapshot).SoftDefense);
+            // Hard DEF comes from the equipped armor rows; an equipped item this pass cannot account for makes the
+            // player an unresolvable target (mirrors the unresolved-weapon abort) rather than silently wearing "no DEF".
+            if (_inventory is null || !EquipmentStats.TryFromInventory(_inventory, GeneratedItems.ById, out var equipmentStats))
+            {
+                MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; player is not a valid combat target.");
+                return null;
+            }
+                        return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, Athena.Net.MapServer.Gameplay.Rules.Renewal.DerivedStatCalculator.Calculate(snapshot, equipmentStats).SoftDefense, equipmentStats.HardDefense);
         }
         finally { _movementGate.Release(); }
     }

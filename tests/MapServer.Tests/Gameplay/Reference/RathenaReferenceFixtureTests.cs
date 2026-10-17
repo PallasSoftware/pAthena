@@ -1,5 +1,8 @@
 using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
+using Athena.Net.MapServer.Generated.GameData.SizeFix;
+using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
@@ -17,7 +20,7 @@ public sealed class RathenaReferenceFixtureTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-07", "VF-08", "VF-11", "VF-14"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
 
@@ -266,4 +269,97 @@ public sealed class RathenaReferenceFixtureTests
         Assert.Equal((expected.GetProperty("adelay").GetInt32(), expected.GetProperty("speed").GetInt32(), expected.GetProperty("dmotion").GetInt32()),
             (AttackDelayCalculator.AttackDelayMs(snapshot.Effective, null), MovementSpeedCalculator.CellDurationMs(snapshot.Effective.MoveSpeedHaste),
              PlayerDamageMotionCalculator.Calculate(snapshot.Effective.Agility)));
+
+    // ---- Equipment (VF-05 / VF-06 / VF-15) ----
+
+    private static CharacterInventorySnapshot Wearing(IEnumerable<int> itemIds) => new(itemIds.Select((id, slot) => new CharacterInventoryItem(
+        DurableId: (uint)slot + 1, SlotIndex: (uint)slot, ItemId: id, Amount: 1, Equip: ((GeneratedItems.ById[id] as IEquippableItemDefinition)!.EquipLocation), Identified: true, 0, 0, 0)).ToArray());
+
+    public static TheoryData<int> LoadoutCases => [0, 1, 2, 3];
+
+    [Theory]
+    [MemberData(nameof(LoadoutCases))]
+    public void Vf05_EquipmentLoadouts_StatsMatchReference(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var loadout = fixture.Output("VF-05").GetProperty("loadouts")[index];
+        var state = StateFrom(fixture.Input("VF-05"));
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        Assert.True(EquipmentStats.TryFromInventory(Wearing(loadout.GetProperty("items").EnumerateArray().Select(i => i.GetInt32())), GeneratedItems.ById, out var equipment));
+        var b = loadout.GetProperty("battle_status");
+
+        var derived = DerivedStatCalculator.Calculate(snapshot, equipment);
+
+        Assert.Equal((b.GetProperty("def").GetInt32(), b.GetProperty("watk").GetInt32()), (derived.HardDefense, equipment.WeaponAttack));
+        Assert.Equal(Expected(b) with { HardDefense = derived.HardDefense }, derived);
+        Assert.Equal(b.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(snapshot.Effective, equipment.Weapon?.WeaponType));
+        Assert.Equal(b.GetProperty("range").GetInt32(), BasicAttackRangeResolver.Resolve(equipment.Weapon));
+    }
+
+    [Fact]
+    public void EquipmentStats_UnknownOrUnsupportedEquippedItem_IsUnresolvedNotZero()
+    {
+        var unknown = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, 999999, 1, 0x10, true, 0, 0, 0)]);
+        Assert.False(EquipmentStats.TryFromInventory(unknown, GeneratedItems.ById, out _));
+        var unequippedUnknown = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, 999999, 1, 0, true, 0, 0, 0)]);
+        Assert.True(EquipmentStats.TryFromInventory(unequippedUnknown, GeneratedItems.ById, out var stats));
+        Assert.Equal(0, stats.HardDefense);
+    }
+
+    public static TheoryData<int> KnifeTargets => [0, 1, 2];
+
+    // Reference: a Knife-wielding Novice's non-critical, non-miss damage values against real mobs. Accuracy and
+    // criticals are not modeled by Athena yet, so only the reachable normal-hit value set is compared.
+    [Theory]
+    [MemberData(nameof(KnifeTargets))]
+    public void Vf06_KnifeAttack_ReachableNormalDamageMatchesReference(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var attack = fixture.Output("VF-06").GetProperty("attacks")[index];
+        var mob = attack.GetProperty("mob_id").GetInt32() switch { 1002 => GeneratedMobs.Poring, 1007 => GeneratedMobs.Fabre, _ => GeneratedMobs.Wolf };
+        var expected = attack.GetProperty("normal").EnumerateObject().Select(p => long.Parse(p.Name)).Order().ToArray();
+        var state = StateFrom(fixture.Input("VF-06").GetProperty("attacker"));
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+
+        var observed = Enumerable.Range(0, 20000)
+            .Select(_ => WeaponAttackCalculator.Calculate(snapshot.Effective, state.BaseLevel, GeneratedItems.Knife, mob))
+            .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
+
+        Assert.Equal(expected, observed);
+    }
+
+    [Theory]
+    [InlineData(0, 1031)]
+    [InlineData(1, 1013)]
+    public void Vf15_MobAttackAgainstArmor_ReachableNormalDamageMatchesReference(int index, int mobId)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var output = fixture.Output("VF-15");
+        var target = output.GetProperty("target_battle_status");
+        var attack = output.GetProperty("attacks")[index];
+        Assert.Equal(mobId, attack.GetProperty("mob_id").GetInt32());
+        var expected = attack.GetProperty("normal").EnumerateObject().Select(p => long.Parse(p.Name)).Order().ToArray();
+        var mob = mobId == 1031 ? GeneratedMobs.Poporing : GeneratedMobs.Wolf;
+        var novice = new PlayerCombatSnapshot(1, "prontera", 0, 0, true, false, 10, 12, 15, SoftDefense: target.GetProperty("def2").GetInt32(), HardDefense: target.GetProperty("def").GetInt32());
+
+        var observed = Enumerable.Range(0, 20000)
+            .Select(_ => MobBasicAttackCalculator.Calculate(mob, novice))
+            .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
+
+        Assert.Equal(expected, observed);
+    }
+
+    // The generated size-fix table is exactly what the pinned loader built (db/size_fix.yml + Renewal imports).
+    [Fact]
+    public void GeneratedSizeFix_EqualsTheTableLoadedByThePinnedServer()
+    {
+        var loaded = RathenaReferenceFixture.LoadCommitted().Output("VF-06").GetProperty("loaded_size_fix_db");
+        Assert.Equal(24, loaded.GetArrayLength());
+        foreach (var weapon in loaded.EnumerateArray())
+        {
+            var type = (WeaponType)weapon.GetProperty("weapon").GetInt32();
+            var entry = weapon.GetProperty("entry").EnumerateArray().Select(v => v.GetInt32()).ToArray();
+            Assert.Equal(entry, new[] { GeneratedSizeFix.Percent(type, MobSize.Small), GeneratedSizeFix.Percent(type, MobSize.Medium), GeneratedSizeFix.Percent(type, MobSize.Big) });
+        }
+    }
 }

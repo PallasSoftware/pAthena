@@ -77,7 +77,7 @@ internal static class MobBasicAttackCalculator
         // executed fixture VF-14 (Poring/Poporing/Wolf: roll + batk - def2).
         long damage = (atkmax > atkmin ? rollAtk(atkmin, atkmax - 1) : atkmin) + (attacker.Str + attacker.Level);
 
-        const int def1 = 0; // Disclosed simplification - see this type's own doc comment, step 2.
+        var def1 = target.HardDefense; // equipped-armor hard DEF (EquipmentStats), fixture VF-15.
         var def2 = target.SoftDefense; // status_calc_misc / status_calc_bl_main def2, see DerivedStatCalculator.
         damage = damage * (4000 + def1) / (4000 + 10L * def1) - def2;
 

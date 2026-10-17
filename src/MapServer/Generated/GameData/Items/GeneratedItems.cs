@@ -41,6 +41,7 @@ internal static class GeneratedItems
         Name: "Cotton Shirt",
         Stackable: false,
         ClientViewId: 2301,
+        Defense: 10,
         EquipLocation: 0x000010,
         Source: new WorldSourceInfo("rAthena", "e985006171d2eb320ee512a653f4c83aea3d81b6", "legacy/rathena/db/re/item_db_equip.yml", 0));
 

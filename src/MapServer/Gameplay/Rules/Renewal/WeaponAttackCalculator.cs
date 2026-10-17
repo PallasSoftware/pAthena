@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Generated.GameData.SizeFix;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
@@ -43,9 +44,10 @@ internal static class WeaponAttackCalculator
             if (atkmin > atkmax) atkmin = atkmax; // Defensive: pinned code never violates this for real data.
 
             weaponAtk = rollWeaponAtk(atkmin, atkmax);
-            // battle_add_weapon_damage overrefine term and battle_calc_sizefix are both
-            // no-ops for a refine-0 Dagger against any size target (see
-            // RenewalBasicAttackRules's doc comment).
+            // battle_add_weapon_damage overrefine/weapon_damage_rate terms are no-ops for a refine-0 weapon without
+            // bonuses. battle_calc_sizefix (battle.cpp:2429-2430) is NOT: damage * atkmods[target size] / 100 with the
+            // pinned size_fix table (Dagger: Small 100 / Medium 75 / Large 50 - fixture VF-06 weapon_atkmods).
+            weaponAtk = weaponAtk * GeneratedSizeFix.Percent(weapon.WeaponType, target.Size) / 100;
         }
 
         long damage = statusAtk + weaponAtk; // equipAtk=0, percentAtk=0, masteryAtk=0, patk=0.

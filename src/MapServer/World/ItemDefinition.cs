@@ -102,7 +102,7 @@ public sealed record WeaponItemDefinition(
     : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source), IEquippableItemDefinition;
 
 // Armor-slot equipment (pinned Type: Armor - EQP_ARMOR/EQP_HEAD_*/EQP_SHOES/etc via item_db
-// Locations). No combat-relevant fields yet (Defense/ArmorLevel unmodeled) - extend only when a
+// Locations). Defense is the item_db hard DEF (Default 0); ArmorLevel/refine/scripts unmodeled - extend only when a
 // traced use case needs them, mirroring WeaponItemDefinition's own extension history.
 public sealed record ArmorItemDefinition(
     int Id,
@@ -110,6 +110,7 @@ public sealed record ArmorItemDefinition(
     string Name,
     bool Stackable,
     int ClientViewId,
+    int Defense,
     uint EquipLocation,
     WorldSourceInfo Source)
     : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source), IEquippableItemDefinition;
