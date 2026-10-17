@@ -37,6 +37,7 @@ internal static partial class WorldDataImporterCli
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
                 "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
+                "collect-rathena-names" => await CollectRathenaNamesAsync(args[1..]),
                 "compile-map-collision" => await CompileMapCollisionAsync(args[1..]),
                 "capabilities" => await CapabilitiesAsync(args[1..]),
                 _ => throw new ArgumentException($"Unknown command '{args[0]}'."),
@@ -978,6 +979,18 @@ internal static partial class WorldDataImporterCli
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllTextAsync(output, SizeFixCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
         Console.WriteLine($"Generated size fix table for {table.GetLength(0)} weapon types.");
+        return 0;
+    }
+
+    private static async Task<int> CollectRathenaNamesAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var names = RathenaNameCollector.Collect(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, string.Join('\n', names) + "\n", new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Collected {names.Count} rAthena script identifiers.");
         return 0;
     }
 

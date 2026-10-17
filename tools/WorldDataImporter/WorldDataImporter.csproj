@@ -10,5 +10,6 @@
     <Compile Include="../../src/MapServer/World/RathenaMapCacheFormat.cs" Link="Compiler/RathenaMapCacheFormat.cs" />
     <Compile Include="../../src/MapServer/World/RathenaMapCacheLayers.cs" Link="Compiler/RathenaMapCacheLayers.cs" />
     <Compile Include="../../src/MapServer/World/AthenaMapPackFormat.cs" Link="Compiler/AthenaMapPackFormat.cs" />
+    <Compile Include="../../src/MapServer/World/Items/ItemPackFormat.cs" Link="Compiler/ItemPackFormat.cs" />
   </ItemGroup>
 </Project>

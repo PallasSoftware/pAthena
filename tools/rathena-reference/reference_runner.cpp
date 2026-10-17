@@ -3,7 +3,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <map>
 #include <vector>
 #include <memory>
@@ -15,6 +18,7 @@
 #include "map.hpp"
 #include "mob.hpp"
 #include "pc.hpp"
+#include "script.hpp"
 #include "status.hpp"
 #include "../common/random.hpp"
 #include "../common/timer.hpp"
@@ -388,7 +392,56 @@ static void vf14() {
 	std::fprintf(out, "]}}");
 }
 
+
+// Feature 16 data-pipeline evidence. Neither mode contains a formula: they only read what the real pinned loaders
+// produced. RA_NAMES=<file with one script identifier per line> writes "name<TAB>value<TAB>c|p" per resolved
+// constant/parameter (script_get_constant / script_get_parameter) to RA_NAMES_OUT. RA_ITEMS_OUT writes one canonical
+// line per loaded item_db entry (sorted by id) so the C# item loader can be compared field by field.
+static void dump_constants(const char* names_path, const char* out_path) {
+	std::ifstream in(names_path);
+	std::FILE* f = std::fopen(out_path, "w");
+	std::string name;
+	while (std::getline(in, name)) {
+		if (name.empty()) continue;
+		int64 value = 0;
+		if (script_get_constant(name.c_str(), &value)) std::fprintf(f, "%s\t%lld\tc\n", name.c_str(), (long long)value);
+		else if (script_get_parameter(name.c_str(), &value)) std::fprintf(f, "%s\t%lld\tp\n", name.c_str(), (long long)value);
+	}
+	std::fclose(f);
+}
+
+static void dump_items(const char* out_path) {
+	std::vector<std::shared_ptr<item_data>> items;
+	for (auto& it : item_db) items.push_back(it.second);
+	std::sort(items.begin(), items.end(), [](const auto& a, const auto& b) { return a->nameid < b->nameid; });
+	std::FILE* f = std::fopen(out_path, "w");
+	for (const auto& i : items) {
+		std::string line;
+		auto n = [&](long long v) { line += std::to_string(v); line += '|'; };
+		n(i->nameid); line += i->name.c_str(); line += '|'; line += i->ename.c_str(); line += '|';
+		n(i->type); n(i->subtype); n(i->value_buy); n(i->value_sell); n(i->weight); n(i->atk); n(i->matk); n(i->def); n(i->range); n(i->slots);
+		n((long long)i->class_base[0]); n((long long)i->class_base[1]); n((long long)i->class_base[2]); n(i->class_upper); n(i->sex);
+		n(i->equip); n(i->weapon_level); n(i->armor_level); n(i->elv); n(i->elvmax); n(i->flag.no_refine); n(i->flag.gradable);
+		n(i->look); n(i->view_id); n(i->flag.buyingstore); n(i->flag.dead_branch); n(i->flag.group); n(i->flag.guid);
+		n(i->flag.bindOnEquip); n(i->flag.broadcast); n(i->flag.delay_consume); n(i->flag.dropEffect);
+		n(i->delay.duration); n(i->delay.sc); n(i->stack.amount); n(i->stack.inventory); n(i->stack.cart); n(i->stack.storage); n(i->stack.guild_storage);
+		n(i->item_usage.override); n(i->item_usage.sitting); n(i->gm_lv_trade_override);
+		n(i->flag.trade_restriction.drop); n(i->flag.trade_restriction.trade); n(i->flag.trade_restriction.trade_partner);
+		n(i->flag.trade_restriction.sell); n(i->flag.trade_restriction.cart); n(i->flag.trade_restriction.storage);
+		n(i->flag.trade_restriction.guild_storage); n(i->flag.trade_restriction.mail); n(i->flag.trade_restriction.auction);
+		n(i->script != nullptr); n(i->equip_script != nullptr); n(i->unequip_script != nullptr);
+		line.back() = '\n';
+		std::fputs(line.c_str(), f);
+	}
+	std::fclose(f);
+}
+
 void ra_reference_run() {
+	if (const char* names = std::getenv("RA_NAMES")) {
+		dump_constants(names, std::getenv("RA_NAMES_OUT"));
+		dump_items(std::getenv("RA_ITEMS_OUT"));
+		std::exit(0);
+	}
 	const char* path = std::getenv("RA_OUT");
 	out = std::fopen(path ? path : "reference.json", "w");
 #ifdef RENEWAL
