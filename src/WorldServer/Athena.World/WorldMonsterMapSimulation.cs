@@ -169,7 +169,7 @@ internal sealed class WorldMonsterMapSimulation
         if (!_attackSequences.TryGetValue(key, out var state)) return null; // first sequence ever seen for this key
         if (command.AttackSequence == state.Sequence)
         {
-            return command.Damage == state.OriginalCommand.Damage && command.AcquireEngagement == state.OriginalCommand.AcquireEngagement
+            return command.Damage == state.OriginalCommand.Damage && command.AcquireEngagement == state.OriginalCommand.AcquireEngagement && command.SourceAttackMotion == state.OriginalCommand.SourceAttackMotion
                 ? state.Result with { Status = WorldMonsterDamageStatus.ReplayedSequence }
                 : new WorldMonsterDamageResult(WorldMonsterDamageStatus.Conflict, 0, 0, 0, false, null);
         }

@@ -37,8 +37,13 @@ public sealed record MapServerWorld(
     // own doc comment. Defaults to a fresh empty registry for every existing positional-constructor
     // call site (focused tests that never touch player-feed behavior at all).
     PlayerFeedProjectionRegistry? PlayerProjections = null,
-    GameplayRateOptions? Rates = null)
+    GameplayRateOptions? Rates = null,
+    // The regional gameplay rule implementations composed once at startup. Null only for focused fixtures that never reach
+    // a rules consumer; every production/consumer path reads them through GameplayRules, which fails loudly when absent.
+    GameplayRuleServices? Rules = null)
 {
+    public GameplayRuleServices GameplayRules => Rules ?? throw new InvalidOperationException("This MapServerWorld was composed without gameplay rules.");
+
     public PlayerFeedProjectionRegistry PlayerProjectionsOrDefault => PlayerProjections ?? _defaultPlayerProjections;
     private readonly PlayerFeedProjectionRegistry _defaultPlayerProjections = new();
 
@@ -48,8 +53,8 @@ public sealed record MapServerWorld(
     public MapServerWorld(WorldMapRegistry maps, IReadOnlyList<MobSpawnDefinition> monsterSpawns, MonsterCombatCoordinator combat,
         IMapCollisionProvider collision, IMovementPathProvider movementPathProvider,
         MonsterFeedProjectionRegistry monsterProjections, MonsterAttackCadenceStore combatState,
-        GameplayRateOptions? rates = null)
-        : this(maps, monsterSpawns, combat, collision, movementPathProvider, monsterProjections, combatState, CreatePlayerWorld(), rates)
+        GameplayRateOptions? rates = null, GameplayRuleServices? rules = null)
+        : this(maps, monsterSpawns, combat, collision, movementPathProvider, monsterProjections, combatState, CreatePlayerWorld(), rates, rules)
     {
     }
 
@@ -57,9 +62,9 @@ public sealed record MapServerWorld(
         IMapCollisionProvider collision, IMovementPathProvider movementPathProvider,
         MonsterFeedProjectionRegistry monsterProjections, MonsterAttackCadenceStore combatState,
         (PlayerPresenceRegistry Players, PlayerVisibilityCoordinator Coordinator, WorldVisibilityOptions Options) playerWorld,
-        GameplayRateOptions? rates)
+        GameplayRateOptions? rates, GameplayRuleServices? rules)
         : this(maps, monsterSpawns, combat, collision, movementPathProvider, monsterProjections, combatState,
-            playerWorld.Players, playerWorld.Coordinator, playerWorld.Options, new PlayerFeedProjectionRegistry(), rates)
+            playerWorld.Players, playerWorld.Coordinator, playerWorld.Options, new PlayerFeedProjectionRegistry(), rates, rules)
     {
         // Positional order matches the primary record constructor exactly: Maps, MonsterSpawns,
         // Combat, Collision, MovementPathProvider, MonsterProjections, CombatState, Players,
@@ -108,7 +113,7 @@ public sealed record MapServerWorld(
         var servedMobSpawns = effectiveMobSpawnMaps is null ? world.MobSpawns : world.MobSpawns.Where(spawn => effectiveMobSpawnMaps.Contains(spawn.Map)).ToArray();
         var questDrops = new QuestDropResolver(GeneratedQuestDrops.All);
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(questDrops, gameplayRules.BasicAttackRules);
+        var combat = new MonsterCombatCoordinator(questDrops, gameplayRules.Combat);
         // Same either/or composition rule the old cell-selector/movement-provider split used:
         // EmptyMapCollisionProvider.Instance keeps the collision-less placeholder path provider
         // (tests/dev fixtures); any real provider gets the collision-backed A* implementation.
@@ -122,7 +127,7 @@ public sealed record MapServerWorld(
         var playerVisibility = new PlayerVisibilityCoordinator(players, visibility);
         var monsterProjections = new MonsterFeedProjectionRegistry();
         var playerProjections = new PlayerFeedProjectionRegistry();
-        return new MapServerWorld(maps, servedMobSpawns, combat, resolvedCollisionProvider, movementPathProvider, monsterProjections, combatState, players, playerVisibility, visibility, playerProjections, rates ?? new GameplayRateOptions());
+        return new MapServerWorld(maps, servedMobSpawns, combat, resolvedCollisionProvider, movementPathProvider, monsterProjections, combatState, players, playerVisibility, visibility, playerProjections, rates ?? new GameplayRateOptions(), gameplayRules);
     }
 
     // Production fail-closed guard: called explicitly by MapServerApp.RunAsync BEFORE calling

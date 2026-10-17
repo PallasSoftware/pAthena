@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -60,11 +60,11 @@ public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests : IAsyn
     private Replica MakeReplica(string mapId)
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         var world = new MapServerWorld(
             WorldMapRegistry.Tutorial, [PoringSpawn(mapId)], combat,
             EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(),
-            new MonsterFeedProjectionRegistry(), combatState);
+            new MonsterFeedProjectionRegistry(), combatState, rules: TestGameplayRules.Services());
         // A distinct OrleansWorldRuntime instance per replica - mirrors two genuinely independent
         // MapServer processes each holding their OWN IClusterClient-backed runtime, even though
         // both talk to the SAME underlying TestCluster/grain (_cluster.Client is itself already the

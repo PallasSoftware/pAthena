@@ -1,5 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.World;
 
@@ -91,7 +91,7 @@ public sealed class CanonicalPrtFild08PopulationTests
     [Fact]
     public void RuntimeActivation_InstantiatesExactlyTheCanonicalPopulation_OnTheCanonicalMapOnly()
     {
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
+        var world = MapServerWorld.Build(TestGameplayRules.Services(), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
 
         var onCanonical = world.MonsterSpawns.Where(spawn => string.Equals(spawn.Map, Map, StringComparison.OrdinalIgnoreCase)).ToArray();
         Assert.Equal((30, 616), Total(onCanonical));

@@ -227,18 +227,39 @@ public sealed class MapClientSessionHealAndStatusTests
         var bootstrap = new byte[29]; await client.GetStream().ReadExactlyAsync(bootstrap); var skillListHeader=new byte[4]; await client.GetStream().ReadExactlyAsync(skillListHeader); var skillListBody=new byte[BinaryPrimitives.ReadUInt16LittleEndian(skillListHeader.AsSpan(2))-4]; await client.GetStream().ReadExactlyAsync(skillListBody);
 
         var context = new ScriptContext(session, "npc:test", 1, "Test", null);
+        await context.StartStatusAsync(CharacterStatusEffectState.StatusIds.Blessing, 240000, 3, default);
+        await DrainBlessingClientPackets(client.GetStream());
+
+        await context.StartStatusAsync(CharacterStatusEffectState.StatusIds.Blessing, 100000, 10, default);
+
+        var activation = await ReadExact(client.GetStream(), 29);
+        Assert.Equal(PacketConstants.ZcMsgStateChange3, BinaryPrimitives.ReadInt16LittleEndian(activation));
+        Assert.Equal(100000, BinaryPrimitives.ReadInt32LittleEndian(activation.AsSpan(9)));
+        Assert.Equal(10, BinaryPrimitives.ReadInt32LittleEndian(activation.AsSpan(17)));
+    }
+
+        [Fact]
+    public async Task ScriptContextStartWeakerStatusOverStrongerSendsNothing()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        using var client = new TcpClient(); var connecting = client.ConnectAsync(endpoint.Address, endpoint.Port); using var server = await listener.AcceptTcpClientAsync(); await connecting;
+        var persistence = new RecordingPersistence(new(9, 0, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1));
+        await using var session = new MapClientSession(1, server, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), false, gameplayStatePersistence: persistence);
+        await session.CompleteIroAuthenticationAsync(new(7, 9, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0));
+        var bootstrap = new byte[29]; await client.GetStream().ReadExactlyAsync(bootstrap); var skillListHeader=new byte[4]; await client.GetStream().ReadExactlyAsync(skillListHeader); var skillListBody=new byte[BinaryPrimitives.ReadUInt16LittleEndian(skillListHeader.AsSpan(2))-4]; await client.GetStream().ReadExactlyAsync(skillListBody);
+
+        var context = new ScriptContext(session, "npc:test", 1, "Test", null);
         await context.StartStatusAsync(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10, default);
         await DrainBlessingClientPackets(client.GetStream());
 
         await context.StartStatusAsync(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3, default);
 
-        var activation = await ReadExact(client.GetStream(), 29);
-        Assert.Equal(PacketConstants.ZcMsgStateChange3, BinaryPrimitives.ReadInt16LittleEndian(activation));
-        Assert.Equal(100000, BinaryPrimitives.ReadInt32LittleEndian(activation.AsSpan(9)));
-        Assert.Equal(3, BinaryPrimitives.ReadInt32LittleEndian(activation.AsSpan(17)));
+        // Reference status_change_start returns before any icon/stat side effect for a weaker start.
+        await Task.Delay(200);
+        Assert.Equal(0, client.Available);
     }
 
-    [Fact]
+[Fact]
     public async Task ScriptContextSkillEffectSendsCaptureProvenUseSkillVisual()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); var endpoint = (IPEndPoint)listener.LocalEndpoint;

@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.Net;
@@ -101,7 +101,7 @@ public sealed class PrtFild08dMonsterVisibilityAndRespawnIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(Generated.GameData.Quests.GeneratedQuestDrops.All), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(Generated.GameData.Quests.GeneratedQuestDrops.All), TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances);
         Assert.Equal("prt_fild08", target.Map);
         Assert.Equal(GeneratedMobs.Poring.Id, target.Spawn.Mob.Id);

@@ -712,117 +712,68 @@ INT/DEX/LUK), `MobDefinition.Defense/Level/Vit`, the RE DEF-reduction formula,
 consumed by the attack path). No new authoritative input was missing; this was
 purely a missing combat-formula/dispatch gap, not a data gap.
 
-## Gameplay ruleset selection (Renewal / PreRenewal composition boundary)
+## Gameplay rules: ruleset, region and client protocol (composition boundary)
 
-Athena.NET currently implements **RENEWAL gameplay only**, because the current
-official iRO client is the only live target combat mechanics can be validated
-against. Renewal-specific formulas must not leak into general MapServer
-orchestration (`MapClientSession`, `MonsterCombatCoordinator`, inventory/
-equipment ownership, monster HP/death handling, quest/drop handling) - those
-classes depend only on ruleset-agnostic interfaces under
-`src/MapServer/Gameplay/Rules/`.
+Three independent dimensions, never conflated:
 
-### Folder/namespace layout
+1. **Ruleset** - Renewal / Pre-Renewal (`gameplay_ruleset`). Only Renewal is implemented; PreRenewal parses but fails composition.
+2. **Gameplay region** - iRO / kRO (`gameplay_region`, default iRO). Selects which independently maintained regional gameplay
+   rule implementations run. Per MapServer deployment, chosen once at startup (not per player, map or rate group).
+3. **Client protocol** - the exact client build / PACKETVER. Athena.NET supports only the official iRO client
+   (PACKETVER 20220406); `gameplay_region` never changes packet framing, serialization or the supported client.
+   kRO gameplay architecture is being prepared; **kRO client-protocol compatibility is not implemented** and official kRO
+   gameplay compatibility is **not verified**. Both regions currently follow the pinned rAthena Renewal source exactly
+   (`e985006171d2eb320ee512a653f4c83aea3d81b6`), validated by the executed golden fixtures; matching rAthena is not
+   proof of official iRO or kRO behavior.
 
-```text
-src/MapServer/Gameplay/Rules/
-    RagnarokRuleSet.cs        - enum { Renewal, PreRenewal } (domain value only)
-    GameplayOptions.cs        - RuleSet selection, sourced from MapConfig
-    GameplayRulesFactory.cs   - the ONE place ruleset -> implementations is decided
-    GameplayRuleServices.cs   - the composed bundle MapServerWorld.Build receives
-                                 (currently just BasicAttackRules; future independently
-                                 scoped rule interfaces are added here, not folded into
-                                 one giant IGameRules interface)
-    IBasicAttackRules.cs      - ruleset-agnostic basic-melee-attack contract
-    BasicAttackContext.cs     - authoritative inputs (attacker stats/level, optional
-                                 equipped weapon, target) - never client-supplied state
-    BasicAttackDamageResult.cs
-    Renewal/
-        RenewalBasicAttackRules.cs   - IBasicAttackRules impl; owns the pinned-source trace
-        WeaponAttackCalculator.cs    - internal pure-math helper RenewalBasicAttackRules uses
-    PreRenewal/
-        README.md                    - documents the convention; NO C# implementation yet
-```
-
-`PreRenewal/` holds only a `README.md` - git does not track empty directories,
-and an empty placeholder folder would need a stub C# file to force tracking,
-which is explicitly not wanted. The README documents that any future Pre-Renewal
-implementation belongs there, registered from `GameplayRulesFactory.Create`'s
-`RagnarokRuleSet.PreRenewal` branch, without touching `IBasicAttackRules`,
-`GameplayRuleServices`, `MonsterCombatCoordinator`, or `MapClientSession`.
-
-### Composition root and configuration
-
-This codebase has no `Microsoft.Extensions.DependencyInjection` container -
-`MapServerApp.RunAsync` (`src/MapServer/Startup/MapServerApp.cs`) is the ONE
-composition root that decides gameplay ruleset selection. `MapServerWorld.Build`
-(`src/MapServer/World/MapServerWorld.cs`) receives an already-composed
-`GameplayRuleServices` bundle as a **required** parameter - it never constructs
-`GameplayOptions`, never references `RagnarokRuleSet`, and never calls
-`GameplayRulesFactory.Create` itself, so it stays entirely unaware of which
-ruleset produced the bundle it was handed:
+Consumers depend only on abstractions under `src/MapServer/Gameplay/Rules/`:
 
 ```text
-map_athena.conf "gameplay_ruleset: Renewal"
-    -> MapConfigLoader (RagnarokRuleSet.TryParse; key ABSENT -> Renewal default;
-       key PRESENT but unrecognized -> throws InvalidOperationException, config load fails)
-    -> MapConfig.GameplayRuleSet
-    -> MapServerApp.RunAsync builds GameplayOptions { RuleSet = mergedConfig.GameplayRuleSet }
-    -> GameplayRulesFactory.Create(options) -> GameplayRuleServices
-    -> MapServerWorld.Build(gameplayRules: services)
-    -> new MonsterCombatCoordinator(monsters, questDrops, gameplayRules.BasicAttackRules)
+Gameplay/Rules/
+    GameplayRegion.cs / RagnarokRuleSet.cs / GameplayOptions.cs   - the selections (domain values)
+    GameplayRulesFactory.cs        - the ONE place (ruleset, region) -> concrete implementations is decided; unknown or
+                                      unsupported selections throw NotSupportedException at startup
+    GameplayRulesServiceCollectionExtensions.cs - AddGameplayRules(options): registers the selected region's implementations
+                                      with the host's existing service collection (MapServerApp), once
+    GameplayRuleServices.cs        - the composed bundle (Combat, Stats, Timing, StatusEffects, Experience)
+    ICombatRules      player->monster and monster->player basic attacks
+    IStatRules        six stats + job bonuses, derived stats/MATK, max HP/SP + resource transition, equipment DEF/weapon, stat allocation
+    ITimingRules      ASPD attack delay/motion, walk cell duration, player damage motion
+    IStatusEffectRules Blessing / Increase AGI creation, overlap (retain) decision, stat overlay
+    IExperienceRules  level-up progression
+    PrimaryStats.cs / DerivedStats.cs / BasicAttack*.cs / JobSupport.cs   - neutral shared models and verification scope
+    Iro/  Iro{Combat,Stat,Timing,StatusEffect,Experience}Rules.cs
+    Kro/  Kro{Combat,Stat,Timing,StatusEffect,Experience}Rules.cs
+    PreRenewal/README.md           - convention only; no C# implementation
 ```
 
-`GameplayRulesFactory.Create` is a plain `switch` on `RagnarokRuleSet`:
-`Renewal` returns `new GameplayRuleServices(new RenewalBasicAttackRules())`;
-`PreRenewal` throws `NotSupportedException("Pre-Renewal gameplay rules are not
-implemented.")`. `PreRenewal` DOES parse successfully as a config value (it is a
-real, valid `RagnarokRuleSet` member) - the failure happens at composition, not
-at config-parse time. There is no silent fallback anywhere in this chain:
-- An absent `gameplay_ruleset` key defaults to Renewal (the same "use the field
-  default" convention every other optional key in `map_athena.conf` follows).
-- A PRESENT but unrecognized value (a typo, or a future enum member the running
-  binary doesn't know about) throws `InvalidOperationException` out of
-  `MapConfigLoader.Load` itself - config loading fails outright, it does not
-  quietly resolve to Renewal or any other value.
-- Selecting the real, valid `PreRenewal` value fails MapServer composition
-  loudly via `GameplayRulesFactory.Create`'s `NotSupportedException` (composition
-  happens before the TCP listener starts accepting connections).
+**Independence rule.** `Iro/` and `Kro/` are separate concrete implementations with deliberately duplicated algorithms:
+no inheritance, no delegation between regions, no shared concrete engine, no `isIro`/`isKro`/`GameplayRegion` branches inside
+gameplay code, no reflection or service location. Shared and *not* regional: immutable models/inputs/outputs, generated data
+(`Generated/*`), `CharacterStatusEffectState` storage/locking/snapshots, session management, persistence, Orleans authority,
+packet serialization, experience *rates* (`Gameplay/Rates`, configuration policy). A future verified iRO difference is a targeted
+change to the `Iro*` class only. `RegionalRulesArchitectureTests` enforces this by scanning source and types;
+`RegionalRulesParityTests` asserts the two regions are identical today; the `Iro*/Kro*` conformance test subclasses run the same
+golden fixtures against each region independently.
 
-`MonsterCombatCoordinator` depends on `IBasicAttackRules` only and forwards a
-`BasicAttackContext` (attacker stats/level, the CURRENT authoritative equipped
-weapon or null, target) into `Calculate` - it never asks which ruleset is active.
-`MapClientSession.HandleIroAttackRequestAsync` resolves the equipped weapon
-through the same `EquippedWeaponResolver` path `SendSelfWeaponAppearanceAsync`
-already used (never `ClientViewId`/LOOK_WEAPON, never cached across attacks), so
-a same-session equip/unequip changes the very next attack's calculation with no
-reconnect and no coordinator-side cache to invalidate - `MapClientSession` itself
-selects nothing Renewal-specific. `EquippedWeaponResolution.UnknownItem` and
-`NonWeaponInWeaponSlot` are authoritative-state/data invariant FAILURES (an
-equipped item id absent from the generated item registry, or a non-weapon item
-resolved into the weapon slot) - `HandleIroAttackRequestAsync` treats either as
-grounds to reject/abort the attack outright (logged, no combat calculation runs,
-no wire response is sent at all), never as a legitimate unarmed state. Only
-`EquippedWeaponResolution.Unarmed` may enter the unarmed `RenewalBasicAttackRules`
-path.
+**Composition.** `MapServerApp.RunAsync` builds `GameplayOptions { RuleSet, Region }` from `map_athena.conf`
+(`MapConfigLoader`: absent keys default to Renewal / iRO; present-but-unknown values throw), calls
+`hostBuilder.Services.AddGameplayRules(options)` (the host's existing container - no second container), resolves
+`GameplayRuleServices`, and hands it to `MapServerWorld.Build`; `MapClientSession`, `MonsterCombatCoordinator`,
+`MonsterAttackCadenceExecutor`, `CharacterStatusEffectState` and `CharacterProgressionService` receive the abstractions. After the Orleans client starts,
+`WorldGameplayProfileGuard` checks `(region, ruleset)` against `IWorldGameplayProfileGrain`, whose profile comes from the World's own
+configuration (`ATHENA_WORLD_GAMEPLAY_REGION`/`..._RULESET`, default iRO/Renewal; never the first MapServer). A MapServer with a different
+profile fails startup, and `WorldGameplayProfileMonitor` re-checks after every Orleans reconnect (exit code 78, fail closed), so one Orleans
+world never silently mixes regional gameplay.
 
-The weapon-ATK roll is injectable (`RenewalBasicAttackRules`'s constructor takes
-an optional `Func<int,int,int> rollWeaponAtk`, forwarded into
-`WeaponAttackCalculator`, same pattern as `QuestDropResolver`'s injectable RNG)
-so tests can pin it deterministically; production defaults to `Random.Shared`.
+The weapon-ATK and monster-ATK rolls are injectable through the concrete combat classes' constructors (tests pin them; production
+uses `Random.Shared`). `MapClientSession.HandleIroAttackRequestAsync` resolves the equipped weapon through `EquippedWeaponResolver`
+(never `ClientViewId`, never cached); `UnknownItem` / `NonWeaponInWeaponSlot` are invariant failures that abort the attack, and
+`IStatRules.TryResolveEquipment` likewise refuses to count an equipped item it cannot account for.
 
-Live stock-iRO validation is now PROVEN: equipped starter Knife vs G_PORING dealt
-19/18/18 damage across three consecutive live hits, the target's HP reached 0,
-death notification and quest Wood reward/persistence/0x0B41 pickup all worked.
-Unequipping the Knife during the same MapServer session immediately returned
-subsequent attacks to the genuine unarmed RENEWAL calculation (observed damage
-0 for this character/target state); re-equipping immediately restored
-weapon-aware damage (18/19) without reconnecting, and a second G_PORING died
-with the Wood stack amount increasing. The stock capture's originally observed
-37/36 damage remains validation evidence only, not an input to the
-implementation - the stock capture and this Athena run are not yet proven to
-share identical runtime status/buff state, so that exact-value comparison is
-separate future work.
+Live stock-iRO validation of the original Knife vs G_PORING slice (19/18/18 damage, kill, Wood reward, equip/unequip taking
+effect on the next attack without reconnect) predates the regional split and remains valid evidence; the stock capture's
+37/36 damage is validation evidence only, not an implementation input.
 
 ## Base/Job progression composition and presentation
 

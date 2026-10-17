@@ -24,6 +24,8 @@ public sealed record MapConfig
     // own default) when unset or unrecognized, matching MapConfigLoader's existing
     // "use the field default on a bad/missing value" convention for every other key.
     public RagnarokRuleSet GameplayRuleSet { get; init; } = RagnarokRuleSet.Renewal;
+    // "gameplay_region" (iRO | kRO), defaults to iRO. See GameplayRegion: independent of ruleset and client protocol.
+    public GameplayRegion GameplayRegion { get; init; } = GameplayRegion.Iro;
     public GameplayRateOptions GameplayRates { get; init; } = new();
 
     // Zero or more "map_collision_artifact: <path>|<map1>,<map2>,..." lines. Each entry names one

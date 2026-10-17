@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 
@@ -5,6 +7,8 @@ namespace Athena.Net.MapServer.Tests.World;
 
 public sealed class CharacterEquipmentMutationServiceTests
 {
+    private static readonly GameplayRuleServices Rules = TestGameplayRules.Services();
+
     private const uint AccountId = 7;
     private const uint CharId = 9;
 
@@ -13,7 +17,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
 
     private static readonly ArmorItemDefinition CottonShirt = new(
-        2301, "Cotton_Shirt", "Cotton Shirt", Stackable: false, ClientViewId: 2301, EquipLocation: 0x000010,
+        2301, "Cotton_Shirt", "Cotton Shirt", Stackable: false, ClientViewId: 2301, Defense: 10, EquipLocation: 0x000010,
         new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
 
     private static readonly EtcItemDefinition Wood = new(
@@ -155,6 +159,23 @@ public sealed class CharacterEquipmentMutationServiceTests
         Assert.Equal(0u, updated!.Items[0].Equip);
         Assert.Single(persistence.Calls);
         Assert.Equal((1u, 0u), persistence.Calls[0]);
+    }
+
+    // Equip / unequip drive the hard-DEF and weapon contribution (reference-verified loadouts: VF-05); the stats are
+    // always rebuilt from the committed inventory, never patched incrementally.
+    [Fact]
+    public async Task EquipThenUnequipArmor_ChangesHardDefenseAccordingly()
+    {
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2301, 1, 0, true, 0, 0, 0)]);
+        var service = new CharacterEquipmentMutationService(AccountId, CharId, new RecordingPersistence());
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, Items, out var before));
+        var (_, equipped) = await service.EquipAsync(inventory, 0, requestedPosition: 0x000010, Items, CancellationToken.None);
+        Assert.True(Rules.Stats.TryResolveEquipment(equipped!, Items, out var wearing));
+        var (_, unequipped) = await service.UnequipAsync(equipped!, 0, CancellationToken.None);
+        Assert.True(Rules.Stats.TryResolveEquipment(unequipped!, Items, out var after));
+
+        Assert.Equal((0, 10, 0), (before.HardDefense, wearing.HardDefense, after.HardDefense));
     }
 
     [Fact]

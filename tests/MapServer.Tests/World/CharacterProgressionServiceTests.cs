@@ -1,11 +1,15 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rates;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Tests.World;
 
-public sealed class CharacterProgressionServiceTests
+public abstract class ExperienceRulesTests(GameplayRegion region)
 {
+    private GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
+
     [Theory]
     [InlineData(7UL, 100u, 7UL)]
     [InlineData(7UL, 200u, 14UL)]
@@ -21,31 +25,31 @@ public sealed class CharacterProgressionServiceTests
     [Fact]
     public void BaseExperience_BelowExactAndRemainderUseGeneratedThreshold()
     {
-        Assert.Equal(547UL, CharacterProgressionService.Calculate(State(), 547, 0).After.BaseExperience);
-        var exact = CharacterProgressionService.Calculate(State(), 548, 0);
+        Assert.Equal(547UL, Rules.Experience.CalculateProgression(State(), 547, 0).After.BaseExperience);
+        var exact = Rules.Experience.CalculateProgression(State(), 548, 0);
         Assert.Equal((ushort)2, exact.After.BaseLevel);
         Assert.Equal(0UL, exact.After.BaseExperience);
         Assert.Equal(51U, exact.After.StatPoints);
         Assert.Equal(45U, exact.After.CurrentHp);
         Assert.Equal(12U, exact.After.CurrentSp);
-        Assert.Equal(5UL, CharacterProgressionService.Calculate(State(), 553, 0).After.BaseExperience);
+        Assert.Equal(5UL, Rules.Experience.CalculateProgression(State(), 553, 0).After.BaseExperience);
     }
 
     [Fact]
     public void JobExperience_BelowExactAndRemainderUseGeneratedThreshold()
     {
-        Assert.Equal(9UL, CharacterProgressionService.Calculate(State(), 0, 9).After.JobExperience);
-        var exact = CharacterProgressionService.Calculate(State(), 0, 10);
+        Assert.Equal(9UL, Rules.Experience.CalculateProgression(State(), 0, 9).After.JobExperience);
+        var exact = Rules.Experience.CalculateProgression(State(), 0, 10);
         Assert.Equal((ushort)2, exact.After.JobLevel);
         Assert.Equal(0UL, exact.After.JobExperience);
         Assert.Equal(1U, exact.After.SkillPoints);
-        Assert.Equal(5UL, CharacterProgressionService.Calculate(State(), 0, 15).After.JobExperience);
+        Assert.Equal(5UL, Rules.Experience.CalculateProgression(State(), 0, 15).After.JobExperience);
     }
 
     [Fact]
     public void CombinedAwardProgressesBaseAndJobIndependently()
     {
-        var result = CharacterProgressionService.Calculate(State(), 548, 10);
+        var result = Rules.Experience.CalculateProgression(State(), 548, 10);
         Assert.Equal((ushort)2, result.After.BaseLevel);
         Assert.Equal((ushort)2, result.After.JobLevel);
         Assert.Equal(51U, result.After.StatPoints);
@@ -55,7 +59,7 @@ public sealed class CharacterProgressionServiceTests
     [Fact]
     public void PinnedDefaultSingleLevelPolicyCapsOvercarry()
     {
-        var result = CharacterProgressionService.Calculate(State(), 548 + 894 + 5, 10 + 18 + 28 + 1);
+        var result = Rules.Experience.CalculateProgression(State(), 548 + 894 + 5, 10 + 18 + 28 + 1);
         Assert.Equal((ushort)2, result.After.BaseLevel);
         Assert.Equal(547UL, result.After.BaseExperience);
         Assert.Equal((ushort)2, result.After.JobLevel);
@@ -66,17 +70,17 @@ public sealed class CharacterProgressionServiceTests
     public void MaximumLevelsCapExperienceAndZeroAwardDoesNothing()
     {
         var maximum = State() with { BaseLevel = 99, JobLevel = 10, BaseExperience = 99_999_998, JobExperience = 999_999_998 };
-        var result = CharacterProgressionService.Calculate(maximum, ulong.MaxValue, ulong.MaxValue);
+        var result = Rules.Experience.CalculateProgression(maximum, ulong.MaxValue, ulong.MaxValue);
         Assert.Equal(99_999_999UL, result.After.BaseExperience);
         Assert.Equal(999_999_999UL, result.After.JobExperience);
-        Assert.Equal(maximum, CharacterProgressionService.Calculate(maximum, 0, 0).After);
+        Assert.Equal(maximum, Rules.Experience.CalculateProgression(maximum, 0, 0).After);
     }
 
     [Fact]
     public void JobLevelUsesNewGeneratedBonusAndPreservesCurrentHpSp()
     {
         var state = State() with { JobLevel = 5, Vitality = 99, MaxHp = 79, CurrentHp = 70, JobExperience = 0 };
-        var result = CharacterProgressionService.Calculate(state, 0, 91);
+        var result = Rules.Experience.CalculateProgression(state, 0, 91);
         Assert.Equal((ushort)6, result.After.JobLevel);
         Assert.Equal(80U, result.After.MaxHp);
         Assert.Equal(70U, result.After.CurrentHp);
@@ -90,7 +94,7 @@ public sealed class CharacterProgressionServiceTests
     public async Task AddExperienceAsyncAppliesFinalValuesBeforeThresholds()
     {
         var store = new Store(State());
-        var result = await new CharacterProgressionService(new(7, State(), store))
+        var result = await new CharacterProgressionService(new(7, State(), store), Rules.Experience)
             .AddExperienceAsync(550, 10, default);
         Assert.NotNull(result);
         Assert.Equal(550UL, result.Value.BaseExperienceAwarded);
@@ -105,7 +109,7 @@ public sealed class CharacterProgressionServiceTests
     public async Task ZeroFinalExperienceDoesNotPersist()
     {
         var store = new Store(State());
-        var result = await new CharacterProgressionService(new(7, State(), store))
+        var result = await new CharacterProgressionService(new(7, State(), store), Rules.Experience)
             .AddExperienceAsync(0, 0, default);
         Assert.NotNull(result);
         Assert.Equal(0, store.Updates);
@@ -117,14 +121,14 @@ public sealed class CharacterProgressionServiceTests
     {
         var store = new Store(State());
         var session = new CharacterGameplayStateSession(7, State(), store);
-        var result = await new CharacterProgressionService(session).AddExperienceAsync(548, 10, default);
+        var result = await new CharacterProgressionService(session, Rules.Experience).AddExperienceAsync(548, 10, default);
         Assert.NotNull(result);
         Assert.Equal(1, store.Updates);
         Assert.Equal(1UL, session.State.Version);
 
         var failingStore = new Store(State()) { Fail = true };
         var failingSession = new CharacterGameplayStateSession(7, State(), failingStore);
-        Assert.Null(await new CharacterProgressionService(failingSession).AddExperienceAsync(548, 10, default));
+        Assert.Null(await new CharacterProgressionService(failingSession, Rules.Experience).AddExperienceAsync(548, 10, default));
         Assert.Equal(State(), failingSession.State);
     }
 
@@ -133,7 +137,7 @@ public sealed class CharacterProgressionServiceTests
     {
         var store = new Store(State());
         var first = new CharacterGameplayStateSession(7, State(), store);
-        await new CharacterProgressionService(first).AddExperienceAsync(548, 10, default);
+        await new CharacterProgressionService(first, Rules.Experience).AddExperienceAsync(548, 10, default);
         Assert.Equal(first.State, await store.GetAsync(7, 9, default));
     }
 
@@ -154,3 +158,7 @@ public sealed class CharacterProgressionServiceTests
         }
     }
 }
+
+public sealed class IroExperienceRulesTests() : ExperienceRulesTests(GameplayRegion.Iro);
+
+public sealed class KroExperienceRulesTests() : ExperienceRulesTests(GameplayRegion.Kro);

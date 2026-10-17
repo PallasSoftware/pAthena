@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Gameplay.Rules;
+
 namespace Athena.Net.MapServer.World;
 
 // Generic temporary-status foundation. Deliberately not the complete Ragnarok status
@@ -19,7 +21,8 @@ public readonly record struct EffectiveCharacterStats(
     ushort Dexterity,
     ushort Luck,
     int MoveSpeedHaste,
-    int AttackSpeedBonus);
+    int AttackSpeedBonus,
+    int HitBonus = 0);
 
 // Per-session mutable status state. Each MapClientSession owns its own instance, so
 // concurrent sessions never share mutable status state - but WITHIN one session,
@@ -31,7 +34,13 @@ public readonly record struct EffectiveCharacterStats(
 // that must observe one coherent snapshot (e.g. Blessing + IncreaseAgi both read for the
 // same Recalculate call, or "identify due statuses" + "remove those exact statuses" in
 // ExpireDue) take the lock once for the whole operation rather than once per sub-step.
-public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
+// Immutable result of CharacterStatusEffectState.Capture: the exact gameplay state the effective stats were derived
+// from, so consumers never re-read State for a second value (level, HP, ...) after taking the stats.
+public sealed record CharacterStatusSnapshot(CharacterGameplayState State, EffectiveCharacterStats Effective, DateTimeOffset CapturedAt);
+
+public enum StatusStartOutcome { Started, Replaced, Retained }
+
+public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatusEffectRules statusRules, IStatRules statRules)
 {
     private readonly Dictionary<ushort, ActiveStatus> _statuses = [];
     private readonly Lock _gate = new();
@@ -65,14 +74,28 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
     // Both statuses are therefore identical between the script-command and skill-cast paths;
     // this is a property of status_change_start_post_delay, not something either caller
     // computes, so it is applied unconditionally here rather than duplicated at call sites.
-    public void Start(ushort statusId, int durationMilliseconds, int val1, int val2 = 0, int val3 = 0)
+    //
+    // Overlap rule (status.cpp:10800-10804, default branch, for statuses without the
+    // OverlapIgnoreLevel flag - neither Blessing nor Increase AGI has it, db/re/status.yml): an
+    // active entry with a HIGHER val1 makes the new start a no-op that still returns true; the
+    // existing val1/val2/deadline are untouched. Equal or lower active val1 is replaced and
+    // re-armed with the new duration. Verified by pinned-runner fixtures VF-07/VF-08.
+    public StatusStartOutcome Start(ushort statusId, int durationMilliseconds, int val1, int val2 = 0, int val3 = 0)
     {
         if (durationMilliseconds <= 0) throw new ArgumentOutOfRangeException(nameof(durationMilliseconds), "Status duration must be positive.");
-        if (statusId == StatusIds.Blessing) val2 = val1;
-        else if (statusId == StatusIds.IncreaseAgi) val2 = 2 + val1;
         var expiresAt = _timeProvider.GetUtcNow().AddMilliseconds(durationMilliseconds);
-        var status = new ActiveStatus(statusId, val1, val2, val3, expiresAt);
-        lock (_gate) { _statuses[statusId] = status; }
+        var status = statusRules.CreateStatus(statusId, val1, val2, val3, expiresAt);
+        lock (_gate)
+        {
+            if (_statuses.TryGetValue(statusId, out var active))
+            {
+                if (statusRules.RetainsActiveOverNewStart(active, _timeProvider.GetUtcNow(), val1)) return StatusStartOutcome.Retained;
+                _statuses[statusId] = status;
+                return StatusStartOutcome.Replaced;
+            }
+            _statuses[statusId] = status;
+            return StatusStartOutcome.Started;
+        }
     }
 
     // Treats an already-expired status as inactive without removing it. Reads (TryGet,
@@ -168,6 +191,26 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
         return RecalculateFrom(baseState, id => snapshot.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
     }
 
+    // One mutually consistent (gameplay state, effective stats) pair. The two inputs have different owners
+    // (CharacterGameplayStateSession publishes immutable states after persistence; this class owns the status
+    // dictionary under its own leaf gate), so a plain "read state, then read statuses" can mix instants.
+    // Lock-free validate-and-retry: read the state, copy the statuses under the gate (the only lock taken, never
+    // while holding another), and accept only if the state reference is unchanged afterwards. Gameplay states are
+    // versioned and never revisited, so an unchanged reference means the state was current throughout the
+    // status copy - the pair is a real instant. No lock ordering exists to deadlock on.
+    public CharacterStatusSnapshot Capture(Func<CharacterGameplayState> readState)
+    {
+        while (true)
+        {
+            var state = readState();
+            var now = _timeProvider.GetUtcNow();
+            var statuses = SnapshotForRecalculate();
+            if (!ReferenceEquals(state, readState())) continue;
+            var effective = RecalculateFrom(state, id => statuses.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
+            return new CharacterStatusSnapshot(state, effective, now);
+        }
+    }
+
     // Effective stats as of just BEFORE an ExpireDue(now) removal, for the expiration driver's
     // "before" snapshot. Distinct from Recalculate(baseState) because by the time
     // ProcessDueStatusExpirationsAsync runs, the clock has already reached the statuses' own
@@ -186,27 +229,8 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
         lock (_gate) { return new Dictionary<ushort, ActiveStatus>(_statuses); }
     }
 
-    private static EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup)
-    {
-        ushort strength = baseState.Strength, agility = baseState.Agility, vitality = baseState.Vitality,
-            intelligence = baseState.Intelligence, dexterity = baseState.Dexterity, luck = baseState.Luck;
-        var moveSpeedHaste = 0;
-        var attackSpeedBonus = 0;
-
-        if (lookup(StatusIds.Blessing) is { } blessing)
-        {
-            strength = (ushort)(strength + blessing.Val2);
-            intelligence = (ushort)(intelligence + blessing.Val2);
-            dexterity = (ushort)(dexterity + blessing.Val2);
-        }
-
-        if (lookup(StatusIds.IncreaseAgi) is { } increaseAgi)
-        {
-            agility = (ushort)(agility + increaseAgi.Val2);
-            moveSpeedHaste = Math.Max(moveSpeedHaste, 25);
-            attackSpeedBonus += increaseAgi.Val1;
-        }
-
-        return new EffectiveCharacterStats(strength, agility, vitality, intelligence, dexterity, luck, moveSpeedHaste, attackSpeedBonus);
-    }
+    // Gameplay (which stats a status changes, by how much) lives in the injected regional rules; this class owns storage,
+    // locking and the consistent snapshot only.
+    private EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup) =>
+        statusRules.ApplyStatuses(statRules.BasePrimaryStats(baseState), lookup);
 }

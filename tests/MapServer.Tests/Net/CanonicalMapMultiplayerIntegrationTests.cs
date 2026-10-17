@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -46,8 +46,8 @@ public sealed class CanonicalMapMultiplayerIntegrationTests : IAsyncLifetime
         WorldMapRegistry.Tutorial,
         [new MobSpawnDefinition(GeneratedMobRegistry.Get(1002), CanonicalMap, 1, RespawnDelay: 60_000, RespawnRandomDelay: 0,
             new WorldSourceInfo("rAthena", "abc", "test", 0), SpawnName: "Poring", X: (short)MonsterX, Y: (short)MonsterY, Xs: 1, Ys: 1)],
-        new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules()),
-        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore());
+        new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     private sealed record Player(MapClientSession Session, TcpClient Client, NetworkStream Stream, Task Run);
 

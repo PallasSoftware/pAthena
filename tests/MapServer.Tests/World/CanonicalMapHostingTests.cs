@@ -1,5 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.World;
 using Athena.Net.Shared.MapIdentity;
@@ -82,7 +82,7 @@ public sealed class CanonicalMapHostingTests
     [Fact]
     public void ProductionWorld_HostsOnlyCanonicalMaps_ForSpawnsWarpsAndActors()
     {
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
+        var world = MapServerWorld.Build(TestGameplayRules.Services(), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
 
         // One monster simulation per canonical map: no spawn (hence no World simulation, no actor-id
         // space) exists for any alias.

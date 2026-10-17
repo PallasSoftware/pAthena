@@ -100,3 +100,19 @@ public sealed class WorldConnectionWatchdogTests
         }
     }
 }
+
+public sealed class WorldConnectionWatchdogRecoveryTests
+{
+    [Fact]
+    public void RecoveredConnection_RaisesConnectionRecoveredOnlyWhenRecovered()
+    {
+        var watchdog = new Athena.Net.MapServer.Startup.WorldConnectionWatchdog(_ => { });
+        var raised = 0;
+        watchdog.ConnectionRecovered += () => raised++;
+
+        watchdog.NotifyGatewayCountChanged(1, 0, connectionRecovered: false);
+        Assert.Equal(0, raised);
+        watchdog.NotifyGatewayCountChanged(1, 0, connectionRecovered: true);
+        Assert.Equal(1, raised);
+    }
+}

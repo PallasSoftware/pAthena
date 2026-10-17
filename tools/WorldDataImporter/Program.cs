@@ -36,6 +36,7 @@ internal static partial class WorldDataImporterCli
                 "generate-canonical-maps" => await GenerateCanonicalMapsAsync(args[1..]),
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
+                "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
                 "compile-map-collision" => await CompileMapCollisionAsync(args[1..]),
                 "capabilities" => await CapabilitiesAsync(args[1..]),
                 _ => throw new ArgumentException($"Unknown command '{args[0]}'."),
@@ -360,7 +361,7 @@ internal static partial class WorldDataImporterCli
         {
             "src/common/mmo.hpp", "src/map/script_constants.hpp", "db/re/job_exp.yml", "db/re/job_basepoints.yml",
             "db/re/job_stats.yml", "db/re/statpoint.yml", "db/re/skill_db.yml", "db/re/skill_tree.yml",
-            "conf/battle/player.conf",
+            "conf/battle/player.conf", "db/re/job_aspd.yml",
         };
         foreach (var relative in required) if (!File.Exists(Path.Combine(root, relative))) throw new ArgumentException($"Required pinned source file is missing: {relative}.");
         return CharacterDataCompiler.Compile(new(
@@ -368,7 +369,7 @@ internal static partial class WorldDataImporterCli
             await File.ReadAllTextAsync(Path.Combine(root, required[2])), await File.ReadAllTextAsync(Path.Combine(root, required[3])),
             await File.ReadAllTextAsync(Path.Combine(root, required[4])), await File.ReadAllTextAsync(Path.Combine(root, required[5])),
             await File.ReadAllTextAsync(Path.Combine(root, required[6])), await File.ReadAllTextAsync(Path.Combine(root, required[7])),
-            await File.ReadAllTextAsync(Path.Combine(root, required[8]))), commit);
+            await File.ReadAllTextAsync(Path.Combine(root, required[8])), await File.ReadAllTextAsync(Path.Combine(root, required[9]))), commit);
     }
 
     // Stateless/deterministic: fully regenerates the shared global GeneratedMobs partial class from
@@ -962,6 +963,21 @@ internal static partial class WorldDataImporterCli
             new System.Text.UTF8Encoding(false));
 
         Console.WriteLine($"Generated quest {drop.QuestId} drop rule: mob {drop.MobId} -> item {drop.ItemId} x{drop.Count} @ rate {drop.Rate}/10000.");
+        return 0;
+    }
+
+    // Regenerates GameData/SizeFix/GeneratedSizeFix.cs from db/size_fix.yml and its Renewal Footer imports (incl. the
+    // optional db/import overlay), mirroring the pinned SizeFixDatabase merge order.
+    private static async Task<int> CompileSizeFixAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var table = SizeFixCompiler.BuildTable(relative => File.Exists(Path.Combine(root, relative)) ? File.ReadAllText(Path.Combine(root, relative)) : null);
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, SizeFixCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated size fix table for {table.GetLength(0)} weapon types.");
         return 0;
     }
 

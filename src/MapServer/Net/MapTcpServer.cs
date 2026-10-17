@@ -62,7 +62,7 @@ public sealed class MapTcpServer
         _timeProvider = timeProvider ?? TimeProvider.System;
         var config = _configStore.Current;
         _listener = new TcpListener(config.BindIp, config.MapPort);
-        _cadenceExecutor = new MonsterAttackCadenceExecutor(_world.MonsterProjections, _world.CombatState, _worldRuntime, timeProvider ?? TimeProvider.System, localEchoes: _localMonsterAttackEchoes);
+        _cadenceExecutor = new MonsterAttackCadenceExecutor(_world.MonsterProjections, _world.CombatState, _worldRuntime, timeProvider ?? TimeProvider.System, _world.GameplayRules.Combat, _world.GameplayRules.Timing, localEchoes: _localMonsterAttackEchoes);
         // Reconstructs this process's contribution to CharServer's own aggregate the instant a
         // (re)connection to CharServer succeeds - see CharServerConnector.CurrentUserCountProvider's
         // own doc comment for why this is necessary on top of the per-event reports below.
@@ -1038,7 +1038,7 @@ public sealed class MapTcpServer
         // got this exact action via FanOutPlayerAttackActionAsync's immediate echo).
         if (entry.Kind == WorldMonsterFeedEntryKind.PlayerAttackAction && entry.PlayerAttack is { } playerAttack)
         {
-            var action = new PlayerAttackActionOutcome(playerAttack.AttackerActorId, entry.ActorId, entry.Instance.MapId, playerAttack.Damage, SrcSpeed: 460, DstSpeed: playerAttack.TargetDamageMotion, playerAttack.Lethal);
+            var action = new PlayerAttackActionOutcome(playerAttack.AttackerActorId, entry.ActorId, entry.Instance.MapId, playerAttack.Damage, SrcSpeed: playerAttack.SourceAttackMotion, DstSpeed: playerAttack.TargetDamageMotion, playerAttack.Lethal);
             foreach (var session in mapSessions)
             {
                 if (session.WasPlayerAttackActionLocallyEchoed(playerAttack.AttackerActorId, entry.Sequence)) continue;

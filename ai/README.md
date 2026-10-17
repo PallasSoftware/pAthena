@@ -3,7 +3,9 @@
 ## Mission
 Athena.NET is an iRO-focused private server implementation in modern C#.
 
-The only client-compatibility target is the current unmodified official International Ragnarok Online (iRO) client. kRO compatibility and generic rAthena protocol parity are not project goals.
+The only client-compatibility target is the current unmodified official International Ragnarok Online (iRO) client. kRO client-protocol compatibility is planned future work (not implemented) and generic rAthena protocol parity is not a project goal.
+
+Regional gameplay (Epic 15, Stage 15.R): iRO is the only supported **client protocol** (PACKETVER 20220406), while the **gameplay rules** are structured so iRO and kRO can evolve independently - separate `Iro*`/`Kro*` implementations behind `ICombatRules`/`IStatRules`/`ITimingRules`/`IStatusEffectRules`/`IExperienceRules`, selected once per deployment by `gameplay_region` (default iRO). Both implementations initially follow pinned rAthena Renewal. kRO gameplay and protocol compatibility are not verified or implemented; ruleset, region and client protocol are separate concepts. See `ai/map-server.md`.
 
 The repository contains two local legacy reference projects: `legacy/rathena/` and `legacy/openkore/`. They are reference material only, not compatibility targets. `legacy/rathena/` is the main engineering reference for architecture, server responsibilities, database concepts, gameplay rules, data formats, scripts, tools, and mature implementation ideas. `legacy/openkore/` is a secondary reference for packet naming, iRO/community protocol clues, and interpreting observed client behavior. Neither is the wire-protocol authority for iRO.
 

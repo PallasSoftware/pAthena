@@ -1,5 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.World;
 
@@ -66,7 +66,7 @@ public sealed class GeneratedWarpLoadProfilesTests
         // The bug scenario really exists in the data: at least one pre-re row precedes its Renewal rival.
         Assert.Contains(conflicts, pair => registryOrder[pair.PreRe] < registryOrder[pair.Renewal]);
 
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()));
+        var world = MapServerWorld.Build(TestGameplayRules.Services());
         foreach (var (pre, renewal) in conflicts)
         {
             // Probe the pre-re trigger cell itself: whatever is active there must be a Renewal-effective row.
@@ -78,7 +78,7 @@ public sealed class GeneratedWarpLoadProfilesTests
     [Fact]
     public void NoRuntimeWarpAnywhereResolvesToAPreRenewalRow()
     {
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()));
+        var world = MapServerWorld.Build(TestGameplayRules.Services());
         foreach (var warp in GeneratedWarpRegistry.All.Where(IsPreRe))
             if (world.Maps.TryFindWarp(warp.SourceMap, warp.SourceX, warp.SourceY, out var found))
                 Assert.False(IsPreRe(found), $"{found.Name}: {found.Source.File}:{found.Source.Line}");
@@ -87,7 +87,7 @@ public sealed class GeneratedWarpLoadProfilesTests
     [Fact]
     public void PrtFild08_371_212_ResolvesToIzludeRenewalDestination_NotThePreRenewalOne()
     {
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()));
+        var world = MapServerWorld.Build(TestGameplayRules.Services());
 
         Assert.True(world.Maps.TryFindWarp("prt_fild08", 371, 212, out var warp));
         Assert.Equal("izlude", warp.DestinationMap);
@@ -110,7 +110,7 @@ public sealed class GeneratedWarpLoadProfilesTests
     public void NonConflictingRenewalWarps_RemainActive()
     {
         var hosted = MapServerHostingScope.ServedMaps;
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()), servedMaps: hosted);
+        var world = MapServerWorld.Build(TestGameplayRules.Services(), servedMaps: hosted);
         var effective = GeneratedWarpLoadProfiles.AthenaIroEffective.ToHashSet();
         var hostedEffective = GeneratedWarpLoadProfiles.AthenaIroEffective.Where(warp => hosted.Contains(warp.SourceMap)).ToArray();
 

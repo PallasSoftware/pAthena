@@ -1,7 +1,7 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Customs.World;
 using Athena.Net.MapServer.Customs.World.Izlude;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.GeneratedScripts;
 
@@ -14,7 +14,7 @@ namespace Athena.Net.MapServer.Tests.World;
 // wiring/reuse, not the complete progression/heal engines.
 public sealed class CustomWorldRegistryTests
 {
-    private static GameplayRuleServices RenewalRules() => new(new RenewalBasicAttackRules());
+    private static GameplayRuleServices RenewalRules() => TestGameplayRules.Services();
 
     [Fact]
     public void Build_CustomsDisabled_AthenaTestNpcIsAbsent()

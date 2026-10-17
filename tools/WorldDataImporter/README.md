@@ -592,3 +592,13 @@ git diff --check
 
 Generated files are deterministic: identical source, filters, and importer code
 must produce byte-identical JSON.
+
+## Size-fix table
+
+`compile-size-fix` regenerates `GameData/SizeFix/GeneratedSizeFix.cs` from `db/size_fix.yml` plus its Footer imports in the
+pinned loader's order (the Renewal `db/re/size_fix.yml`, then the optional `db/import/size_fix.yml`; per-weapon merges
+override only the sizes they name, values above 100 clamp to 100):
+
+```bash
+dotnet run --project tools/WorldDataImporter/WorldDataImporter.csproj -- compile-size-fix --rathena-root legacy/rathena --rathena-commit e985006171d2eb320ee512a653f4c83aea3d81b6 --output src/MapServer/Generated/GameData/SizeFix/GeneratedSizeFix.cs
+```

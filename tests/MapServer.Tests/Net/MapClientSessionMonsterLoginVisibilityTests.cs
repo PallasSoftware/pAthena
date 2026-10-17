@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -92,7 +92,7 @@ public sealed class MapClientSessionMonsterLoginVisibilityTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(monster.Map, epoch, monster.ActorId, new WorldMonsterIncarnationId(monster.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(monster.Map, epoch, combatState, registry.AllInstances, fakeWorld);
 
         var state = new CharacterGameplayState(

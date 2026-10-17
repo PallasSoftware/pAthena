@@ -57,6 +57,13 @@ public sealed class ItemDataCompilerTests
             AegisName: Cotton_Shirt
             Name: Cotton Shirt
             Type: Armor
+            Defense: 10
+            Locations:
+              Armor: true
+          - Id: 2302
+            AegisName: Plain_Cloth
+            Name: Plain Cloth
+            Type: Armor
             Locations:
               Armor: true
           - Id: 12325
@@ -259,7 +266,28 @@ public sealed class ItemDataCompilerTests
 
         Assert.Contains("ArmorItemDefinition", generated);
         Assert.Contains("EquipLocation: 0x000010", generated);
+        Assert.Contains("Defense: 10,", generated);
         Assert.DoesNotContain("Attack:", generated);
+    }
+
+    [Fact]
+    public void ReadItemDefinition_WeaponMagicAttack_DefaultsToZeroAndIsReadWhenPresent()
+    {
+        Assert.Equal(0, ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 1301).MagicAttack);
+        var staff = ItemDbFixture.Replace("    Attack: 17\n", "    Attack: 17\n    MagicAttack: 15\n", StringComparison.Ordinal);
+        var item = ItemDataCompiler.ReadItemDefinition(staff, 1301);
+        Assert.Equal(15, item.MagicAttack);
+        Assert.Contains("MagicAttack: 15,", ItemDataCompiler.Generate(item, "abc", "C", "Staff", "db/re/item_db_equip.yml", 1));
+        Assert.Null(ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 2301).MagicAttack);
+    }
+
+    // item_db_equip.yml header: "Defense  Armor's defense. (Default: 0)".
+    [Fact]
+    public void ReadItemDefinition_ArmorWithoutDefenseColumn_DefaultsToZero_AndWeaponsHaveNone()
+    {
+        Assert.Equal(10, ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 2301).Defense);
+        Assert.Equal(0, ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 2302).Defense);
+        Assert.Null(ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 1201).Defense);
     }
 
     [Fact]

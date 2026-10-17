@@ -70,14 +70,15 @@ public static class MapServerApp
         //
         var gameplayOptions = new GameplayOptions
         {
-            RuleSet = mergedConfig.GameplayRuleSet
+            RuleSet = mergedConfig.GameplayRuleSet,
+            Region = mergedConfig.GameplayRegion
         };
 
         MapLogger.Status(
-            $"Gameplay ruleset: {gameplayOptions.RuleSet}");
+            $"Gameplay ruleset: {gameplayOptions.RuleSet}, region: {gameplayOptions.Region}");
 
-        var gameplayRules =
-            GameplayRulesFactory.Create(gameplayOptions);
+        // The regional rule implementations are registered once with the host's service collection below
+        // (AddGameplayRules); an unsupported ruleset/region fails there, before anything serves traffic.
 
         //
         // Collision data
@@ -155,6 +156,8 @@ public static class MapServerApp
         var hostBuilder =
             Host.CreateApplicationBuilder(args);
 
+        hostBuilder.Services.AddGameplayRules(gameplayOptions);
+
         //
         // Orleans only accepts IP literals as static gateway addresses; resolve a Service name such as
         // "worldserver:30000" (Kubernetes, Docker networks) to its IPv4 address before the client is built.
@@ -213,6 +216,32 @@ public static class MapServerApp
         var clusterClient =
             orleansHost.Services
                 .GetRequiredService<IClusterClient>();
+
+        var gameplayRules =
+            orleansHost.Services.GetRequiredService<GameplayRuleServices>();
+
+        //
+        // One Orleans world serves one gameplay profile: refuse to start next to MapServers that run a different
+        // region/ruleset (the first MapServer to register fixes the profile).
+        //
+        Func<WorldGameplayProfile, Task<WorldGameplayProfileRegistration>> registerProfile = profile => clusterClient
+            .GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey)
+            .RegisterAsync(profile);
+
+        await WorldGameplayProfileGuard.EnsureCompatibleAsync(registerProfile, gameplayOptions);
+
+        //
+        // The World may restart or be replaced while this process keeps running (watchdog disabled, or a surviving gateway):
+        // verify again on every recovered connection and stop serving - fail closed - when the profile no longer matches.
+        //
+        var profileMonitor =
+            new WorldGameplayProfileMonitor(
+                registerProfile,
+                gameplayOptions,
+                MapLogger.Error,
+                applicationLifetime.StopApplication);
+
+        worldWatchdog.ConnectionRecovered += () => _ = profileMonitor.VerifyAfterReconnectAsync();
 
         var worldRuntime =
             new OrleansWorldRuntime(
@@ -296,6 +325,8 @@ public static class MapServerApp
             await orleansHost.StopAsync(
                 CancellationToken.None);
         }
+
+        if (profileMonitor.Failed) return WorldGameplayProfileMonitor.ExitCode;
 
         return worldWatchdog.WorldLost ? WorldConnectionWatchdog.ExitCode : 0;
     }

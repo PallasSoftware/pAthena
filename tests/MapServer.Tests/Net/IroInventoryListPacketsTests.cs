@@ -101,7 +101,7 @@ public sealed class IroInventoryListPacketsTests
     public void BuildItemListEquip_MultipleItems_AssignsSequentialClientIndices()
     {
         var knifeItem = new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0);
-        var armor = new ArmorItemDefinition(2301, "Cotton_Shirt", "Cotton Shirt", Stackable: false, ClientViewId: 2301, EquipLocation: 0x000010,
+        var armor = new ArmorItemDefinition(2301, "Cotton_Shirt", "Cotton Shirt", Stackable: false, ClientViewId: 2301, Defense: 10, EquipLocation: 0x000010,
             new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
         var armorItem = new CharacterInventoryItem(DurableId: 2, SlotIndex: 1, 2301, 1, 0x000010, true, 0, 0, 0);
 

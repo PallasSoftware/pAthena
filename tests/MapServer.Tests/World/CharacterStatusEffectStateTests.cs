@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Tests.World;
@@ -11,13 +13,15 @@ internal sealed class FakeTimeProvider : TimeProvider
     public void Advance(TimeSpan delta) => _now += delta;
 }
 
-public sealed class CharacterStatusEffectStateTests
+public abstract class StatusEffectRulesTests(GameplayRegion region)
 {
+    private GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
+
     [Fact]
     public void BlessingAddsLevelToStrIntDex()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
 
         var effective = state.Recalculate(BaseState());
@@ -34,7 +38,7 @@ public sealed class CharacterStatusEffectStateTests
     public void BlessingDoesNotMutateBasePersistedStats()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
         var baseState = BaseState();
 
@@ -51,7 +55,7 @@ public sealed class CharacterStatusEffectStateTests
         // (script sc_start or the real AL_INCAGI skill cast both pass val2=0 and let this
         // switch compute it); status_calc_agi (status.cpp:6843-6844) adds that val2 to AGI.
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 240000, 10);
 
         var effective = state.Recalculate(BaseState());
@@ -62,25 +66,82 @@ public sealed class CharacterStatusEffectStateTests
     }
 
     [Fact]
-    public void ReapplyingAStatusOverwritesItsValuesAndDurationRatherThanStacking()
+    public void ReapplyingAStrongerOrEqualStatusOverwritesItsValuesAndDurationRatherThanStacking()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
-        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
-        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
+        Assert.Equal(StatusStartOutcome.Started, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 3));
+        Assert.Equal(StatusStartOutcome.Replaced, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 10));
 
         var effective = state.Recalculate(BaseState());
 
-        Assert.Equal((ushort)(BaseState().Strength + 3), effective.Strength);
+        Assert.Equal((ushort)(BaseState().Strength + 10), effective.Strength);
         clock.Advance(TimeSpan.FromMilliseconds(100001));
         Assert.False(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
+    }
+
+    // Pinned status_change_start default overlap branch (status.cpp:10803): an active higher val1 wins and the
+    // weaker start is a no-op - level, value and deadline stay (fixture VF-07 [10,3]).
+    [Fact]
+    public void WeakerStartKeepsStrongerActiveStatusAndItsDeadline()
+    {
+        var clock = new FakeTimeProvider();
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
+        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
+        Assert.Equal(StatusStartOutcome.Retained, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 100000, 3));
+
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
+        Assert.Equal((10, 10), (status.Val1, status.Val2));
+        clock.Advance(TimeSpan.FromMilliseconds(239999));
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
+    }
+
+    [Fact]
+    public void WeakerStartReplacesAnAlreadyExpiredStrongerEntry()
+    {
+        var clock = new FakeTimeProvider();
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
+        state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 10);
+        clock.Advance(TimeSpan.FromMilliseconds(1001)); // expired but not yet swept by ExpireDue
+        Assert.Equal(StatusStartOutcome.Replaced, state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 3));
+        Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var status));
+        Assert.Equal(3, status.Val1);
+    }
+
+    // Capture must return a real instant. The writer always publishes state N (Strength = N) BEFORE starting Blessing
+    // level N, so Blessing's level can never exceed the state's Strength at any instant; a "read state, then read
+    // statuses" capture could observe state N-1 with Blessing N and violate that. 
+    [Fact]
+    public async Task Capture_NeverMixesAnOlderStateWithANewerStatus()
+    {
+        var state = new CharacterStatusEffectState(new FakeTimeProvider(), Rules.StatusEffects, Rules.Stats);
+        var published = BaseState() with { Strength = 1 };
+        var stop = false;
+        var writer = Task.Run(() =>
+        {
+            for (ushort n = 2; n < 20000 && !Volatile.Read(ref stop); n++)
+            {
+                Volatile.Write(ref published, published with { Strength = n });
+                state.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, n);
+            }
+        });
+        var violations = 0;
+        for (var i = 0; i < 200000 && !writer.IsCompleted; i++)
+        {
+            var snapshot = state.Capture(() => Volatile.Read(ref published));
+            var blessing = snapshot.Effective.Strength - snapshot.State.Strength;
+            if (blessing > snapshot.State.Strength) violations++;
+        }
+        Volatile.Write(ref stop, true);
+        await writer;
+        Assert.Equal(0, violations);
     }
 
     [Fact]
     public void StatusExpiresAfterItsDuration()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 10);
 
         Assert.True(state.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out _));
@@ -97,7 +158,7 @@ public sealed class CharacterStatusEffectStateTests
     public void MultipleActiveStatusesExpireIndependently()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 10);
         state.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 5000, 10);
 
@@ -116,8 +177,8 @@ public sealed class CharacterStatusEffectStateTests
     public void EachStatusStateInstanceIsIndependent()
     {
         var clock = new FakeTimeProvider();
-        var sessionOne = new CharacterStatusEffectState(clock);
-        var sessionTwo = new CharacterStatusEffectState(clock);
+        var sessionOne = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
+        var sessionTwo = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
 
         sessionOne.Start(CharacterStatusEffectState.StatusIds.Blessing, 240000, 10);
 
@@ -131,7 +192,7 @@ public sealed class CharacterStatusEffectStateTests
     [Fact]
     public void NonPositiveDurationIsRejected()
     {
-        var state = new CharacterStatusEffectState(new FakeTimeProvider());
+        var state = new CharacterStatusEffectState(new FakeTimeProvider(), Rules.StatusEffects, Rules.Stats);
         Assert.Throws<ArgumentOutOfRangeException>(() => state.Start(CharacterStatusEffectState.StatusIds.Blessing, 0, 10));
     }
 
@@ -139,7 +200,7 @@ public sealed class CharacterStatusEffectStateTests
     public void ExpireDueRemovesAndReturnsOnlyStatusesAtOrBeforeNow()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         state.Start(CharacterStatusEffectState.StatusIds.Blessing, 1000, 10);
         state.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 5000, 10);
 
@@ -155,7 +216,7 @@ public sealed class CharacterStatusEffectStateTests
     public void NextExpirationReflectsEarliestActiveDeadline()
     {
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = new CharacterStatusEffectState(clock, Rules.StatusEffects, Rules.Stats);
         Assert.Null(state.NextExpiration);
 
         state.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 5000, 10);
@@ -179,7 +240,7 @@ public sealed class CharacterStatusEffectStateTests
     [Fact]
     public async Task ConcurrentStartAndSchedulerReads_NeverThrowsCollectionModified()
     {
-        var state = new CharacterStatusEffectState(TimeProvider.System);
+        var state = new CharacterStatusEffectState(TimeProvider.System, Rules.StatusEffects, Rules.Stats);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
 
@@ -218,3 +279,7 @@ public sealed class CharacterStatusEffectStateTests
         Assert.Empty(exceptions);
     }
 }
+
+public sealed class IroStatusEffectRulesTests() : StatusEffectRulesTests(GameplayRegion.Iro);
+
+public sealed class KroStatusEffectRulesTests() : StatusEffectRulesTests(GameplayRegion.Kro);

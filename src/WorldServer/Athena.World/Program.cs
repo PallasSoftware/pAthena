@@ -2,11 +2,16 @@ using Athena.Net.World.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Athena.Net.World.Contracts;
+using Athena.Net.World;
 using Athena.Net.World.Runtime;
 
 var builder = Host.CreateApplicationBuilder(args);
+// The World's own immutable gameplay profile (region + ruleset); an invalid value fails startup here.
+var gameplayProfile = WorldGameplayProfileOptions.FromEnvironment(Environment.GetEnvironmentVariable);
+Console.WriteLine($"World gameplay profile: region {gameplayProfile.Profile.Region}, ruleset {gameplayProfile.Profile.RuleSet}");
 builder.UseOrleans(siloBuilder =>
 {
+    siloBuilder.AddWorldGameplayProfile(gameplayProfile);
     // Memory-backed grain storage for ActorIdBlockAuthorityGrain's persisted cursor - survives
     // ordinary activation deactivation/reactivation within this running silo process, explicitly
     // NOT durable across a full silo restart. See ActorIdBlockAuthorityGrain's own doc comment for

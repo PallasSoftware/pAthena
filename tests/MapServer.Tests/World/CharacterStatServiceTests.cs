@@ -1,9 +1,13 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Tests.World;
 
-public sealed class CharacterStatServiceTests
+public abstract class StatAllocationRulesTests(GameplayRegion region)
 {
+    private GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
+
     // JobClass 0 (Novice) resolves through the real GeneratedProgressionRegistry, giving a real
     // pinned MaxBaseStat (99, JobParameterCategory.Normal) without hand-authoring fixture
     // progression data - CharacterStatService always reads the cap from generated data, never
@@ -22,7 +26,7 @@ public sealed class CharacterStatServiceTests
     [InlineData(CharacterBaseStat.Luck)]
     public void IncreaseSucceeds_WithEnoughStatusPoints_ForEveryBaseStat(CharacterBaseStat stat)
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 10), stat, increaseAmount: 1);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 10), stat, increaseAmount: 1);
         Assert.True(result.IsValid);
         Assert.Equal((ushort)1, result.PreviousValue);
         Assert.Equal((ushort)2, result.NewValue);
@@ -33,7 +37,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void InsufficientStatusPoints_Rejects()
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 1), CharacterBaseStat.Strength, increaseAmount: 1);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 1), CharacterBaseStat.Strength, increaseAmount: 1);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.InsufficientStatusPoints, result.RejectionReason);
     }
@@ -41,7 +45,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void ZeroIncreaseAmount_Rejects()
     {
-        var result = CharacterStatService.ValidateIncrease(State(), CharacterBaseStat.Strength, increaseAmount: 0);
+        var result = Rules.Stats.ValidateStatIncrease(State(), CharacterBaseStat.Strength, increaseAmount: 0);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.InvalidIncreaseAmount, result.RejectionReason);
     }
@@ -49,7 +53,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void NegativeIncreaseAmount_Rejects()
     {
-        var result = CharacterStatService.ValidateIncrease(State(), CharacterBaseStat.Strength, increaseAmount: -1);
+        var result = Rules.Stats.ValidateStatIncrease(State(), CharacterBaseStat.Strength, increaseAmount: -1);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.InvalidIncreaseAmount, result.RejectionReason);
     }
@@ -57,7 +61,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void UnknownStat_Rejects()
     {
-        var result = CharacterStatService.ValidateIncrease(State(), (CharacterBaseStat)999, increaseAmount: 1);
+        var result = Rules.Stats.ValidateStatIncrease(State(), (CharacterBaseStat)999, increaseAmount: 1);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.UnknownStat, result.RejectionReason);
     }
@@ -66,7 +70,7 @@ public sealed class CharacterStatServiceTests
     public void IncreaseAtStatMax_Rejects()
     {
         // Novice/JobParameterCategory.Normal caps at 99 (conf/battle/player.conf max_parameter).
-        var result = CharacterStatService.ValidateIncrease(State(strength: 99), CharacterBaseStat.Strength, increaseAmount: 1);
+        var result = Rules.Stats.ValidateStatIncrease(State(strength: 99), CharacterBaseStat.Strength, increaseAmount: 1);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.MaxValueReached, result.RejectionReason);
     }
@@ -74,7 +78,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void IncreaseExceedingStatMax_Rejects_EvenWithEnoughStatusPoints()
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 100_000, strength: 98), CharacterBaseStat.Strength, increaseAmount: 3);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 100_000, strength: 98), CharacterBaseStat.Strength, increaseAmount: 3);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.MaxValueReached, result.RejectionReason);
     }
@@ -82,7 +86,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void HugeIncreaseAmount_DoesNotOverflow_AndRejectsAsMaxValueReached()
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: uint.MaxValue), CharacterBaseStat.Strength, increaseAmount: int.MaxValue);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: uint.MaxValue), CharacterBaseStat.Strength, increaseAmount: int.MaxValue);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.MaxValueReached, result.RejectionReason);
     }
@@ -106,7 +110,7 @@ public sealed class CharacterStatServiceTests
     [InlineData((ushort)90, 10u)]
     public void CumulativeCost_MatchesPinnedFormula_AtBoundaryFixtures(ushort currentValue, uint expectedCost)
     {
-        Assert.Equal(expectedCost, CharacterStatService.CumulativeCost(currentValue, increaseAmount: 1));
+        Assert.Equal(expectedCost, Rules.Stats.StatIncreaseCost(currentValue, increaseAmount: 1));
     }
 
     [Fact]
@@ -117,7 +121,7 @@ public sealed class CharacterStatServiceTests
         // (low-1)/10=1) = 14 total, not the naive 5*2=10 a flat "1 point per level" model
         // would predict - the cost genuinely changes WITHIN this 5-step request, not just
         // across the calls in the boundary-fixture Theory above.
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 100, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 100, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
         Assert.True(result.IsValid);
         Assert.Equal((ushort)10, result.PreviousValue);
         Assert.Equal((ushort)15, result.NewValue);
@@ -131,7 +135,7 @@ public sealed class CharacterStatServiceTests
         // STR 18 -> 23: per-step costs at 18,19,20,21,22 are 3,3,3,4,4 (18,19 -> (low-1)/10=1;
         // 20,21,22 -> (low-1)/10=1,2,2 respectively: (20-1)/10=1 so cost 3, (21-1)/10=2 so
         // cost 4, (22-1)/10=2 so cost 4) = 3+3+3+4+4 = 17.
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 100, strength: 18), CharacterBaseStat.Strength, increaseAmount: 5);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 100, strength: 18), CharacterBaseStat.Strength, increaseAmount: 5);
         Assert.True(result.IsValid);
         Assert.Equal(17U, result.StatusPointsSpent);
         Assert.NotEqual(15U, result.StatusPointsSpent); // would be wrong (5*3) if cost were naively flat at the starting value's rate
@@ -140,7 +144,7 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void MultiLevelIncrease_ExactlyAffordable_Succeeds()
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 14, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 14, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
         Assert.True(result.IsValid);
         Assert.Equal(0U, result.RemainingStatusPoints);
     }
@@ -148,8 +152,12 @@ public sealed class CharacterStatServiceTests
     [Fact]
     public void MultiLevelIncrease_OneShortOfAffordable_Rejects()
     {
-        var result = CharacterStatService.ValidateIncrease(State(statPoints: 13, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
+        var result = Rules.Stats.ValidateStatIncrease(State(statPoints: 13, strength: 10), CharacterBaseStat.Strength, increaseAmount: 5);
         Assert.False(result.IsValid);
         Assert.Equal(StatIncreaseRejectionReason.InsufficientStatusPoints, result.RejectionReason);
     }
 }
+
+public sealed class IroStatAllocationRulesTests() : StatAllocationRulesTests(GameplayRegion.Iro);
+
+public sealed class KroStatAllocationRulesTests() : StatAllocationRulesTests(GameplayRegion.Kro);

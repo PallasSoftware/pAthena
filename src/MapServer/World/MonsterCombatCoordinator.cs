@@ -34,9 +34,9 @@ public readonly record struct MonsterAttackCandidate(uint Damage, bool IsMiss, b
 // This coordinator remains entirely Orleans/World-contract-free (only value types cross this
 // boundary, never a grain reference or IWorldRuntime).
 //
-// Depends only on IBasicAttackRules - this class never knows or asks which gameplay ruleset
+// Depends only on ICombatRules - this class never knows or asks which gameplay ruleset
 // (Renewal/PreRenewal) is active.
-public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, IBasicAttackRules basicAttackRules)
+public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, ICombatRules combatRules)
 {
     // Computes the damage formula's result against the target's static definition - no HP lookup,
     // no lethality guess, no store access of any kind. The caller (MapClientSession) sends this
@@ -48,7 +48,7 @@ public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, IBasi
         ushort attackerBaseLevel,
         WeaponItemDefinition? equippedWeapon)
     {
-        var result = basicAttackRules.Calculate(new BasicAttackContext(attacker, attackerBaseLevel, equippedWeapon, target.StaticMob));
+        var result = combatRules.CalculatePlayerBasicAttack(new BasicAttackContext(attacker, attackerBaseLevel, equippedWeapon, target.StaticMob));
         var wouldAcquireEngagement = target.StaticMob.Mode.HasFlag(MobMode.CanAttack);
         return new MonsterAttackCandidate(result.Damage, result.IsMiss, wouldAcquireEngagement);
     }
