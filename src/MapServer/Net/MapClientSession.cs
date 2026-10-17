@@ -3747,12 +3747,15 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // yet compute anywhere (no derived-combat-stat engine exists, and MaxHP/MaxSP
         // recalculation only exists for the level-up formula path), so those remain deliberately
         // NOT sent here rather than fabricated. See ai/iro-2026-wire.md for the full scope note.
-        var effective = _statusEffects.Recalculate(gameplayState.State);
-        var plusValue = EffectiveStatBonus(stat, gameplayState.State, effective);
+        // Every response field comes from ONE snapshot of the state this request committed (result.After) paired with the
+        // statuses active at that instant - not from gameplayState.State, which a concurrent mutation may already have moved.
+        // plus = battle_status - status.* (clif_couplestatus), so it carries job bonuses and temporary buffs alike.
+        var committed = _statusEffects.Capture(() => result.After);
+        var plusValue = EffectiveStatBonus(stat, committed.State, committed.Effective);
         await WriteAsync(IroStatusEffectPackets.BuildCoupleStatus(wireStatusId, result.NewValue, plusValue), cancellationToken);
 
-        MapLogger.Info($"[iRO MAP DEBUG] Sending 0x00B0 param 9 (StatusPoints) = {gameplayState.State.StatPoints}");
-        await WriteAsync(IroCharacterProgressionPackets.Parameter(9, gameplayState.State.StatPoints), cancellationToken);
+        MapLogger.Info($"[iRO MAP DEBUG] Sending 0x00B0 param 9 (StatusPoints) = {committed.State.StatPoints}");
+        await WriteAsync(IroCharacterProgressionPackets.Parameter(9, committed.State.StatPoints), cancellationToken);
 
         MapLogger.Info($"[iRO MAP DEBUG] Sending 0x00BC stat={stat} newValue={result.NewValue}");
         await WriteAsync(IroStatusUpAckPacket.BuildSuccess(wireStatusId, (byte)result.NewValue), cancellationToken);

@@ -89,6 +89,26 @@ public sealed class MapClientSessionStatUpTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // 0x0141 plus = battle_status - status (clif_couplestatus): a Novice at job level 2 has the generated +1 LUK job
+    // bonus (job_stats.yml BonusStats, fixture VF-02), which belongs in "plus" even with no buff active.
+    [Fact]
+    public async Task LukStatUp_AtJobLevel2_EmitsJobBonusAsPlus()
+    {
+        var (client, stream, persistence, session, run) = await StartAuthenticatedSessionAsync(NoviceState(statPoints: 34, CharacterBaseStat.Luck, value: 2));
+        using var _ = client;
+
+        await SkipBootstrapAsync(stream);
+        await stream.WriteAsync(new byte[] { 0xBB, 0x00, 0x12, 0x00, 0x01, 0xB8 });
+
+        var coupleStatus = await ReadExact(stream, 14);
+        Assert.Equal(18u, BinaryPrimitives.ReadUInt32LittleEndian(coupleStatus.AsSpan(2))); // SP_LUK
+        Assert.Equal(3, BinaryPrimitives.ReadInt32LittleEndian(coupleStatus.AsSpan(6)));
+        Assert.Equal(1, BinaryPrimitives.ReadInt32LittleEndian(coupleStatus.AsSpan(10))); // job-level-2 LUK bonus
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     // Increase AGI(val1=10) grants val2=2+val1=12 to AGI (status_change_start_post_delay's
     // SC_INCREASEAGI case, status.cpp:10844-10854, "// Agi change").
     [Fact]

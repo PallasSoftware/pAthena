@@ -762,6 +762,25 @@ the handler special-cases them.
 - **Not implemented**: the remaining derived-status packets (ATK/DEF/FLEE/HIT/ASPD-related) the
   capture's full burst shows - see the "partial derived-status parity" note above.
 
+### Open: captures required before more derived-stat / max-resource packets are sent (Epic 15.7)
+
+Epic 15 now recalculates max HP/SP on a VIT/INT stat-up (reference fixture VF-11) and exposes verified derived values
+(ATK/HIT/FLEE/perfect dodge/CRI/DEF2/MDEF2, ASPD, speed, damage motion - fixtures VF-01/02/05/07/08), but the **exact client
+cascade is not recorded in this document**: the supplied `statsonly.pcapng` extraction names the existence of extra
+`0x00B0` packets, not their `varID`s, values or relative order, and nothing proves whether stock iRO resends
+`MaxHP`/`MaxSP` (`0x00B0` var 6/8, or the 0x00B0 var 7/9-style current/max pairs) after VIT/INT. Until a capture settles this,
+Athena sends only the verified `0x0141` -> `0x00B0 var 9` -> `0x00BC` sequence, built from ONE committed snapshot
+(`result.After` plus the statuses captured for it). Consequence: after a VIT/INT stat-up the server's max HP/SP are correct,
+while the client's max HP/SP bar refreshes at the next resource packet or relog.
+
+Captures needed (each with raw hex of every S->C packet between the request/skill use and the final ack, plus the character's
+full stat/equipment state before and after):
+1. VIT stat-up and INT stat-up from a known state (to see MaxHP/MaxSP/DEF2/MDEF2 var ids, values, order vs `0x0141`/`0x00BC`).
+2. Blessing and Increase AGI activation on a known state with an unequipped and an equipped character (derived values per var id).
+3. The same buffs' natural expiry, and a weaker-level restart over a stronger active buff (to learn whether the client gets
+   any icon/stat resend; Athena currently sends nothing for the pinned no-op).
+4. Equip/unequip of a Knife and a Cotton Shirt (ASPD/DEF/ATK var ids and order around the equip ack).
+
 `CharacterGameplayStateSession.IncreaseStatAsync` remains the sole authoritative mutation path
 this handler calls into - see `MapClientSession.HandleIroStatusUpRequestAsync` for the thin
 parse-and-call wiring.
