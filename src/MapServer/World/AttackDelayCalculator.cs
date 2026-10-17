@@ -42,18 +42,19 @@ public static class AttackDelayCalculator
     private const int AmotionZeroAspd = 2000;
     private const int AmotionInterval = 10;
     private const int AmotionDividerPc = 2;
-    private const int MaxAspd = 190; // conf/battle/player.conf max_aspd
+    private const int MaxAspd = 190; // conf/battle/player.conf max_aspd (third/summoner/extended classes use 193: unmodeled, see below)
     private const int MinAspd = 8000; // status.hpp MIN_ASPD
 
-    // Pinned db/re/job_aspd.yml Novice row. Extend only when a weapon type beyond Fist/Dagger is
-    // actually exercised by this project's currently-supported gameplay slice.
-    public static int BaseAspdForWeapon(WeaponType? weaponType) => weaponType switch
+    // job_aspd.yml BaseASPD (Renewal units) for the job and weapon via the generated table; a bare hand is Fist. Only
+    // weapon types that use the non-DEX temp_aspd branch (status.cpp:2380-2392) are modeled: Bow, Musical, Whip and the
+    // firearms use the DEX branch and throw until they have their own reference fixtures (VF-17 records them).
+    public static int BaseAspdForWeapon(ushort jobClass, WeaponType? weaponType)
     {
-        null => 40, // Fist (unarmed)
-        WeaponType.Fist => 40,
-        WeaponType.Dagger => 55,
-        _ => throw new NotSupportedException($"No pinned BaseASPD is modeled for weapon type {weaponType}."),
-    };
+        var weapon = weaponType ?? WeaponType.Fist;
+        if (weapon is WeaponType.Bow or WeaponType.Musical or WeaponType.Whip or WeaponType.Revolver or WeaponType.Rifle or WeaponType.Gatling or WeaponType.Shotgun or WeaponType.Grenade)
+            throw new NotSupportedException($"ASPD for weapon type {weapon} uses the DEX formula branch, which is not modeled.");
+        return Generated.Progression.GeneratedJobAspd.Base(jobClass, weapon);
+    }
 
     // attack motion (status->amotion) is half the repeat delay (status->adelay = 2 * amotion for a PC); the
     // client plays this as the swing animation length (sdelay in clif_damage). Derived from the delay already
@@ -61,9 +62,9 @@ public static class AttackDelayCalculator
     public static uint AttackMotionMs(double attackDelayMs) => (uint)(attackDelayMs / AmotionDividerPc);
 
     // Returns the milliseconds between authoritative repeat-attack hits (pinned status->adelay).
-    public static int AttackDelayMs(EffectiveCharacterStats attacker, WeaponType? weaponType)
+    public static int AttackDelayMs(EffectiveCharacterStats attacker, WeaponType? weaponType, ushort jobClass)
     {
-        var baseAspd = BaseAspdForWeapon(weaponType);
+        var baseAspd = BaseAspdForWeapon(jobClass, weaponType);
         var dex = (double)attacker.Dexterity;
         var agi = (double)attacker.Agility;
         var tempAspd = Math.Sqrt(dex * dex / 5.0 + agi * agi * 0.5) * 0.25 + 196.0;
@@ -75,7 +76,9 @@ public static class AttackDelayCalculator
         amotion += Math.Max(195 - amotion, 2) * (0 + attacker.AttackSpeedBonus) / 100;
         amotion = AmotionZeroAspd - amotion * AmotionInterval;
 
-        amotion = Math.Clamp(amotion, MaxAspd / AmotionDividerPc, MinAspd / AmotionDividerPc);
+        // pc_maxaspd = (2000 - max_aspd*10) * 2 (battle_adjust_conf), clamped as pc_maxaspd/2 .. MIN_ASPD/2 (status.cpp:6415):
+        // a lower amotion bound of 100 for max_aspd 190 (fixture VF-17 cap cases), not "190/2".
+        amotion = Math.Clamp(amotion, AmotionZeroAspd - MaxAspd * AmotionInterval, MinAspd / AmotionDividerPc);
         return AmotionDividerPc * amotion;
     }
 }

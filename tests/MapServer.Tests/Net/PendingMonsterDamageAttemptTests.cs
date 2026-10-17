@@ -378,7 +378,7 @@ public sealed class PendingMonsterDamageAttemptTests
         // exact same calculation AllocatePendingDamageAttemptForTestAsync's own allocation performs
         // internally (unarmed, per that seam's own fixed `null` weapon type).
         var unbuffedStats = session.StatusEffects.Recalculate(WeakFreshNovice());
-        var originalDelayMs = AttackDelayCalculator.AttackDelayMs(unbuffedStats, null);
+        var originalDelayMs = AttackDelayCalculator.AttackDelayMs(unbuffedStats, null, 0);
 
         var dispatchCount = 0;
         session.DebugApplyMonsterDamageDispatcher = (_, _) =>
@@ -402,7 +402,7 @@ public sealed class PendingMonsterDamageAttemptTests
         // pass merely because the buff happened to be a no-op.
         session.StatusEffects.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, durationMilliseconds: 60_000, val1: 10);
         var buffedStats = session.StatusEffects.Recalculate(WeakFreshNovice());
-        var recomputedDelayMsIfBugPresent = AttackDelayCalculator.AttackDelayMs(buffedStats, null);
+        var recomputedDelayMsIfBugPresent = AttackDelayCalculator.AttackDelayMs(buffedStats, null, 0);
         Assert.NotEqual(originalDelayMs, recomputedDelayMsIfBugPresent);
 
         // Deterministic scheduler synchronization (CI-observed race fix): RunRepeatAttackLoopAsync's

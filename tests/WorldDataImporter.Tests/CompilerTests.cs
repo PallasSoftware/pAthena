@@ -408,6 +408,21 @@ public sealed class CompilerTests
         return body[(body.IndexOf('\n') + 1)..].Trim();
     }
 
+    // JobDatabase BaseASPD (pc.cpp:13945-13999): named weapons overwrite, unnamed ones keep the Renewal default
+    // AMOTION_ZERO_ASPD / AMOTION_INTERVAL = 200, and a later block only changes the weapons it names.
+    [Fact]
+    public void CharacterDataCompiler_BaseAspd_AppliesNamedWeaponsAndKeepsDefault200()
+    {
+        var root = Path.Combine(FindRepositoryRoot(), "legacy/rathena");
+        var sources = ReadCharacterData(root);
+        var generated = CharacterDataCompiler.Compile(sources, "abc").Artifacts.Single(a => a.RelativePath == "Progression/GeneratedJobAspd.cs").Source;
+        Assert.Contains("[JobClass.Novice] = [40, 55, 57, 200,", generated);
+
+        var overlay = sources.JobAspd + "\n  - Jobs:\n      Novice: true\n    BaseASPD:\n      Dagger: 60\n";
+        var overlaid = CharacterDataCompiler.Compile(sources with { JobAspd = overlay }, "abc").Artifacts.Single(a => a.RelativePath == "Progression/GeneratedJobAspd.cs").Source;
+        Assert.Contains("[JobClass.Novice] = [40, 60, 57, 200,", overlaid);
+    }
+
     [Fact]
     public async Task CharacterData_IsDeterministicHasExactFileSetAndMatchesCheckedInOutput()
     {
@@ -420,7 +435,7 @@ public sealed class CompilerTests
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(firstDir)));
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(secondDir)));
             static string[] Files(string root) => Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories).Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')).Order(StringComparer.Ordinal).ToArray();
-            var expected = new[] { "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
+            var expected = new[] { "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
             Assert.Equal(expected, Files(firstDir)); Assert.Equal(expected, Files(secondDir));
             var checkedIn = Path.Combine(repository, "src/MapServer/Generated");
             foreach (var relative in expected)
@@ -741,7 +756,7 @@ public sealed class CompilerTests
         File.ReadAllText(Path.Combine(root, "db/re/job_exp.yml")), File.ReadAllText(Path.Combine(root, "db/re/job_basepoints.yml")),
         File.ReadAllText(Path.Combine(root, "db/re/job_stats.yml")), File.ReadAllText(Path.Combine(root, "db/re/statpoint.yml")),
         File.ReadAllText(Path.Combine(root, "db/re/skill_db.yml")), File.ReadAllText(Path.Combine(root, "db/re/skill_tree.yml")),
-        File.ReadAllText(Path.Combine(root, "conf/battle/player.conf")));
+        File.ReadAllText(Path.Combine(root, "conf/battle/player.conf")), File.ReadAllText(Path.Combine(root, "db/re/job_aspd.yml")));
     private static string ReplaceFirst(string source, string oldValue, string newValue)
     {
         var index = source.IndexOf(oldValue, StringComparison.Ordinal);

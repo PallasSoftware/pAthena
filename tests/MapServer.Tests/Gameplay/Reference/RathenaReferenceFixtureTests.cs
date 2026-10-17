@@ -20,7 +20,7 @@ public sealed class RathenaReferenceFixtureTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
 
@@ -37,7 +37,7 @@ public sealed class RathenaReferenceFixtureTests
     {
         var expected = RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status").GetProperty("adelay").GetInt32();
         var stats = new EffectiveCharacterStats(1, 1, 1, 1, 1, 1, 0, 0);
-        Assert.Equal(expected, AttackDelayCalculator.AttackDelayMs(stats, null));
+        Assert.Equal(expected, AttackDelayCalculator.AttackDelayMs(stats, null, 0));
     }
 
     // VF-07/VF-08: replays each reference sequence through CharacterStatusEffectState and compares the
@@ -267,7 +267,7 @@ public sealed class RathenaReferenceFixtureTests
 
     private static void AssertTiming(System.Text.Json.JsonElement expected, CharacterStatusSnapshot snapshot) =>
         Assert.Equal((expected.GetProperty("adelay").GetInt32(), expected.GetProperty("speed").GetInt32(), expected.GetProperty("dmotion").GetInt32()),
-            (AttackDelayCalculator.AttackDelayMs(snapshot.Effective, null), MovementSpeedCalculator.CellDurationMs(snapshot.Effective.MoveSpeedHaste),
+            (AttackDelayCalculator.AttackDelayMs(snapshot.Effective, null, snapshot.State.JobClass), MovementSpeedCalculator.CellDurationMs(snapshot.Effective.MoveSpeedHaste),
              PlayerDamageMotionCalculator.Calculate(snapshot.Effective.Agility)));
 
     // ---- Equipment (VF-05 / VF-06 / VF-15) ----
@@ -292,7 +292,7 @@ public sealed class RathenaReferenceFixtureTests
 
         Assert.Equal((b.GetProperty("def").GetInt32(), b.GetProperty("watk").GetInt32()), (derived.HardDefense, equipment.WeaponAttack));
         Assert.Equal(Expected(b) with { HardDefense = derived.HardDefense }, derived);
-        Assert.Equal(b.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(snapshot.Effective, equipment.Weapon?.WeaponType));
+        Assert.Equal(b.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(snapshot.Effective, equipment.Weapon?.WeaponType, snapshot.State.JobClass));
         Assert.Equal(b.GetProperty("range").GetInt32(), BasicAttackRangeResolver.Resolve(equipment.Weapon));
     }
 
@@ -361,5 +361,106 @@ public sealed class RathenaReferenceFixtureTests
             var entry = weapon.GetProperty("entry").EnumerateArray().Select(v => v.GetInt32()).ToArray();
             Assert.Equal(entry, new[] { GeneratedSizeFix.Percent(type, MobSize.Small), GeneratedSizeFix.Percent(type, MobSize.Medium), GeneratedSizeFix.Percent(type, MobSize.Big) });
         }
+    }
+
+    // ---- VF-16: job coverage ----
+
+    public static TheoryData<int> JobCases => new(Enumerable.Range(0, 88));
+
+    private static (CharacterGameplayState State, System.Text.Json.JsonElement Battle) JobCase(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var c = fixture.Output("VF-16").GetProperty("cases")[index];
+        var i = fixture.Input("VF-16");
+        ushort U(string n) => (ushort)i.GetProperty(n).GetInt32();
+        var state = new CharacterGameplayState(1, 1, (ushort)c.GetProperty("job").GetInt32(), (ushort)c.GetProperty("base_level").GetInt32(), (ushort)c.GetProperty("job_level").GetInt32(),
+            0, 0, 1, 1, 1, 1, 0, 0, U("str"), U("agi"), U("vit"), U("int"), U("dex"), U("luk"));
+        return (state, c.GetProperty("battle_status"));
+    }
+
+    // Jobs outside JobSupport.Verified are not asserted equal; they must carry a documented known divergence instead.
+    private static bool VerifiedOrDocumented(CharacterGameplayState state)
+    {
+        if (JobSupport.IsReferenceVerified(state.JobClass)) return true;
+        Assert.NotEqual(JobSupport.ParameterRules.None, JobSupport.KnownDivergence(state.JobClass));
+        return false;
+    }
+
+    [Fact]
+    public void Vf16_EveryFixtureJob_IsEitherVerifiedOrDocumentedAsDivergent_AndVerifiedMeansItPasses()
+    {
+        var jobs = Enumerable.Range(0, 88).Select(JobCase).Select(c => c.State.JobClass).Distinct().ToArray();
+        Assert.Equal(44, jobs.Length);
+        Assert.All(jobs, job => Assert.True(JobSupport.IsReferenceVerified(job) ^ (JobSupport.KnownDivergence(job) != JobSupport.ParameterRules.None)));
+    }
+
+    [Theory]
+    [MemberData(nameof(JobCases))]
+    public void Vf16_JobStats_MatchReference(int index)
+    {
+        var (state, b) = JobCase(index);
+        if (!VerifiedOrDocumented(state)) return;
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var e = snapshot.Effective;
+        Assert.Equal(
+            [b.GetProperty("str").GetInt32(), b.GetProperty("agi").GetInt32(), b.GetProperty("vit").GetInt32(), b.GetProperty("int").GetInt32(), b.GetProperty("dex").GetInt32(), b.GetProperty("luk").GetInt32()],
+            [e.Strength, e.Agility, e.Vitality, e.Intelligence, e.Dexterity, e.Luck]);
+        Assert.Equal(Expected(b), DerivedStatCalculator.Calculate(snapshot));
+    }
+
+    [Theory]
+    [MemberData(nameof(JobCases))]
+    public void Vf16_JobMaxHpSp_MatchReference(int index)
+    {
+        var (state, b) = JobCase(index);
+        if (!VerifiedOrDocumented(state)) return;
+        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal((b.GetProperty("max_hp").GetUInt32(), b.GetProperty("max_sp").GetUInt32()),
+            (StatusCalculator.MaxHp(state, snapshot.Effective.Vitality), StatusCalculator.MaxSp(state, snapshot.Effective.Intelligence)));
+    }
+
+    // ---- VF-17: job- and weapon-dependent attack motion ----
+
+    public static TheoryData<int> AspdCases => new(Enumerable.Range(0, 440));
+
+    [Theory]
+    [MemberData(nameof(AspdCases))]
+    public void Vf17_AttackMotionPerJobAndWeapon_MatchesReference(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var c = fixture.Output("VF-17").GetProperty("cases")[index];
+        var i = fixture.Input("VF-17");
+        ushort U(string n) => (ushort)i.GetProperty(n).GetInt32();
+        var job = (ushort)c.GetProperty("job").GetInt32();
+        var state = new CharacterGameplayState(1, 1, job, U("base_level"), U("job_level"), 0, 0, 1, 1, 1, 1, 0, 0, U("str"), U("agi"), U("vit"), U("int"), U("dex"), U("luk"));
+        if (!VerifiedOrDocumented(state)) return; // unverified jobs only need their divergence documented (JobSupport)
+        var effective = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state).Effective;
+        var weaponType = (WeaponType)c.GetProperty("weapon_type").GetInt32();
+
+        if (weaponType is WeaponType.Bow or WeaponType.Musical or WeaponType.Whip)
+        {
+            // DEX-branch weapons are an explicit boundary: recorded by the reference, rejected (not approximated) here.
+            Assert.Throws<NotSupportedException>(() => AttackDelayCalculator.AttackDelayMs(effective, weaponType, job));
+            return;
+        }
+
+        Assert.Equal(c.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(effective, weaponType, job));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Vf17_AspdCap_MatchesReference(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var c = fixture.Output("VF-17").GetProperty("cap_cases")[index];
+        var state = new CharacterGameplayState(1, 1, (ushort)c.GetProperty("job").GetInt32(), 99, 10, 0, 0, 1, 1, 1, 1, 0, 0, 99, 99, 99, 99, 99, 99);
+        var statuses = new CharacterStatusEffectState(new FakeTimeProvider());
+        statuses.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 120000, c.GetProperty("increase_agi_level").GetInt32());
+        var effective = statuses.Capture(() => state).Effective;
+
+        Assert.Equal((c.GetProperty("agi").GetInt32(), c.GetProperty("dex").GetInt32()), (effective.Agility, effective.Dexterity));
+        Assert.Equal(c.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(effective, null, state.JobClass));
     }
 }

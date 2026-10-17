@@ -830,6 +830,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _x = authOk.X;
         _y = authOk.Y;
         _gameplayState = new CharacterGameplayStateSession(authOk.AccountId, state, _gameplayStatePersistence, skillRead.Snapshot!, _skillPersistence);
+        if (!Gameplay.Rules.Renewal.JobSupport.IsReferenceVerified(state.JobClass))
+            MapLogger.Warning($"[iRO MAP DEBUG] Job class {state.JobClass} is not reference-verified for Renewal status calculation (divergence={Gameplay.Rules.Renewal.JobSupport.KnownDivergence(state.JobClass)}); derived stats/max HP/SP may differ from rAthena.");
 
         // Invariant: an authenticated session always has gameplay state AND inventory state
         // loaded. A failed/unavailable inventory read must never let a session become
@@ -2971,7 +2973,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_monsterProjections is not null && _monsterProjections.TryGet(_mapName, out var projection) && projection.TryGetInstance(life.ActorId, out var instance))
             targetSnapshot = new WorldMonsterActorView(instance);
 
-        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(CaptureStatusSnapshot().Effective, null);
+        var delaySnapshot = CaptureStatusSnapshot();
+        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(delaySnapshot.Effective, null, delaySnapshot.State.JobClass);
         Func<uint, CharacterQuestStatus> questStatusSnapshot = _ => CharacterQuestStatus.Absent;
 
         if (_repeatAttack is { } existing)
@@ -3285,7 +3288,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var effectiveStats = statusSnapshot.Effective;
         var candidate = _combat.CalculateAttack(target, effectiveStats, statusSnapshot.State.BaseLevel, equippedWeapon);
         var acquireEngagement = target.StaticMob.Mode.HasFlag(MobMode.CanAttack);
-        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(effectiveStats, equippedWeapon?.WeaponType);
+        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(effectiveStats, equippedWeapon?.WeaponType, statusSnapshot.State.JobClass);
 
         // Resolve the quest-status snapshot BEFORE anything below runs (§4b) - must succeed before
         // _pendingDamageAttempt is published, BeginInFlight runs, or ApplyMonsterDamageAsync is
