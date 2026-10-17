@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <Content Include="Generated/Assets/Maps/AthenaMaps.bin" Link="MapData/AthenaMaps.bin" CopyToPublishDirectory="Always" />
+    <!-- Item data pack (~10 MB): small enough to copy to every build output so tests and the server load the same file. -->
+    <Content Include="Generated/Assets/Items/AthenaItems.bin" Link="MapData/AthenaItems.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
   <!-- Embed source revision for runtime build provenance. -->

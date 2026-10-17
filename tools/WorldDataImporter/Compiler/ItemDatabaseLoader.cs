@@ -32,6 +32,12 @@ internal sealed class RathenaConstantTable
         value = 0;
         return false;
     }
+    internal bool TryGetParameter(string name, out long id)
+    {
+        if (_entries.TryGetValue(name, out var entry) && entry.IsParameter) { id = entry.Value; return true; }
+        id = 0;
+        return false;
+    }
     internal bool IsParameter(string name) => _entries.TryGetValue(name, out var entry) && entry.IsParameter;
 }
 

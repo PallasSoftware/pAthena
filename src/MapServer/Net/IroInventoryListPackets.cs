@@ -168,6 +168,8 @@ internal static class IroInventoryListPackets
     // DelayConsumeItemDefinition projects as the client-facing IT_USABLE byte through this one
     // shared mapping, so both 0x0B41 (BuildItemPickupAck) and 0x0B09 (BuildItemListNormal) stay
     // automatically in sync without a second, divergence-prone switch.
+    private const uint ShadowWeaponLocation = 0x20000; // EQP_SHADOW_WEAPON (mmo.hpp)
+
     internal static byte ItemType(ItemDefinition definition) => definition switch
     {
         HealingItemDefinition => 0,      // IT_HEALING (mmo.hpp:224)
@@ -175,7 +177,15 @@ internal static class IroInventoryListPackets
         ArmorItemDefinition => 4,        // IT_ARMOR (mmo.hpp:227)
         UsableItemDefinition => 2,       // IT_USABLE (mmo.hpp:225)
         EtcItemDefinition => 3,          // IT_ETC (mmo.hpp:226)
-        DelayConsumeItemDefinition => 2, // current-iRO client-facing IT_USABLE (see doc comment above) - pinned server-side type remains IT_DELAYCONSUME=11 (mmo.hpp:234), unchanged in GeneratedItems
+        DelayConsumeItemDefinition => 2, // current-iRO client-facing IT_USABLE (see doc comment above) - pinned server-side type remains IT_DELAYCONSUME=11 (mmo.hpp:234), unchanged in the item catalog
+        // Source-derived from itemtype() (clif.cpp:109-118), not yet iRO-captured for these types (Feature 16 outstanding captures):
+        // a shadow weapon is shown as IT_WEAPON, other shadow gear and pet eggs as IT_ARMOR; the rest keep their item_db type.
+        ShadowGearItemDefinition shadow => (shadow.EquipLocation & ShadowWeaponLocation) != 0 ? (byte)5 : (byte)4,
+        PetEggItemDefinition => 4,
+        PetArmorItemDefinition => 8,     // IT_PETARMOR
+        CardItemDefinition => 6,         // IT_CARD
+        AmmoItemDefinition => 10,        // IT_AMMO
+        CashItemDefinition => 18,        // IT_CASH
         _ => throw new NotSupportedException($"{definition.GetType().Name} has no modeled itemtype() mapping."),
     };
 }

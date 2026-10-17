@@ -125,9 +125,11 @@ public sealed record PackItem(
 
 // Original rAthena script text kept for every script slot, with its lowering classification. Nothing is discarded:
 // `Deferred` scripts keep their source so Feature 20 (general script execution) can run them without a data change.
-public enum PackScriptSupport : byte { Lowered = 0, DeferredSkillExecution = 1, DeferredGeneralScript = 2 }
+// Lowered: every construct is in the IR and F16's evaluator can run it. Deferred: a construct is outside what the evaluator can
+// execute; DeferredConstruct names it and DeferredOwner names who owns it (e.g. callfunc -> GeneralScript / Feature 20).
+public enum PackScriptSupport : byte { Lowered = 0, Deferred = 1 }
 
-public sealed record PackScript(string Source, PackScriptSupport Support, string? DeferredConstruct);
+public sealed record PackScript(string Source, PackScriptSupport Support, string? DeferredConstruct, ItemScriptOwner DeferredOwner, PackScriptUses Uses, IrNode? Program);
 
 public sealed record ItemPack(string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts);
 
@@ -171,6 +173,9 @@ public static class ItemPackFormat
             foreach (var script in pack.Scripts)
             {
                 w.Write(Intern(script.Source)); w.Write((byte)script.Support); w.Write(script.DeferredConstruct is null ? -1 : Intern(script.DeferredConstruct));
+                w.Write((byte)script.DeferredOwner); w.Write((ushort)script.Uses);
+                w.Write(script.Program is not null);
+                if (script.Program is not null) WriteNode(w, script.Program, Intern);
             }
         }
 
@@ -227,9 +232,33 @@ public static class ItemPackFormat
             var source = strings[r.ReadInt32()];
             var support = (PackScriptSupport)r.ReadByte();
             var construct = r.ReadInt32();
-            scripts[i] = new PackScript(source, support, construct < 0 ? null : strings[construct]);
+            var owner = (ItemScriptOwner)r.ReadByte();
+            var uses = (PackScriptUses)r.ReadUInt16();
+            var program = r.ReadBoolean() ? ReadNode(r, strings) : null;
+            scripts[i] = new PackScript(source, support, construct < 0 ? null : strings[construct], owner, uses, program);
         }
 
         return new ItemPack(commit, items, scripts);
+    }
+
+    private static void WriteNode(BinaryWriter w, IrNode node, Func<string, int> intern)
+    {
+        w.Write((byte)node.Kind);
+        w.Write7BitEncodedInt(node.Text is null ? 0 : intern(node.Text) + 1);
+        w.Write7BitEncodedInt64((node.Number << 1) ^ (node.Number >> 63));   // zigzag: small negative numbers stay small
+        w.Write7BitEncodedInt(node.Items.Count);
+        foreach (var child in node.Items) WriteNode(w, child, intern);
+    }
+
+    private static IrNode ReadNode(BinaryReader r, string[] strings)
+    {
+        var kind = (IrKind)r.ReadByte();
+        var text = r.Read7BitEncodedInt();
+        var zigzag = r.Read7BitEncodedInt64();
+        var number = (long)((ulong)zigzag >> 1) ^ -(zigzag & 1);
+        var count = r.Read7BitEncodedInt();
+        var children = count == 0 ? null : new IrNode[count];
+        for (var i = 0; i < count; i++) children![i] = ReadNode(r, strings);
+        return new IrNode(kind, text == 0 ? null : strings[text - 1], number, children);
     }
 }

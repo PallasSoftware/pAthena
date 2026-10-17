@@ -37,6 +37,8 @@ internal static partial class WorldDataImporterCli
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
                 "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
+                "survey-item-scripts" => SurveyItemScripts(args[1..]),
+                "compile-item-pack" => await CompileItemPackAsync(args[1..]),
                 "collect-rathena-names" => await CollectRathenaNamesAsync(args[1..]),
                 "compile-map-collision" => await CompileMapCollisionAsync(args[1..]),
                 "capabilities" => await CapabilitiesAsync(args[1..]),
@@ -979,6 +981,28 @@ internal static partial class WorldDataImporterCli
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllTextAsync(output, SizeFixCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
         Console.WriteLine($"Generated size fix table for {table.GetLength(0)} weapon types.");
+        return 0;
+    }
+
+    private static async Task<int> CompileItemPackAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var constants = RathenaConstantTable.Load(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "rathena-constants.tsv")));
+        var result = ItemPackBuilder.Build(relative => File.ReadAllText(Path.Combine(root, relative)), constants, options.Required("rathena-commit"));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllBytesAsync(output, Athena.Net.MapServer.World.Items.ItemPackFormat.Write(result.Pack));
+        if (options.Optional("facade") is { } facadePath) await File.WriteAllTextAsync(Path.GetFullPath(facadePath), ItemPackBuilder.RenderFacade(result.Pack, options.Required("rathena-commit")).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        if (options.Optional("report") is { } reportPath) await File.WriteAllTextAsync(Path.GetFullPath(reportPath), result.Report, new System.Text.UTF8Encoding(false));
+        Console.Write(result.Report);
+        return 0;
+    }
+
+    private static int SurveyItemScripts(string[] args)
+    {
+        var root = Path.GetFullPath(CliOptions.Parse(args).Required("rathena-root"));
+        foreach (var (key, count) in ItemScriptSurvey.Run(relative => File.ReadAllText(Path.Combine(root, relative)))) Console.WriteLine($"{count,8}  {key}");
         return 0;
     }
 

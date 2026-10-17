@@ -11,5 +11,10 @@
     <Compile Include="../../src/MapServer/World/RathenaMapCacheLayers.cs" Link="Compiler/RathenaMapCacheLayers.cs" />
     <Compile Include="../../src/MapServer/World/AthenaMapPackFormat.cs" Link="Compiler/AthenaMapPackFormat.cs" />
     <Compile Include="../../src/MapServer/World/Items/ItemPackFormat.cs" Link="Compiler/ItemPackFormat.cs" />
+    <Compile Include="../../src/MapServer/World/Items/ItemScriptIr.cs" Link="Compiler/ItemScriptIr.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Script identifier values resolved by the real pinned rAthena (tools/rathena-reference/run-data.ps1). -->
+    <None Include="rathena-constants.tsv" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

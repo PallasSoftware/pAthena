@@ -51,6 +51,8 @@ internal static partial class RathenaNameCollector
         if (node.Get("Delay") is YamlMap delay && delay.Scalar("Status") is { } status) names.Add("SC_" + status);
     }
 
+    internal static IEnumerable<string> ScriptsOf(YamlNode node) => Scripts(node);
+
     private static IEnumerable<string> Scripts(YamlNode node)
     {
         switch (node)
