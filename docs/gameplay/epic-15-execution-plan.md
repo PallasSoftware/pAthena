@@ -90,3 +90,37 @@ Every in-scope row in the matrix is Implemented (reference fixture + active test
 
 ## I. Next immediate action after approval
 T0: rerun `pwsh tools/rathena-reference/run.ps1` twice to confirm VF-14 determinism, then extend the runner with Blessing/IncAGI deadline+timer capture (stage 15.2a first fixture commit).
+
+## Closure status (living section; mirrors PR #47 and `renewal-status-matrix.md`)
+
+Evidence types are kept apart: **R** = reproduced against real pinned-rAthena execution (fixtures VF-xx, `ReferenceExecuted`);
+**I** = verified stock-iRO capture; **S** = source-read only.
+
+| Mechanic | State | Evidence | Supported scope / remaining |
+|---|---|---|---|
+| Blessing / Increase AGI start, refresh, retention, end | Implemented | R (VF-07/08) | Timers sampled at 50 ms granularity; client resend on retained start intentionally none (I missing) |
+| Mob basic attack (BATK, exclusive roll, soft/hard DEF) | Implemented for ordinary non-skill attacks | R (VF-14/15) | Accuracy/FLEE, crit, elements, cards unmodeled (Epic 17) |
+| Six stats incl. job-level bonuses | Partial | R (VF-02/16) | `JobSupport`: 35 verified classes; unverified: transcendent/fourth/Hyper Novice/Kagerou (documented) |
+| BATK/HIT/FLEE/perfect dodge/CRI/DEF2/MDEF2/MATK/hard DEF | Partial | R (VF-01/02/05/07/08/16) | Armor DEF only; no refine/cards/scripts/passives; weapon MATK rejected |
+| Max HP/SP + VIT/INT resource transition | Partial | R (VF-04/11/16) | x1.25 upper/fourth and Taekwon-ranker multipliers unmodeled; no equipment/skill HP bonuses |
+| ASPD / amotion / adelay | Partial | R (VF-17) | Non-ranged weapons for verified jobs; DEX-branch weapons throw; third/summoner/extended max_aspd 193 unmodeled |
+| Walk speed, damage motion | Implemented for modeled statuses | R (VF-02/07/08) | Mount/Run/slow statuses unmodeled |
+| Attack animation speed on the wire | Implemented | R (VF-02/17 values) + contract test | Orleans `WorldMonsterDamageCommand.SourceAttackMotion` (Id 6) |
+| Equipment: Knife / Cotton Shirt loadouts, size fix table | Partial | R (VF-05/06/15) + importer tests | Only generated items; Dagger size modifier 100/75/50 (earlier "no-op" claim corrected) |
+| Client stat-up burst from one snapshot | Partial | I (existing) | Max HP/SP resend and derived cascade need captures (see `ai/iro-2026-wire.md`) |
+| Natural regen amounts/ticking, traits, skills, cards, refine, full combat | Deferred | - | Epics 16/17/18 or later approval |
+
+Open follow-ups: iRO captures listed in `ai/iro-2026-wire.md`; generator support for map.hpp job flags (upper/third/fourth) to
+retire `JobSupport` divergences; Super Novice `die_counter`; weapon MATK; Kagerou/Oboro SP table discrepancy at level 1.
+
+## Open issue: intermittent `MapClientSessionMovementRetargetTests.RetargetExactlyAtStepBoundary_IsAppliedAtThatBoundary` (revisit before merge)
+
+Observed once (5 s read timeout) in 1 of 25 local runs of `MapClientSessionMonsterCombatTests` + `MapClientSessionMovementRetargetTests` +
+`MapTcpServerMonsterAuthorityIntegrationTests` on this branch (Debug, macOS). The same filter ran 25/25 green on a clean `origin/main`
+worktree, and the retarget class alone ran 30/30 green on this branch, so the evidence is **inconclusive** - neither "caused by this
+branch" nor "pre-existing/unrelated" is established. A separate stress comparison (CPU burners, 20 runs each) was stopped before
+producing results. CI also failed intermittently on earlier pushes in `KillThroughRealAttack_BystanderPresent_...` and
+`GeneratedIntroToIzludeDistributedIntegrationTests.RealRathenaOnTouch_...` (both timing/10 s-wait tests); the latest push (`3c5ffa5`)
+passed all three workflows, after the reference fixture was parsed once per run instead of ~2000 times. No test was weakened or skipped.
+Next step (needs approval, per the bounded-debugging rules): a bounded investigation of the retarget boundary test's clock/read
+synchronization before the final merge.
