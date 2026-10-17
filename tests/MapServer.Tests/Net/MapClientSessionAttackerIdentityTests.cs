@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -99,7 +99,7 @@ public sealed class MapClientSessionAttackerIdentityTests
         _lastEpoch = epoch;
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
 
         var gameplayPersistence = new FixedGameplayStatePersistence(WeakFreshNovice());
@@ -402,7 +402,7 @@ public sealed class MapClientSessionAttackerIdentityTests
     private static MapServerWorld MakeWorld()
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         return new MapServerWorld(
             WorldMapRegistry.Tutorial,
             [],
@@ -410,7 +410,7 @@ public sealed class MapClientSessionAttackerIdentityTests
             EmptyMapCollisionProvider.Instance,
             new UnverifiedGridLineMovementPathProvider(),
             new MonsterFeedProjectionRegistry(),
-            combatState);
+            combatState, rules: TestGameplayRules.Services());
     }
 
     private static async Task<(MapClientSession Session, TcpClient Client)> MakeWorldVisibleSessionAsync(

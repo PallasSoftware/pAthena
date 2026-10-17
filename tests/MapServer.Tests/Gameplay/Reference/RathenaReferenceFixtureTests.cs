@@ -1,35 +1,34 @@
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Generated.GameData.SizeFix;
 using Athena.Net.MapServer.Net;
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 
-public sealed class RathenaReferenceFixtureTests
+
+// Runs the pinned-rAthena golden fixtures against ONE region's concrete gameplay rules, composed through the production
+// factory. The two sealed subclasses give iRO and kRO each their own independently executed set of conformance assertions
+// over the same fixture inputs; the fixture values are never produced by the code under test.
+public abstract class RathenaReferenceConformanceTests(GameplayRegion region)
 {
-    private static string Valid(string evidence = "ReferenceExecuted", string commit = RathenaReferenceFixture.PinnedCommit) => $$$"""
-        {"schema":1,"reference":{"commit":"{{{commit}}}","compiler":"g++","runner":"r","configuration":"c"},
-         "scenarios":[{"id":"X","evidence":"{{{evidence}}}","scope":"s","input":{},"output":{}}]}
-        """;
+    protected GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
 
-    [Fact]
-    public void CommittedFixture_IsValidAndAllReferenceExecuted()
-    {
-        var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17"], fixture.Ids.Order());
-        Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
-    }
+    private CharacterStatusEffectState NewStatuses(TimeProvider clock) => new(clock, Rules.StatusEffects, Rules.Stats);
 
-    [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());
-    [Fact] public void Parse_RejectsWrongCommit() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid(commit: "abc")));
-    [Fact] public void Parse_RejectsUnknownEvidence() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid("Guessed")));
-    [Fact] public void Parse_RejectsMissingProvenance() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid().Replace("\"compiler\":\"g++\",", "")));
-    [Fact] public void Parse_RejectsNoScenarios() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(
-        $$"""{"schema":1,"reference":{"commit":"{{RathenaReferenceFixture.PinnedCommit}}","compiler":"g","runner":"r","configuration":"c"},"scenarios":[]}"""));
+
+
+
+
+
+
+
+
+
 
     // VF-01 (aspd part): Novice, all stats 1, unarmed. Compares the reference adelay with Athena.NET.
     [Fact]
@@ -37,7 +36,7 @@ public sealed class RathenaReferenceFixtureTests
     {
         var expected = RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status").GetProperty("adelay").GetInt32();
         var stats = new EffectiveCharacterStats(1, 1, 1, 1, 1, 1, 0, 0);
-        Assert.Equal(expected, AttackDelayCalculator.AttackDelayMs(stats, null, 0));
+        Assert.Equal(expected, Rules.Timing.AttackDelayMs(stats, null, 0));
     }
 
     // VF-07/VF-08: replays each reference sequence through CharacterStatusEffectState and compares the
@@ -61,7 +60,7 @@ public sealed class RathenaReferenceFixtureTests
         var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
         var steps = seq.GetProperty("steps");
         var clock = new FakeTimeProvider();
-        var state = new CharacterStatusEffectState(clock);
+        var state = NewStatuses(clock);
         DateTimeOffset previousDeadline = default;
         for (var i = 0; i < levels.Length; i++)
         {
@@ -96,7 +95,7 @@ public sealed class RathenaReferenceFixtureTests
             SoftDefense: RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status").GetProperty("def2").GetInt32());
 
         var observed = Enumerable.Range(0, 20000)
-            .Select(_ => MobBasicAttackCalculator.Calculate(mob, novice))
+            .Select(_ => Rules.Combat.CalculateMonsterBasicAttack(mob, novice))
             .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
 
         Assert.Equal(expected, observed);
@@ -117,7 +116,7 @@ public sealed class RathenaReferenceFixtureTests
             BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
             Strength: U("str"), Agility: U("agi"), Vitality: U("vit"), Intelligence: U("int"), Dexterity: U("dex"), Luck: U("luk"));
 
-        var effective = new CharacterStatusEffectState(new FakeTimeProvider()).Recalculate(state);
+        var effective = NewStatuses(new FakeTimeProvider()).Recalculate(state);
 
         var expected = c.GetProperty("battle_status");
         Assert.Equal(
@@ -126,11 +125,11 @@ public sealed class RathenaReferenceFixtureTests
             [effective.Strength, effective.Agility, effective.Vitality, effective.Intelligence, effective.Dexterity, effective.Luck]);
     }
 
-    private static DerivedStats Expected(System.Text.Json.JsonElement b) => new(
+    private DerivedStats Expected(System.Text.Json.JsonElement b) => new(
         b.GetProperty("batk").GetInt32(), b.GetProperty("hit").GetInt32(), b.GetProperty("flee").GetInt32(), b.GetProperty("flee2").GetInt32(),
         b.GetProperty("cri").GetInt32(), b.GetProperty("def2").GetInt32(), b.GetProperty("mdef2").GetInt32(), MagicAttackMin: b.GetProperty("matk_min").GetInt32(), MagicAttackMax: b.GetProperty("matk_max").GetInt32());
 
-    private static CharacterGameplayState StateFrom(System.Text.Json.JsonElement i)
+    private CharacterGameplayState StateFrom(System.Text.Json.JsonElement i)
     {
         ushort U(string n) => (ushort)i.GetProperty(n).GetInt32();
         return new CharacterGameplayState(CharacterId: 1, Version: 1, JobClass: 0, BaseLevel: U("base_level"), JobLevel: U("job_level"),
@@ -144,8 +143,8 @@ public sealed class RathenaReferenceFixtureTests
     {
         var c = RathenaReferenceFixture.LoadCommitted().Output("VF-02").GetProperty("cases")[index];
         var state = StateFrom(c.GetProperty("input"));
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
-        Assert.Equal(Expected(c.GetProperty("battle_status")), DerivedStatCalculator.Calculate(snapshot));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal(Expected(c.GetProperty("battle_status")), Rules.Stats.CalculateDerivedStats(snapshot));
     }
 
     [Fact]
@@ -153,8 +152,8 @@ public sealed class RathenaReferenceFixtureTests
     {
         var b = RathenaReferenceFixture.LoadCommitted().Output("VF-01").GetProperty("battle_status");
         var state = new CharacterGameplayState(1, 1, 0, 1, 1, 0, 0, 40, 10, 40, 10, 0, 0, 1, 1, 1, 1, 1, 1);
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
-        Assert.Equal(Expected(b), DerivedStatCalculator.Calculate(snapshot));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal(Expected(b), Rules.Stats.CalculateDerivedStats(snapshot));
     }
 
     // VF-07/VF-08: every step and the post-end state of each sequence, full derived-stat comparison.
@@ -167,18 +166,18 @@ public sealed class RathenaReferenceFixtureTests
         var input = RathenaReferenceFixture.LoadCommitted().Input(scenario);
         var state = StateFrom(input);
         var clock = new FakeTimeProvider();
-        var statuses = new CharacterStatusEffectState(clock);
+        var statuses = NewStatuses(clock);
         var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
         var steps = seq.GetProperty("steps");
         for (var i = 0; i < levels.Length; i++)
         {
             statuses.Start(statusId, 120000, levels[i]);
-            Assert.Equal(Expected(steps[i]), DerivedStatCalculator.Calculate(statuses.Capture(() => state)));
+            Assert.Equal(Expected(steps[i]), Rules.Stats.CalculateDerivedStats(statuses.Capture(() => state)));
         }
         statuses.ExpireDue(clock.GetUtcNow().AddMilliseconds(120001));
         clock.Advance(TimeSpan.FromMilliseconds(120001));
         statuses.ExpireDue(clock.GetUtcNow());
-        Assert.Equal(Expected(seq.GetProperty("after_end")), DerivedStatCalculator.Calculate(statuses.Capture(() => state)));
+        Assert.Equal(Expected(seq.GetProperty("after_end")), Rules.Stats.CalculateDerivedStats(statuses.Capture(() => state)));
     }
 
     public static TheoryData<int> MaxResourceCases => new(Enumerable.Range(0, 40));
@@ -191,9 +190,9 @@ public sealed class RathenaReferenceFixtureTests
         var i = c.GetProperty("input");
         var state = new CharacterGameplayState(1, 1, 0, (ushort)i.GetProperty("base_level").GetInt32(), 1, 0, 0, 1, 1, 1, 1, 0, 0,
             1, 1, (ushort)i.GetProperty("vit").GetInt32(), (ushort)i.GetProperty("int").GetInt32(), 1, 1);
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
         Assert.Equal((c.GetProperty("max_hp").GetUInt32(), c.GetProperty("max_sp").GetUInt32()),
-            (StatusCalculator.MaxHp(state, snapshot.Effective.Vitality), StatusCalculator.MaxSp(state, snapshot.Effective.Intelligence)));
+            (Rules.Stats.MaxHp(state, snapshot.Effective.Vitality), Rules.Stats.MaxSp(state, snapshot.Effective.Intelligence)));
     }
 
     // The progression path (level-up) must use the same maxima as the calculator.
@@ -208,7 +207,7 @@ public sealed class RathenaReferenceFixtureTests
         var definition = Athena.Net.MapServer.Generated.Progression.GeneratedProgressionRegistry.Get((ushort)0);
         var before = new CharacterGameplayState(1, 1, 0, (ushort)(level - 1), 1, definition.BaseExperienceToNext[level - 1], 0, 40, 11, 40, 11, 0, 0, 1, 1,
             (ushort)i.GetProperty("vit").GetInt32(), (ushort)i.GetProperty("int").GetInt32(), 1, 1);
-        var after = CharacterProgressionService.Calculate(before, 0, 0).After;
+        var after = Rules.Experience.CalculateProgression(before, 0, 0).After;
         Assert.Equal(level, after.BaseLevel);
         Assert.Equal((c.GetProperty("max_hp").GetUInt32(), c.GetProperty("max_sp").GetUInt32()), (after.MaxHp, after.MaxSp));
     }
@@ -225,7 +224,7 @@ public sealed class RathenaReferenceFixtureTests
             i.GetProperty("hp").GetUInt32(), i.GetProperty("sp").GetUInt32(), c.GetProperty("before").GetProperty("max_hp").GetUInt32(), c.GetProperty("before").GetProperty("max_sp").GetUInt32(),
             0, 0, 1, 1, (ushort)i.GetProperty("new_vit").GetInt32(), (ushort)i.GetProperty("new_int").GetInt32(), 1, 1);
 
-        var after = StatusCalculator.WithRecalculatedResources(before);
+        var after = Rules.Stats.WithRecalculatedResources(before);
 
         var expected = c.GetProperty("after");
         Assert.Equal((expected.GetProperty("max_hp").GetUInt32(), expected.GetProperty("max_sp").GetUInt32(), expected.GetProperty("hp").GetUInt32(), expected.GetProperty("sp").GetUInt32()),
@@ -239,7 +238,7 @@ public sealed class RathenaReferenceFixtureTests
     {
         var c = RathenaReferenceFixture.LoadCommitted().Output("VF-02").GetProperty("cases")[index];
         var state = StateFrom(c.GetProperty("input"));
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
         var expected = c.GetProperty("battle_status");
         AssertTiming(expected, snapshot);
     }
@@ -252,7 +251,7 @@ public sealed class RathenaReferenceFixtureTests
         var seq = fixture.Output(scenario).GetProperty("sequences")[index];
         var state = StateFrom(fixture.Input(scenario));
         var clock = new FakeTimeProvider();
-        var statuses = new CharacterStatusEffectState(clock);
+        var statuses = NewStatuses(clock);
         var levels = seq.GetProperty("levels").EnumerateArray().Select(l => l.GetInt32()).ToArray();
         var steps = seq.GetProperty("steps");
         for (var i = 0; i < levels.Length; i++)
@@ -265,14 +264,14 @@ public sealed class RathenaReferenceFixtureTests
         AssertTiming(seq.GetProperty("after_end"), statuses.Capture(() => state));
     }
 
-    private static void AssertTiming(System.Text.Json.JsonElement expected, CharacterStatusSnapshot snapshot) =>
+    private void AssertTiming(System.Text.Json.JsonElement expected, CharacterStatusSnapshot snapshot) =>
         Assert.Equal((expected.GetProperty("adelay").GetInt32(), expected.GetProperty("speed").GetInt32(), expected.GetProperty("dmotion").GetInt32()),
-            (AttackDelayCalculator.AttackDelayMs(snapshot.Effective, null, snapshot.State.JobClass), MovementSpeedCalculator.CellDurationMs(snapshot.Effective.MoveSpeedHaste),
-             PlayerDamageMotionCalculator.Calculate(snapshot.Effective.Agility)));
+            (Rules.Timing.AttackDelayMs(snapshot.Effective, null, snapshot.State.JobClass), Rules.Timing.WalkCellDurationMs(snapshot.Effective.MoveSpeedHaste),
+             Rules.Timing.PlayerDamageMotionMs(snapshot.Effective.Agility)));
 
     // ---- Equipment (VF-05 / VF-06 / VF-15) ----
 
-    private static CharacterInventorySnapshot Wearing(IEnumerable<int> itemIds) => new(itemIds.Select((id, slot) => new CharacterInventoryItem(
+    private CharacterInventorySnapshot Wearing(IEnumerable<int> itemIds) => new(itemIds.Select((id, slot) => new CharacterInventoryItem(
         DurableId: (uint)slot + 1, SlotIndex: (uint)slot, ItemId: id, Amount: 1, Equip: ((GeneratedItems.ById[id] as IEquippableItemDefinition)!.EquipLocation), Identified: true, 0, 0, 0)).ToArray());
 
     public static TheoryData<int> LoadoutCases => [0, 1, 2, 3];
@@ -284,15 +283,15 @@ public sealed class RathenaReferenceFixtureTests
         var fixture = RathenaReferenceFixture.LoadCommitted();
         var loadout = fixture.Output("VF-05").GetProperty("loadouts")[index];
         var state = StateFrom(fixture.Input("VF-05"));
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
-        Assert.True(EquipmentStats.TryFromInventory(Wearing(loadout.GetProperty("items").EnumerateArray().Select(i => i.GetInt32())), GeneratedItems.ById, out var equipment));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        Assert.True(Rules.Stats.TryResolveEquipment(Wearing(loadout.GetProperty("items").EnumerateArray().Select(i => i.GetInt32())), GeneratedItems.ById, out var equipment));
         var b = loadout.GetProperty("battle_status");
 
-        var derived = DerivedStatCalculator.Calculate(snapshot, equipment);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
 
         Assert.Equal((b.GetProperty("def").GetInt32(), b.GetProperty("watk").GetInt32()), (derived.HardDefense, equipment.WeaponAttack));
         Assert.Equal(Expected(b) with { HardDefense = derived.HardDefense }, derived);
-        Assert.Equal(b.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(snapshot.Effective, equipment.Weapon?.WeaponType, snapshot.State.JobClass));
+        Assert.Equal(b.GetProperty("adelay").GetInt32(), Rules.Timing.AttackDelayMs(snapshot.Effective, equipment.Weapon?.WeaponType, snapshot.State.JobClass));
         Assert.Equal(b.GetProperty("range").GetInt32(), BasicAttackRangeResolver.Resolve(equipment.Weapon));
     }
 
@@ -300,9 +299,9 @@ public sealed class RathenaReferenceFixtureTests
     public void EquipmentStats_UnknownOrUnsupportedEquippedItem_IsUnresolvedNotZero()
     {
         var unknown = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, 999999, 1, 0x10, true, 0, 0, 0)]);
-        Assert.False(EquipmentStats.TryFromInventory(unknown, GeneratedItems.ById, out _));
+        Assert.False(Rules.Stats.TryResolveEquipment(unknown, GeneratedItems.ById, out _));
         var unequippedUnknown = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, 999999, 1, 0, true, 0, 0, 0)]);
-        Assert.True(EquipmentStats.TryFromInventory(unequippedUnknown, GeneratedItems.ById, out var stats));
+        Assert.True(Rules.Stats.TryResolveEquipment(unequippedUnknown, GeneratedItems.ById, out var stats));
         Assert.Equal(0, stats.HardDefense);
     }
 
@@ -319,10 +318,10 @@ public sealed class RathenaReferenceFixtureTests
         var mob = attack.GetProperty("mob_id").GetInt32() switch { 1002 => GeneratedMobs.Poring, 1007 => GeneratedMobs.Fabre, _ => GeneratedMobs.Wolf };
         var expected = attack.GetProperty("normal").EnumerateObject().Select(p => long.Parse(p.Name)).Order().ToArray();
         var state = StateFrom(fixture.Input("VF-06").GetProperty("attacker"));
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
 
         var observed = Enumerable.Range(0, 20000)
-            .Select(_ => WeaponAttackCalculator.Calculate(snapshot.Effective, state.BaseLevel, GeneratedItems.Knife, mob))
+            .Select(_ => Rules.Combat.CalculatePlayerBasicAttack(new BasicAttackContext(snapshot.Effective, state.BaseLevel, GeneratedItems.Knife, mob)))
             .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
 
         Assert.Equal(expected, observed);
@@ -343,31 +342,19 @@ public sealed class RathenaReferenceFixtureTests
         var novice = new PlayerCombatSnapshot(1, "prontera", 0, 0, true, false, 10, 12, 15, SoftDefense: target.GetProperty("def2").GetInt32(), HardDefense: target.GetProperty("def").GetInt32());
 
         var observed = Enumerable.Range(0, 20000)
-            .Select(_ => MobBasicAttackCalculator.Calculate(mob, novice))
+            .Select(_ => Rules.Combat.CalculateMonsterBasicAttack(mob, novice))
             .Where(r => !r.IsMiss).Select(r => (long)r.Damage).Distinct().Order().ToArray();
 
         Assert.Equal(expected, observed);
     }
 
-    // The generated size-fix table is exactly what the pinned loader built (db/size_fix.yml + Renewal imports).
-    [Fact]
-    public void GeneratedSizeFix_EqualsTheTableLoadedByThePinnedServer()
-    {
-        var loaded = RathenaReferenceFixture.LoadCommitted().Output("VF-06").GetProperty("loaded_size_fix_db");
-        Assert.Equal(24, loaded.GetArrayLength());
-        foreach (var weapon in loaded.EnumerateArray())
-        {
-            var type = (WeaponType)weapon.GetProperty("weapon").GetInt32();
-            var entry = weapon.GetProperty("entry").EnumerateArray().Select(v => v.GetInt32()).ToArray();
-            Assert.Equal(entry, new[] { GeneratedSizeFix.Percent(type, MobSize.Small), GeneratedSizeFix.Percent(type, MobSize.Medium), GeneratedSizeFix.Percent(type, MobSize.Big) });
-        }
-    }
+
 
     // ---- VF-16: job coverage ----
 
     public static TheoryData<int> JobCases => new(Enumerable.Range(0, 88));
 
-    private static (CharacterGameplayState State, System.Text.Json.JsonElement Battle) JobCase(int index)
+    private (CharacterGameplayState State, System.Text.Json.JsonElement Battle) JobCase(int index)
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
         var c = fixture.Output("VF-16").GetProperty("cases")[index];
@@ -379,7 +366,7 @@ public sealed class RathenaReferenceFixtureTests
     }
 
     // Jobs outside JobSupport.Verified are not asserted equal; they must carry a documented known divergence instead.
-    private static bool VerifiedOrDocumented(CharacterGameplayState state)
+    private bool VerifiedOrDocumented(CharacterGameplayState state)
     {
         if (JobSupport.IsReferenceVerified(state.JobClass)) return true;
         Assert.NotEqual(JobSupport.ParameterRules.None, JobSupport.KnownDivergence(state.JobClass));
@@ -400,12 +387,12 @@ public sealed class RathenaReferenceFixtureTests
     {
         var (state, b) = JobCase(index);
         if (!VerifiedOrDocumented(state)) return;
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
         var e = snapshot.Effective;
         Assert.Equal(
             [b.GetProperty("str").GetInt32(), b.GetProperty("agi").GetInt32(), b.GetProperty("vit").GetInt32(), b.GetProperty("int").GetInt32(), b.GetProperty("dex").GetInt32(), b.GetProperty("luk").GetInt32()],
             [e.Strength, e.Agility, e.Vitality, e.Intelligence, e.Dexterity, e.Luck]);
-        Assert.Equal(Expected(b), DerivedStatCalculator.Calculate(snapshot));
+        Assert.Equal(Expected(b), Rules.Stats.CalculateDerivedStats(snapshot));
     }
 
     [Theory]
@@ -414,9 +401,9 @@ public sealed class RathenaReferenceFixtureTests
     {
         var (state, b) = JobCase(index);
         if (!VerifiedOrDocumented(state)) return;
-        var snapshot = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state);
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
         Assert.Equal((b.GetProperty("max_hp").GetUInt32(), b.GetProperty("max_sp").GetUInt32()),
-            (StatusCalculator.MaxHp(state, snapshot.Effective.Vitality), StatusCalculator.MaxSp(state, snapshot.Effective.Intelligence)));
+            (Rules.Stats.MaxHp(state, snapshot.Effective.Vitality), Rules.Stats.MaxSp(state, snapshot.Effective.Intelligence)));
     }
 
     // ---- VF-17: job- and weapon-dependent attack motion ----
@@ -434,17 +421,17 @@ public sealed class RathenaReferenceFixtureTests
         var job = (ushort)c.GetProperty("job").GetInt32();
         var state = new CharacterGameplayState(1, 1, job, U("base_level"), U("job_level"), 0, 0, 1, 1, 1, 1, 0, 0, U("str"), U("agi"), U("vit"), U("int"), U("dex"), U("luk"));
         if (!VerifiedOrDocumented(state)) return; // unverified jobs only need their divergence documented (JobSupport)
-        var effective = new CharacterStatusEffectState(new FakeTimeProvider()).Capture(() => state).Effective;
+        var effective = NewStatuses(new FakeTimeProvider()).Capture(() => state).Effective;
         var weaponType = (WeaponType)c.GetProperty("weapon_type").GetInt32();
 
         if (weaponType is WeaponType.Bow or WeaponType.Musical or WeaponType.Whip)
         {
             // DEX-branch weapons are an explicit boundary: recorded by the reference, rejected (not approximated) here.
-            Assert.Throws<NotSupportedException>(() => AttackDelayCalculator.AttackDelayMs(effective, weaponType, job));
+            Assert.Throws<NotSupportedException>(() => Rules.Timing.AttackDelayMs(effective, weaponType, job));
             return;
         }
 
-        Assert.Equal(c.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(effective, weaponType, job));
+        Assert.Equal(c.GetProperty("adelay").GetInt32(), Rules.Timing.AttackDelayMs(effective, weaponType, job));
     }
 
     [Theory]
@@ -456,11 +443,50 @@ public sealed class RathenaReferenceFixtureTests
         var fixture = RathenaReferenceFixture.LoadCommitted();
         var c = fixture.Output("VF-17").GetProperty("cap_cases")[index];
         var state = new CharacterGameplayState(1, 1, (ushort)c.GetProperty("job").GetInt32(), 99, 10, 0, 0, 1, 1, 1, 1, 0, 0, 99, 99, 99, 99, 99, 99);
-        var statuses = new CharacterStatusEffectState(new FakeTimeProvider());
+        var statuses = NewStatuses(new FakeTimeProvider());
         statuses.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, 120000, c.GetProperty("increase_agi_level").GetInt32());
         var effective = statuses.Capture(() => state).Effective;
 
         Assert.Equal((c.GetProperty("agi").GetInt32(), c.GetProperty("dex").GetInt32()), (effective.Agility, effective.Dexterity));
-        Assert.Equal(c.GetProperty("adelay").GetInt32(), AttackDelayCalculator.AttackDelayMs(effective, null, state.JobClass));
+        Assert.Equal(c.GetProperty("adelay").GetInt32(), Rules.Timing.AttackDelayMs(effective, null, state.JobClass));
+    }
+}
+
+public sealed class IroRathenaReferenceConformanceTests() : RathenaReferenceConformanceTests(GameplayRegion.Iro);
+
+public sealed class KroRathenaReferenceConformanceTests() : RathenaReferenceConformanceTests(GameplayRegion.Kro);
+
+// Fixture structure/provenance validation (region-independent).
+public sealed class RathenaReferenceFixtureValidationTests
+{
+    private static string Valid(string evidence = "ReferenceExecuted", string commit = RathenaReferenceFixture.PinnedCommit) => $$$"""
+        {"schema":1,"reference":{"commit":"{{{commit}}}","compiler":"g++","runner":"r","configuration":"c"},
+         "scenarios":[{"id":"X","evidence":"{{{evidence}}}","scope":"s","input":{},"output":{}}]}
+        """;
+    [Fact]
+    public void CommittedFixture_IsValidAndAllReferenceExecuted()
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17"], fixture.Ids.Order());
+        Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
+    }
+    [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());
+    [Fact] public void Parse_RejectsWrongCommit() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid(commit: "abc")));
+    [Fact] public void Parse_RejectsUnknownEvidence() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid("Guessed")));
+    [Fact] public void Parse_RejectsMissingProvenance() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(Valid().Replace("\"compiler\":\"g++\",", "")));
+    [Fact] public void Parse_RejectsNoScenarios() => Assert.Throws<InvalidDataException>(() => RathenaReferenceFixture.Parse(
+        $$"""{"schema":1,"reference":{"commit":"{{RathenaReferenceFixture.PinnedCommit}}","compiler":"g","runner":"r","configuration":"c"},"scenarios":[]}"""));
+    // The generated size-fix table is exactly what the pinned loader built (db/size_fix.yml + Renewal imports).
+    [Fact]
+    public void GeneratedSizeFix_EqualsTheTableLoadedByThePinnedServer()
+    {
+        var loaded = RathenaReferenceFixture.LoadCommitted().Output("VF-06").GetProperty("loaded_size_fix_db");
+        Assert.Equal(24, loaded.GetArrayLength());
+        foreach (var weapon in loaded.EnumerateArray())
+        {
+            var type = (WeaponType)weapon.GetProperty("weapon").GetInt32();
+            var entry = weapon.GetProperty("entry").EnumerateArray().Select(v => v.GetInt32()).ToArray();
+            Assert.Equal(entry, new[] { GeneratedSizeFix.Percent(type, MobSize.Small), GeneratedSizeFix.Percent(type, MobSize.Medium), GeneratedSizeFix.Percent(type, MobSize.Big) });
+        }
     }
 }

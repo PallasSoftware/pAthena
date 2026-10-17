@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Generated.GameData.Quests;
@@ -146,7 +146,7 @@ public sealed class PendingMonsterDamageAttemptTests
         _lastEpoch = epoch;
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules(MinWeaponAtkRoll));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
@@ -378,7 +378,7 @@ public sealed class PendingMonsterDamageAttemptTests
         // exact same calculation AllocatePendingDamageAttemptForTestAsync's own allocation performs
         // internally (unarmed, per that seam's own fixed `null` weapon type).
         var unbuffedStats = session.StatusEffects.Recalculate(WeakFreshNovice());
-        var originalDelayMs = AttackDelayCalculator.AttackDelayMs(unbuffedStats, null, 0);
+        var originalDelayMs = TestGameplayRules.Services().Timing.AttackDelayMs(unbuffedStats, null, 0);
 
         var dispatchCount = 0;
         session.DebugApplyMonsterDamageDispatcher = (_, _) =>
@@ -402,7 +402,7 @@ public sealed class PendingMonsterDamageAttemptTests
         // pass merely because the buff happened to be a no-op.
         session.StatusEffects.Start(CharacterStatusEffectState.StatusIds.IncreaseAgi, durationMilliseconds: 60_000, val1: 10);
         var buffedStats = session.StatusEffects.Recalculate(WeakFreshNovice());
-        var recomputedDelayMsIfBugPresent = AttackDelayCalculator.AttackDelayMs(buffedStats, null, 0);
+        var recomputedDelayMsIfBugPresent = TestGameplayRules.Services().Timing.AttackDelayMs(buffedStats, null, 0);
         Assert.NotEqual(originalDelayMs, recomputedDelayMsIfBugPresent);
 
         // Deterministic scheduler synchronization (CI-observed race fix): RunRepeatAttackLoopAsync's

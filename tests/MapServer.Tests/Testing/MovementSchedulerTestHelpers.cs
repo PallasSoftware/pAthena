@@ -11,6 +11,9 @@ namespace Athena.Net.MapServer.Tests.Testing;
 // advancement, so every such test shares the exact same synchronization.
 internal static class MovementSchedulerTestHelpers
 {
+    // Pinned DEFAULT_WALK_SPEED (mmo.hpp:93): the per-cell walking time of a character without haste.
+    private const int DefaultWalkSpeedMs = 150;
+
     // Deliberately does NOT try to detect "arrival" itself (neither via TcpClient.Available nor via
     // the walk's transient trigger cell): SendSameServerWarpAsync calls TeleportTo(...) - which
     // updates the session's authoritative position to the POST-warp destination - before it awaits
@@ -37,7 +40,7 @@ internal static class MovementSchedulerTestHelpers
         // One atomic clock step covering the entire known route: CharacterMovementState.AdvanceTo
         // stops exactly at the walk's destination regardless of how far past it `now` is, so there
         // is no risk of overshooting into unrelated future scheduling by advancing generously here.
-        var routeDuration = TimeSpan.FromMilliseconds((long)cellCount * MovementSpeedCalculator.DefaultWalkSpeedMs);
+        var routeDuration = TimeSpan.FromMilliseconds((long)cellCount * DefaultWalkSpeedMs);
         await clock.AdvanceAsync(routeDuration);
     }
 }

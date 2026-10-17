@@ -1,6 +1,6 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.World;
 
@@ -56,7 +56,7 @@ public sealed class GeneratedWorldRegistryTests
     public void Runtime_ActivatesOnlyWarpsWhoseSourceMapIsServed()
     {
         var served = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "prontera" };
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()), servedMaps: served);
+        var world = MapServerWorld.Build(TestGameplayRules.Services(), servedMaps: served);
         Assert.Equal(GeneratedWarpLoadProfiles.GetForMap("prontera", WarpLoadProfile.AthenaIroEffective).Count, world.Maps.StaticWarpCount);
         Assert.DoesNotContain(GeneratedWarpRegistry.All.Where(warp => !served.Contains(warp.SourceMap)), warp => world.Maps.TryFindWarp(warp.SourceMap, warp.SourceX, warp.SourceY, out _));
     }

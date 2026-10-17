@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Gameplay.Rules;
+
 namespace Athena.Net.MapServer.World;
 
 // Generic temporary-status foundation. Deliberately not the complete Ragnarok status
@@ -38,7 +40,7 @@ public sealed record CharacterStatusSnapshot(CharacterGameplayState State, Effec
 
 public enum StatusStartOutcome { Started, Replaced, Retained }
 
-public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
+public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatusEffectRules statusRules, IStatRules statRules)
 {
     private readonly Dictionary<ushort, ActiveStatus> _statuses = [];
     private readonly Lock _gate = new();
@@ -81,15 +83,13 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
     public StatusStartOutcome Start(ushort statusId, int durationMilliseconds, int val1, int val2 = 0, int val3 = 0)
     {
         if (durationMilliseconds <= 0) throw new ArgumentOutOfRangeException(nameof(durationMilliseconds), "Status duration must be positive.");
-        if (statusId == StatusIds.Blessing) val2 = val1;
-        else if (statusId == StatusIds.IncreaseAgi) val2 = 2 + val1;
         var expiresAt = _timeProvider.GetUtcNow().AddMilliseconds(durationMilliseconds);
-        var status = new ActiveStatus(statusId, val1, val2, val3, expiresAt);
+        var status = statusRules.CreateStatus(statusId, val1, val2, val3, expiresAt);
         lock (_gate)
         {
             if (_statuses.TryGetValue(statusId, out var active))
             {
-                if (active.ExpiresAt > _timeProvider.GetUtcNow() && active.Val1 > val1) return StatusStartOutcome.Retained;
+                if (statusRules.RetainsActiveOverNewStart(active, _timeProvider.GetUtcNow(), val1)) return StatusStartOutcome.Retained;
                 _statuses[statusId] = status;
                 return StatusStartOutcome.Replaced;
             }
@@ -229,30 +229,8 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider)
         lock (_gate) { return new Dictionary<ushort, ActiveStatus>(_statuses); }
     }
 
-    private static EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup)
-    {
-        var baseStats = Athena.Net.MapServer.Gameplay.Rules.Renewal.StatusCalculator.BasePrimaryStats(baseState);
-        ushort strength = baseStats.Strength, agility = baseStats.Agility, vitality = baseStats.Vitality,
-            intelligence = baseStats.Intelligence, dexterity = baseStats.Dexterity, luck = baseStats.Luck;
-        var moveSpeedHaste = 0;
-        var attackSpeedBonus = 0;
-        var hitBonus = 0;
-
-        if (lookup(StatusIds.Blessing) is { } blessing)
-        {
-            hitBonus = blessing.Val1 * 2; // status_calc_hit, RENEWAL: SC_BLESSING val1 * 2 (status.cpp:7584-7585)
-            strength = (ushort)(strength + blessing.Val2);
-            intelligence = (ushort)(intelligence + blessing.Val2);
-            dexterity = (ushort)(dexterity + blessing.Val2);
-        }
-
-        if (lookup(StatusIds.IncreaseAgi) is { } increaseAgi)
-        {
-            agility = (ushort)(agility + increaseAgi.Val2);
-            moveSpeedHaste = Math.Max(moveSpeedHaste, 25);
-            attackSpeedBonus += increaseAgi.Val1;
-        }
-
-        return new EffectiveCharacterStats(strength, agility, vitality, intelligence, dexterity, luck, moveSpeedHaste, attackSpeedBonus, hitBonus);
-    }
+    // Gameplay (which stats a status changes, by how much) lives in the injected regional rules; this class owns storage,
+    // locking and the consistent snapshot only.
+    private EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup) =>
+        statusRules.ApplyStatuses(statRules.BasePrimaryStats(baseState), lookup);
 }

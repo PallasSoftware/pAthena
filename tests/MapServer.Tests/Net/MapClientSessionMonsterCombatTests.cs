@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Gameplay.Rates;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
@@ -223,7 +223,7 @@ public sealed class MapClientSessionMonsterCombatTests
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules(rollWeaponAtk));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(rollWeaponAtk));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
@@ -1226,7 +1226,7 @@ public sealed class MapClientSessionMonsterCombatTests
         combatState.Register(targetA.Map, epoch, targetA.ActorId, new WorldMonsterIncarnationId(targetA.IncarnationId.Value));
         combatState.Register(targetB.Map, epoch, targetB.ActorId, new WorldMonsterIncarnationId(targetB.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules(MinWeaponAtkRoll));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(targetA.Map, epoch, combatState, registry.AllInstances, fakeWorld);

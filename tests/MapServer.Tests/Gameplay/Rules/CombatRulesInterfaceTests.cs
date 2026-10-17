@@ -1,13 +1,13 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.World;
 
-namespace Athena.Net.MapServer.Tests.Gameplay.Rules.Renewal;
+namespace Athena.Net.MapServer.Tests.Gameplay.Rules;
 
-// Exercises RenewalBasicAttackRules through the public IBasicAttackRules surface -
+// Exercises RenewalBasicAttackRules through the public ICombatRules surface -
 // MonsterCombatCoordinator and every other consumer only ever see this interface,
 // never the concrete Renewal type or its internal WeaponAttackCalculator helper.
-public sealed class RenewalBasicAttackRulesTests
+public abstract class CombatRulesInterfaceTests(GameplayRegion region)
 {
     private static MobDefinition MakeGPoring() => new(
         Id: 2401, AegisName: "G_PORING", Name: "Poring", Level: 1, MaxHp: 55,
@@ -25,19 +25,19 @@ public sealed class RenewalBasicAttackRulesTests
         Source: new("rAthena", "abc", "db/re/item_db_equip.yml", 1));
 
     [Fact]
-    public void RenewalBasicAttackRules_ImplementsIBasicAttackRules()
+    public void Combat_IsTheRegionsOwnConcreteImplementation()
     {
-        IBasicAttackRules rules = new RenewalBasicAttackRules();
-        Assert.IsType<RenewalBasicAttackRules>(rules);
+        ICombatRules rules = TestGameplayRules.Combat(region: region);
+        Assert.Equal(region == GameplayRegion.Iro ? "IroCombatRules" : "KroCombatRules", rules.GetType().Name);
     }
 
     [Fact]
     public void Calculate_NullEquippedWeapon_UsesUnarmedRenewalPath()
     {
-        IBasicAttackRules rules = new RenewalBasicAttackRules();
+        ICombatRules rules = TestGameplayRules.Combat(region: region);
         var context = new BasicAttackContext(FreshNovice(), AttackerBaseLevel: 1, EquippedWeapon: null, MakeGPoring());
 
-        var result = rules.Calculate(context);
+        var result = rules.CalculatePlayerBasicAttack(context);
 
         Assert.False(result.IsMiss);
         Assert.Equal(26u, result.Damage); // 2*batk(14) = 28 pre-DEF, matches WeaponAttackCalculatorTests' own unarmed derivation.
@@ -46,12 +46,12 @@ public sealed class RenewalBasicAttackRulesTests
     [Fact]
     public void Calculate_WithEquippedWeapon_DealsMoreDamageThanUnarmed()
     {
-        IBasicAttackRules rules = new RenewalBasicAttackRules((min, max) => min);
+        ICombatRules rules = TestGameplayRules.Combat((min, max) => min, region: region);
         var unarmedContext = new BasicAttackContext(FreshNovice(), 1, null, MakeGPoring());
         var armedContext = new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring());
 
-        var unarmed = rules.Calculate(unarmedContext);
-        var armed = rules.Calculate(armedContext);
+        var unarmed = rules.CalculatePlayerBasicAttack(unarmedContext);
+        var armed = rules.CalculatePlayerBasicAttack(armedContext);
 
         Assert.True(armed.Damage > unarmed.Damage);
     }
@@ -60,12 +60,16 @@ public sealed class RenewalBasicAttackRulesTests
     public void Calculate_InjectableRoll_IsForwardedToWeaponCalculation()
     {
         int? observedMin = null, observedMax = null;
-        IBasicAttackRules rules = new RenewalBasicAttackRules((min, max) => { observedMin = min; observedMax = max; return min; });
+        ICombatRules rules = TestGameplayRules.Combat((min, max) => { observedMin = min; observedMax = max; return min; }, region: region);
         var context = new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring());
 
-        rules.Calculate(context);
+        rules.CalculatePlayerBasicAttack(context);
 
         Assert.Equal(16, observedMin);
         Assert.Equal(18, observedMax);
     }
 }
+
+public sealed class IroCombatRulesInterfaceTests() : CombatRulesInterfaceTests(GameplayRegion.Iro);
+
+public sealed class KroCombatRulesInterfaceTests() : CombatRulesInterfaceTests(GameplayRegion.Kro);

@@ -5,6 +5,7 @@ using System.Runtime.ExceptionServices;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Quests;
 using Athena.Net.MapServer.Gameplay.Rates;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.GeneratedScripts;
@@ -422,6 +423,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private CharacterInventorySnapshot? _inventory;
     private CharacterEquipmentSnapshot? _equipment;
     private readonly CharacterStatusEffectState _statusEffects;
+    // The deployment's regional gameplay rules (composed once at startup); this session only ever sees the abstractions.
+    private readonly GameplayRuleServices _rules;
     private readonly TimeProvider _timeProvider;
     // Single-slot wake signal (max count 1, not int.MaxValue): StartStatusAsync may Release()
     // several times before the scheduler loop gets a chance to consume a wake, and only one
@@ -448,7 +451,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         : this(sessionId, client, charConnector, world.Maps, monsterProjections: world.MonsterProjections, combat: world.Combat,
                movementPathProvider: world.MovementPathProvider, collisionProvider: world.Collision, rates: world.Rates,
                players: world.Players, playerVisibility: world.PlayerVisibility, visibilityOptions: world.Visibility, distributedWorld: worldRuntime,
-               combatState: world.CombatState, playerAttackFanout: playerAttackFanout, lethalAttackGate: lethalAttackGate, onAuthenticated: onAuthenticated)
+               combatState: world.CombatState, playerAttackFanout: playerAttackFanout, lethalAttackGate: lethalAttackGate, onAuthenticated: onAuthenticated,
+               gameplayRules: world.GameplayRules)
     {
     }
 
@@ -476,7 +480,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterAttackCadenceStore? combatState = null,
         Func<PlayerAttackActionOutcome, long, CancellationToken, Task>? playerAttackFanout = null,
         LethalAttackProjectionGate? lethalAttackGate = null,
-        Action? onAuthenticated = null)
+        Action? onAuthenticated = null,
+        GameplayRuleServices? gameplayRules = null)
     {
         SessionId = sessionId;
         _client = client;
@@ -504,7 +509,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _playerAttackFanout = playerAttackFanout;
         _lethalAttackGate = lethalAttackGate;
         _onAuthenticated = onAuthenticated;
-        _statusEffects = new CharacterStatusEffectState(_timeProvider);
+        _rules = gameplayRules ?? throw new ArgumentNullException(nameof(gameplayRules), "A MapClientSession requires the deployment's gameplay rules.");
+        _statusEffects = new CharacterStatusEffectState(_timeProvider, _rules.StatusEffects, _rules.Stats);
     }
 
     // Test-facing constructor. Still defaults to WorldMapRegistry.Tutorial when no registry is
@@ -541,7 +547,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterAttackCadenceStore? combatState = null,
         Func<PlayerAttackActionOutcome, long, CancellationToken, Task>? playerAttackFanout = null,
         LethalAttackProjectionGate? lethalAttackGate = null,
-        Action? onAuthenticated = null)
+        Action? onAuthenticated = null,
+        GameplayRuleServices? gameplayRules = null)
         : this(
             sessionId,
             client,
@@ -574,7 +581,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             combatState,
             playerAttackFanout,
             lethalAttackGate,
-            onAuthenticated)
+            onAuthenticated,
+            // Test-facing constructor only: fixtures that do not care about the region get the default (iRO, Renewal) rules.
+            gameplayRules ?? GameplayRulesFactory.Create(new GameplayOptions()))
     {
         _iroAuthRequested = iroAuthenticated;
         _authRequested = iroAuthenticated;
@@ -830,8 +839,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _x = authOk.X;
         _y = authOk.Y;
         _gameplayState = new CharacterGameplayStateSession(authOk.AccountId, state, _gameplayStatePersistence, skillRead.Snapshot!, _skillPersistence);
-        if (!Gameplay.Rules.Renewal.JobSupport.IsReferenceVerified(state.JobClass))
-            MapLogger.Warning($"[iRO MAP DEBUG] Job class {state.JobClass} is not reference-verified for Renewal status calculation (divergence={Gameplay.Rules.Renewal.JobSupport.KnownDivergence(state.JobClass)}); derived stats/max HP/SP may differ from rAthena.");
+        if (!JobSupport.IsReferenceVerified(state.JobClass))
+            MapLogger.Warning($"[iRO MAP DEBUG] Job class {state.JobClass} is not reference-verified for Renewal status calculation (divergence={JobSupport.KnownDivergence(state.JobClass)}); derived stats/max HP/SP may differ from rAthena.");
 
         // Invariant: an authenticated session always has gameplay state AND inventory state
         // loaded. A failed/unavailable inventory read must never let a session become
@@ -1666,7 +1675,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private int CurrentCellDurationMs()
     {
         var haste = _gameplayState is null ? 0 : CaptureStatusSnapshot().Effective.MoveSpeedHaste;
-        return MovementSpeedCalculator.CellDurationMs(haste);
+        return _rules.Timing.WalkCellDurationMs(haste);
     }
 
     // Resolves a requested destination into: the actual movement target (truncated to the first
@@ -2586,7 +2595,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     {
         var dispatcher = DebugApplyMonsterDamageDispatcher ?? RealApplyMonsterDamageDispatcher;
 
-        var command = new WorldMonsterDamageCommand(life, CharacterId, _presenceId ?? Guid.Empty, sequence, damage, acquireEngagement, AttackDelayCalculator.AttackMotionMs(attackDelayMs));
+        var command = new WorldMonsterDamageCommand(life, CharacterId, _presenceId ?? Guid.Empty, sequence, damage, acquireEngagement, _rules.Timing.AttackMotionMs(attackDelayMs));
         WorldMonsterDamageResult result;
         // DEBUG-LOG-ONLY: correlate every deeper line of this hit (gameplay mutate, CharServer update)
         // with its AttackSequence, and time the World damage RPC on its own.
@@ -2696,7 +2705,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 }
 
                 var damageDealt = result.HpBefore - result.HpAfter;
-                var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: AttackDelayCalculator.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: false);
+                var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: _rules.Timing.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: false);
                 var nonLethalWritesStartedAt = CombatTiming.Now();
                 await ProjectPlayerAttackActionAsync(attackAction, result.AttackActionSequence, cancellationToken);
                 var nonLethalDamageWrittenAt = CombatTiming.Now();
@@ -2796,7 +2805,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         try
         {
             var damageDealt = result.HpBefore - result.HpAfter;
-            var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: AttackDelayCalculator.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: true);
+            var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: _rules.Timing.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: true);
             var lethalDamageWriteStartedAt = CombatTiming.Now();
             if (DebugBeforeLethalActionFanoutAsync is { } beforeActionFanoutHook) await beforeActionFanoutHook(); // Test-only seam - see that field's own doc comment. Always null in production.
             await ProjectPlayerAttackActionAsync(attackAction, result.AttackActionSequence, cancellationToken);
@@ -2817,7 +2826,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
             var (ratedBaseExp, ratedJobExp) = ExperienceRewardService.ResolveReward(_rates, targetSnapshot.StaticMob.BaseExp, targetSnapshot.StaticMob.JobExp, ExperienceSource.Monster);
             var progressionPersistStartedAt = CombatTiming.Now();
-            var progression = await new CharacterProgressionService(_gameplayState!).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken);
+            var progression = await new CharacterProgressionService(_gameplayState!, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken);
             progressionPersistMs = CombatTiming.ElapsedMsSince(progressionPersistStartedAt);
             if (progression is null)
             {
@@ -2974,7 +2983,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             targetSnapshot = new WorldMonsterActorView(instance);
 
         var delaySnapshot = CaptureStatusSnapshot();
-        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(delaySnapshot.Effective, null, delaySnapshot.State.JobClass);
+        var attackDelayMs = _rules.Timing.AttackDelayMs(delaySnapshot.Effective, null, delaySnapshot.State.JobClass);
         Func<uint, CharacterQuestStatus> questStatusSnapshot = _ => CharacterQuestStatus.Absent;
 
         if (_repeatAttack is { } existing)
@@ -3288,7 +3297,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var effectiveStats = statusSnapshot.Effective;
         var candidate = _combat.CalculateAttack(target, effectiveStats, statusSnapshot.State.BaseLevel, equippedWeapon);
         var acquireEngagement = target.StaticMob.Mode.HasFlag(MobMode.CanAttack);
-        var attackDelayMs = AttackDelayCalculator.AttackDelayMs(effectiveStats, equippedWeapon?.WeaponType, statusSnapshot.State.JobClass);
+        var attackDelayMs = _rules.Timing.AttackDelayMs(effectiveStats, equippedWeapon?.WeaponType, statusSnapshot.State.JobClass);
 
         // Resolve the quest-status snapshot BEFORE anything below runs (§4b) - must succeed before
         // _pendingDamageAttempt is published, BeginInFlight runs, or ApplyMonsterDamageAsync is
@@ -3360,12 +3369,12 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             var isWalking = _movement?.IsMoving ?? false;
             // Hard DEF comes from the equipped armor rows; an equipped item this pass cannot account for makes the
             // player an unresolvable target (mirrors the unresolved-weapon abort) rather than silently wearing "no DEF".
-            if (_inventory is null || !EquipmentStats.TryFromInventory(_inventory, GeneratedItems.ById, out var equipmentStats))
+            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats))
             {
                 MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; player is not a valid combat target.");
                 return null;
             }
-                        return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, Athena.Net.MapServer.Gameplay.Rules.Renewal.DerivedStatCalculator.Calculate(snapshot, equipmentStats).SoftDefense, equipmentStats.HardDefense);
+                        return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, _rules.Stats.CalculateDerivedStats(snapshot, equipmentStats).SoftDefense, equipmentStats.HardDefense);
         }
         finally { _movementGate.Release(); }
     }
@@ -3720,7 +3729,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         MapLogger.Info($"[iRO STAT] Received stat-up request charId={_charId} stat={stat} amount={request.Amount} currentStatusPoints={gameplayState.State.StatPoints}");
 
-        var result = await gameplayState.IncreaseStatAsync(stat, request.Amount, cancellationToken);
+        var result = await gameplayState.IncreaseStatAsync(stat, request.Amount, _rules.Stats, cancellationToken);
         if (result is null)
         {
             MapLogger.Info($"[iRO STAT] Rejected stat-up charId={_charId} stat={stat}");
@@ -4317,7 +4326,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     {
         var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
         var (ratedBaseExp, ratedJobExp) = ExperienceRewardService.ResolveReward(_rates, baseExperience, jobExperience, ExperienceSource.Script);
-        var result = await new CharacterProgressionService(state).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken)
+        var result = await new CharacterProgressionService(state, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken)
             ?? throw new InvalidOperationException("Character progression persistence failed.");
         foreach (var packet in IroCharacterProgressionPackets.Build(_accountId, result)) await WriteAsync(packet, cancellationToken);
     }

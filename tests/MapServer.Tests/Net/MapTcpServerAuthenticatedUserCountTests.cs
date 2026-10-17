@@ -1,9 +1,9 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 
@@ -23,8 +23,8 @@ public sealed class MapTcpServerAuthenticatedUserCountTests
     private static MapConfigStore ConfigStore() => new(new MapConfig(), "unused.conf");
 
     private static MapServerWorld MakeWorld() => new(
-        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules()),
-        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore());
+        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     private static MapTcpServer MakeServer() => new(ConfigStore(), new CharServerConnector(ConfigStore()), MakeWorld());
 

@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 
@@ -5,6 +7,8 @@ namespace Athena.Net.MapServer.Tests.World;
 
 public sealed class CharacterEquipmentMutationServiceTests
 {
+    private static readonly GameplayRuleServices Rules = TestGameplayRules.Services();
+
     private const uint AccountId = 7;
     private const uint CharId = 9;
 
@@ -165,11 +169,11 @@ public sealed class CharacterEquipmentMutationServiceTests
         var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2301, 1, 0, true, 0, 0, 0)]);
         var service = new CharacterEquipmentMutationService(AccountId, CharId, new RecordingPersistence());
 
-        Assert.True(EquipmentStats.TryFromInventory(inventory, Items, out var before));
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, Items, out var before));
         var (_, equipped) = await service.EquipAsync(inventory, 0, requestedPosition: 0x000010, Items, CancellationToken.None);
-        Assert.True(EquipmentStats.TryFromInventory(equipped!, Items, out var wearing));
+        Assert.True(Rules.Stats.TryResolveEquipment(equipped!, Items, out var wearing));
         var (_, unequipped) = await service.UnequipAsync(equipped!, 0, CancellationToken.None);
-        Assert.True(EquipmentStats.TryFromInventory(unequipped!, Items, out var after));
+        Assert.True(Rules.Stats.TryResolveEquipment(unequipped!, Items, out var after));
 
         Assert.Equal((0, 10, 0), (before.HardDefense, wearing.HardDefense, after.HardDefense));
     }

@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
@@ -5,7 +6,6 @@ using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -49,7 +49,7 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
     private static MapServerWorld MakeWorld(string mapId, int count = 1, int respawnDelayMs = 5000)
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         return new MapServerWorld(
             WorldMapRegistry.Tutorial,
             [PoringSpawn(mapId, count, respawnDelayMs)],
@@ -57,7 +57,7 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
             EmptyMapCollisionProvider.Instance,
             new UnverifiedGridLineMovementPathProvider(),
             new MonsterFeedProjectionRegistry(),
-            combatState);
+            combatState, rules: TestGameplayRules.Services());
     }
 
     private static async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, TcpListener Listener)> ConnectSessionAsync(

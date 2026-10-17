@@ -1,7 +1,7 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Reflection;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
@@ -49,9 +49,9 @@ public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests
     private CrashableReplica MakeCrashableReplica(string mapId)
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         var world = new MapServerWorld(WorldMapRegistry.Tutorial, [PoringSpawn(mapId)], combat, EmptyMapCollisionProvider.Instance,
-            new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), combatState);
+            new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), combatState, rules: TestGameplayRules.Services());
         var orleans = new OrleansWorldRuntime(_cluster.Client, Resolver());
         var proxy = DispatchProxy.Create<IWorldRuntime, CrashableRuntime>();
         var control = (CrashableRuntime)(object)proxy;

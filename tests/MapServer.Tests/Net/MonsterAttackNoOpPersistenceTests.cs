@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
@@ -65,8 +65,8 @@ public sealed class MonsterAttackNoOpPersistenceTests
     }
 
     private static MapServerWorld MakeWorld() => new(
-        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules()),
-        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore());
+        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     // Boots a real authenticated, World-visible session on `MapId` at (100,100) backed by the spy.
     private static async Task<(MapClientSession Session, TcpClient Client, NetworkStream Stream, VersionBumpingPersistence Persistence, MapServerWorld World)> CreateSessionAsync(

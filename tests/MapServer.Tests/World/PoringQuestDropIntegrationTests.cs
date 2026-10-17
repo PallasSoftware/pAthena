@@ -1,4 +1,4 @@
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Generated.GameData.Quests;
@@ -137,7 +137,7 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
         var inventoryPersistence = new FakeInventoryPersistence();
         var inventorySession = new CharacterInventorySession(AccountId, CharId, inventoryPersistence);
         var questPersistence = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Active);
@@ -213,7 +213,7 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.Combat());
         var noQuests = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Absent);
         var questStatus = await BuildQuestStatusLookupAsync(noQuests, GeneratedQuestDrops.All.Select(rule => rule.QuestId));
 
@@ -246,7 +246,7 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.Combat());
         var inventorySession = new CharacterInventorySession(AccountId, CharId, new FakeInventoryPersistence());
         var questPersistence = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Active);
         var questStatus = await BuildQuestStatusLookupAsync(questPersistence, GeneratedQuestDrops.All.Select(rule => rule.QuestId));

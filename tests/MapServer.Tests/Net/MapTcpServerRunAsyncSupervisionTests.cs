@@ -1,10 +1,10 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
@@ -176,7 +176,7 @@ public sealed class MapTcpServerRunAsyncSupervisionTests
     public async Task DeterministicMonsterLoopFailure_RunAsyncFaultsPromptly_DoesNotSitWaitingForAnotherAccept()
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         var world = new MapServerWorld(
             WorldMapRegistry.Tutorial,
             [],
@@ -184,7 +184,7 @@ public sealed class MapTcpServerRunAsyncSupervisionTests
             EmptyMapCollisionProvider.Instance,
             new UnverifiedGridLineMovementPathProvider(),
             new MonsterFeedProjectionRegistry(),
-            combatState);
+            combatState, rules: TestGameplayRules.Services());
         var runtime = new ThrowsFromValidateAttackWindowRuntime();
         var server = new MapTcpServer(ConfigStore(), new CharServerConnector(ConfigStore()), world, runtime);
 

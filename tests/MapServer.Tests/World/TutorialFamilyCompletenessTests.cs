@@ -1,5 +1,5 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.World;
 
@@ -22,7 +22,7 @@ public sealed class TutorialFamilyCompletenessTests
     [Fact]
     public void EveryStartPointFamilyMember_HasNpcWarpNavigationAndMobCoverage()
     {
-        var world = MapServerWorld.Build(new GameplayRuleServices(new RenewalBasicAttackRules()), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
+        var world = MapServerWorld.Build(TestGameplayRules.Services(), servedMaps: MapServerHostingScope.ServedMaps, mobSpawnMaps: MapServerHostingScope.MobSpawnMaps);
         var registry = WorldMapRegistry.Tutorial;
 
         var missing = new List<string>();

@@ -1,7 +1,7 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
@@ -23,7 +23,7 @@ public sealed class MapTcpServerMonsterTickHardeningTests
     private static MapServerWorld MakeWorld()
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         return new MapServerWorld(
             WorldMapRegistry.Tutorial,
             [],
@@ -31,7 +31,7 @@ public sealed class MapTcpServerMonsterTickHardeningTests
             EmptyMapCollisionProvider.Instance,
             new UnverifiedGridLineMovementPathProvider(),
             new MonsterFeedProjectionRegistry(),
-            combatState);
+            combatState, rules: TestGameplayRules.Services());
     }
 
     // A connected-but-not-yet-authenticated session (the internal test-facing constructor's default

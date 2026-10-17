@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -107,7 +107,7 @@ public sealed class MapClientSessionLethalDeathProjectionRaceTests
         var combatState = new MonsterAttackCadenceStore();
         var incarnation = new WorldMonsterIncarnationId(target.IncarnationId.Value);
         combatState.Register(target.Map, epoch, target.ActorId, incarnation);
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         // The projection's own snapshot HP (from registry.AllInstances) may not match the scenario's
         // requested maxHp (tests default to a guaranteed-lethal 1 HP) - explicitly (re)seed the fake's

@@ -1,10 +1,10 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -70,10 +70,10 @@ public sealed class PlayerAttackActionFanoutTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
         var fakeWorld = new FakeCombatWorldRuntime();
         var projections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
-        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], combat, EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), projections, combatState);
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], combat, EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), projections, combatState, rules: TestGameplayRules.Services());
         var server = new MapTcpServer(ConfigStore(), new CharServerConnector(ConfigStore()), world, fakeWorld);
         return new Fixture(server, projections, combat, combatState, fakeWorld, target, epoch, world.Players, world.PlayerVisibility);
     }

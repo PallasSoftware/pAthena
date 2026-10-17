@@ -1,5 +1,5 @@
 using System.Linq;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
@@ -31,6 +31,7 @@ namespace Athena.Net.MapServer.Net;
 // MapServer only decides Attack/Wait cadence on top of an already-InAttackRange projection".
 internal sealed class MonsterAttackCadenceExecutor(
     MonsterFeedProjectionRegistry projections, MonsterAttackCadenceStore combatState, IWorldRuntime worldRuntime, TimeProvider timeProvider,
+    ICombatRules combatRules, ITimingRules timingRules,
     Func<Task>? beforeFinalAttackRevalidation = null,
     LocalMonsterAttackEchoes? localEchoes = null)
 {
@@ -128,7 +129,7 @@ internal sealed class MonsterAttackCadenceExecutor(
         if (freshSnapshot is not { IsAlive: true } combatSnapshot) return null;
 
         var staticMob = Athena.Net.MapServer.Generated.GameData.Mobs.GeneratedMobRegistry.Get(monster.MobId);
-        var result = MobBasicAttackCalculator.Calculate(staticMob, combatSnapshot);
+        var result = combatRules.CalculateMonsterBasicAttack(staticMob, combatSnapshot);
 
         (uint HpAfter, bool HpChanged)? applied;
         try
@@ -174,7 +175,7 @@ internal sealed class MonsterAttackCadenceExecutor(
         {
             var published = await worldRuntime.PublishMonsterAttackActionAsync(
                 new WorldMonsterAttackActionCommand(life, target.CharacterId, target.PresenceId, actionId,
-                    result.Damage, SourceAttackMotion: (uint)staticMob.AttackMotion, TargetDamageMotion: (uint)PlayerDamageMotionCalculator.Calculate(combatSnapshot.Agility),
+                    result.Damage, SourceAttackMotion: (uint)staticMob.AttackMotion, TargetDamageMotion: (uint)timingRules.PlayerDamageMotionMs(combatSnapshot.Agility),
                     Lethal: hpOutcome.HpAfter == 0),
                 cancellationToken);
             // Only a Published entry will ever come back through the feed; anything else leaves nothing to skip.
@@ -187,7 +188,7 @@ internal sealed class MonsterAttackCadenceExecutor(
         // srcSpeed/dstSpeed: pinned clif_damage's own attacker-amotion/target-dmotion pair - the
         // mob's own DamageMotion is NEVER used here (that field serves the opposite direction).
         var srcSpeed = (uint)staticMob.AttackMotion;
-        var dstSpeed = (uint)PlayerDamageMotionCalculator.Calculate(combatSnapshot.Agility);
+        var dstSpeed = (uint)timingRules.PlayerDamageMotionMs(combatSnapshot.Agility);
         // Live-reproduction fix: MonsterAttackActionOutcome.VictimAccountId is the wire-facing
         // ZC_NOTIFY_ACT3 dstId (see that record's own doc comment) - the client's runtime
         // actor/GID for the LOCAL PLAYER is its AccountId, never its CharacterId (MapClientSession.

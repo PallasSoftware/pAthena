@@ -1,8 +1,8 @@
+using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -96,7 +96,7 @@ public sealed class MapClientSessionTransientWorldRpcFailureTests
         var combatState = new MonsterAttackCadenceStore();
         var incarnation = new WorldMonsterIncarnationId(target.IncarnationId.Value);
         combatState.Register(target.Map, epoch, target.ActorId, incarnation);
-        var combat = new MonsterCombatCoordinator(questDrops, new RenewalBasicAttackRules());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         // Explicitly (re)seed the fake's own ledger at the CALLER's requested maxHp - the projection's
         // own snapshot HP (from registry.AllInstances, G_Poring's real MaxHp) may not match what this

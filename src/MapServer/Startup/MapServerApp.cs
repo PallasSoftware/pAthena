@@ -77,8 +77,8 @@ public static class MapServerApp
         MapLogger.Status(
             $"Gameplay ruleset: {gameplayOptions.RuleSet}, region: {gameplayOptions.Region}");
 
-        var gameplayRules =
-            GameplayRulesFactory.Create(gameplayOptions);
+        // The regional rule implementations are registered once with the host's service collection below
+        // (AddGameplayRules); an unsupported ruleset/region fails there, before anything serves traffic.
 
         //
         // Collision data
@@ -156,6 +156,8 @@ public static class MapServerApp
         var hostBuilder =
             Host.CreateApplicationBuilder(args);
 
+        hostBuilder.Services.AddGameplayRules(gameplayOptions);
+
         //
         // Orleans only accepts IP literals as static gateway addresses; resolve a Service name such as
         // "worldserver:30000" (Kubernetes, Docker networks) to its IPv4 address before the client is built.
@@ -214,6 +216,9 @@ public static class MapServerApp
         var clusterClient =
             orleansHost.Services
                 .GetRequiredService<IClusterClient>();
+
+        var gameplayRules =
+            orleansHost.Services.GetRequiredService<GameplayRuleServices>();
 
         var worldRuntime =
             new OrleansWorldRuntime(

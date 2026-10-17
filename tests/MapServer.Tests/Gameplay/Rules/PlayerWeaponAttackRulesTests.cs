@@ -1,10 +1,13 @@
-using Athena.Net.MapServer.Gameplay.Rules.Renewal;
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.World;
 
-namespace Athena.Net.MapServer.Tests.Gameplay.Rules.Renewal;
+namespace Athena.Net.MapServer.Tests.Gameplay.Rules;
 
-public sealed class WeaponAttackCalculatorTests
+// Player weapon damage through ICombatRules, executed against each region's own concrete implementation.
+public abstract class PlayerWeaponAttackRulesTests(GameplayRegion region)
 {
+    private ICombatRules Combat(Func<int, int, int>? rollWeaponAtk = null) => TestGameplayRules.Combat(rollWeaponAtk, region: region);
+
     private static MobDefinition MakeGPoring() => new(
         Id: 2401, AegisName: "G_PORING", Name: "Poring", Level: 1, MaxHp: 55,
         Attack: 1, Attack2: 1, Defense: 2, MagicDefense: 5,
@@ -30,8 +33,7 @@ public sealed class WeaponAttackCalculatorTests
         // atkmin=(int)(17-0.85+0.765)=(int)16.915=16, atkmax=(int)(17+0.85+0.765)=(int)18.615=18
         // Pinning the roll to atkmin(16): pre-def damage = 28+16 = 44
         // def1=2, def2=floor((1+1)/2)=1: 44*4002/4020 - 1 = floor(43.82...) - 1 = 43 - 1 = 42
-        var result = WeaponAttackCalculator.Calculate(
-            FreshNovice(), attackerBaseLevel: 1, MakeKnife(), MakeGPoring(), (min, max) => min);
+        var result = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring()));
 
         Assert.False(result.IsMiss);
         Assert.Equal(42u, result.Damage);
@@ -42,8 +44,7 @@ public sealed class WeaponAttackCalculatorTests
     {
         // Same as above but pinned to atkmax(18): pre-def damage = 28+18 = 46
         // 46*4002/4020 - 1 = floor(45.81...) - 1 = 45 - 1 = 44
-        var result = WeaponAttackCalculator.Calculate(
-            FreshNovice(), attackerBaseLevel: 1, MakeKnife(), MakeGPoring(), (min, max) => max);
+        var result = Combat(rollWeaponAtk: (min, max) => max).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring()));
 
         Assert.False(result.IsMiss);
         Assert.Equal(44u, result.Damage);
@@ -53,8 +54,7 @@ public sealed class WeaponAttackCalculatorTests
     public void Calculate_WithWeapon_RollIsClampedToComputedAtkMinAtkMaxRange()
     {
         int? observedMin = null, observedMax = null;
-        WeaponAttackCalculator.Calculate(
-            FreshNovice(), 1, MakeKnife(), MakeGPoring(), (min, max) => { observedMin = min; observedMax = max; return min; });
+        Combat(rollWeaponAtk: (min, max) => { observedMin = min; observedMax = max; return min; }).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring()));
 
         Assert.Equal(16, observedMin);
         Assert.Equal(18, observedMax);
@@ -63,8 +63,8 @@ public sealed class WeaponAttackCalculatorTests
     [Fact]
     public void Calculate_WithWeapon_DealsMoreDamageThanUnarmed_SameStats()
     {
-        var unarmed = WeaponAttackCalculator.Calculate(FreshNovice(), 1, null, MakeGPoring(), (min, max) => min);
-        var armed = WeaponAttackCalculator.Calculate(FreshNovice(), 1, MakeKnife(), MakeGPoring(), (min, max) => min);
+        var unarmed = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, null, MakeGPoring()));
+        var armed = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), MakeGPoring()));
 
         Assert.True(armed.Damage > unarmed.Damage);
     }
@@ -76,8 +76,8 @@ public sealed class WeaponAttackCalculatorTests
         var lv4 = lv1 with { WeaponLevel = 4 };
 
         int? maxLv1 = null, maxLv4 = null;
-        WeaponAttackCalculator.Calculate(FreshNovice(), 1, lv1, MakeGPoring(), (min, max) => { maxLv1 = max; return min; });
-        WeaponAttackCalculator.Calculate(FreshNovice(), 1, lv4, MakeGPoring(), (min, max) => { maxLv4 = max; return min; });
+        Combat(rollWeaponAtk: (min, max) => { maxLv1 = max; return min; }).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, lv1, MakeGPoring()));
+        Combat(rollWeaponAtk: (min, max) => { maxLv4 = max; return min; }).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, lv4, MakeGPoring()));
 
         Assert.True(maxLv4 > maxLv1);
     }
@@ -88,8 +88,8 @@ public sealed class WeaponAttackCalculatorTests
         var weak = MakeGPoring();
         var tanky = weak with { Defense = 100 };
 
-        var damageVsWeak = WeaponAttackCalculator.Calculate(FreshNovice(), 1, MakeKnife(), weak, (min, max) => min);
-        var damageVsTanky = WeaponAttackCalculator.Calculate(FreshNovice(), 1, MakeKnife(), tanky, (min, max) => min);
+        var damageVsWeak = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), weak));
+        var damageVsTanky = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, MakeKnife(), tanky));
 
         Assert.True(damageVsWeak.Damage > damageVsTanky.Damage);
     }
@@ -97,8 +97,7 @@ public sealed class WeaponAttackCalculatorTests
     [Fact]
     public void Calculate_WithWeapon_ExtremeDefenseResultsInMiss_NotNegativeDamage()
     {
-        var result = WeaponAttackCalculator.Calculate(
-            new(1, 1, 1, 1, 1, 1, 0, 0), 1, MakeKnife(), MakeGPoring() with { Defense = 50000 }, (min, max) => min);
+        var result = Combat(rollWeaponAtk: (min, max) => min).CalculatePlayerBasicAttack(new BasicAttackContext(new(1, 1, 1, 1, 1, 1, 0, 0), 1, MakeKnife(), MakeGPoring() with { Defense = 50000 }));
 
         Assert.True(result.IsMiss);
         Assert.Equal(0u, result.Damage);
@@ -113,7 +112,7 @@ public sealed class WeaponAttackCalculatorTests
     {
         // batk = 14 (see the armed test above for the derivation). statusAtk = 2*14 = 28.
         // def1=2, def2=1: 28*4002/4020 - 1 = floor(27.88...) - 1 = 27 - 1 = 26.
-        var result = WeaponAttackCalculator.Calculate(FreshNovice(), attackerBaseLevel: 1, null, MakeGPoring());
+        var result = Combat().CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(), 1, null, MakeGPoring()));
 
         Assert.False(result.IsMiss);
         Assert.Equal(26u, result.Damage);
@@ -122,8 +121,8 @@ public sealed class WeaponAttackCalculatorTests
     [Fact]
     public void Calculate_NoWeapon_HigherStrIncreasesDamage()
     {
-        var low = WeaponAttackCalculator.Calculate(FreshNovice(str: 9), 1, null, MakeGPoring());
-        var high = WeaponAttackCalculator.Calculate(FreshNovice(str: 30), 1, null, MakeGPoring());
+        var low = Combat().CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(str: 9), 1, null, MakeGPoring()));
+        var high = Combat().CalculatePlayerBasicAttack(new BasicAttackContext(FreshNovice(str: 30), 1, null, MakeGPoring()));
 
         Assert.True(high.Damage > low.Damage);
     }
@@ -131,7 +130,7 @@ public sealed class WeaponAttackCalculatorTests
     [Fact]
     public void Calculate_NoWeapon_VeryLowStatsBelowMonsterSoftDefense_ResultsInMiss()
     {
-        var result = WeaponAttackCalculator.Calculate(new(1, 1, 1, 1, 1, 1, 0, 0), 1, null, MakeGPoring());
+        var result = Combat().CalculatePlayerBasicAttack(new BasicAttackContext(new(1, 1, 1, 1, 1, 1, 0, 0), 1, null, MakeGPoring()));
 
         Assert.True(result.IsMiss);
         Assert.Equal(0u, result.Damage);
@@ -140,9 +139,13 @@ public sealed class WeaponAttackCalculatorTests
     [Fact]
     public void Calculate_NoWeapon_DamageNeverNegative()
     {
-        var result = WeaponAttackCalculator.Calculate(new(1, 1, 1, 1, 1, 1, 0, 0), 1, null, MakeGPoring() with { Defense = 5000 });
+        var result = Combat().CalculatePlayerBasicAttack(new BasicAttackContext(new(1, 1, 1, 1, 1, 1, 0, 0), 1, null, MakeGPoring() with { Defense = 5000 }));
 
         Assert.Equal(0u, result.Damage);
         Assert.True(result.IsMiss);
     }
 }
+
+public sealed class IroPlayerWeaponAttackRulesTests() : PlayerWeaponAttackRulesTests(GameplayRegion.Iro);
+
+public sealed class KroPlayerWeaponAttackRulesTests() : PlayerWeaponAttackRulesTests(GameplayRegion.Kro);

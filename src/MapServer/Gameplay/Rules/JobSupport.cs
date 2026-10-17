@@ -1,6 +1,6 @@
 using Athena.Net.MapServer.Generated.Jobs;
 
-namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
+namespace Athena.Net.MapServer.Gameplay.Rules;
 
 // Which job classes the Renewal status calculation is VERIFIED for. A job is listed only when fixture VF-16 (real
 // status_calc_pc runs for 44 classes at two level pairs: six stats, derived stats, max HP/SP) is reproduced exactly by
