@@ -220,6 +220,16 @@ public static class MapServerApp
         var gameplayRules =
             orleansHost.Services.GetRequiredService<GameplayRuleServices>();
 
+        //
+        // One Orleans world serves one gameplay profile: refuse to start next to MapServers that run a different
+        // region/ruleset (the first MapServer to register fixes the profile).
+        //
+        await WorldGameplayProfileGuard.EnsureCompatibleAsync(
+            profile => clusterClient
+                .GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey)
+                .RegisterAsync(profile),
+            gameplayOptions);
+
         var worldRuntime =
             new OrleansWorldRuntime(
                 clusterClient,

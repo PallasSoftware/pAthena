@@ -1,6 +1,8 @@
 # Athena.NET agent instructions
 
-Athena.NET is an **iRO-only** private server implementation in C#. The supported client target is the current unmodified official International Ragnarok Online (iRO) client. Generic kRO/rAthena client compatibility is not a project goal.
+Athena.NET is an **iRO-only** private server implementation in C#. The supported client target is the current unmodified official International Ragnarok Online (iRO) client. kRO client-protocol support is planned future work (not implemented); generic rAthena protocol parity is not a project goal.
+
+Gameplay regions: the **client protocol** is iRO-only today (PACKETVER 20220406), but the **gameplay** architecture is regional - `gameplay_region` (iRO default | kRO) selects fully separate `Iro*`/`Kro*` rule implementations under `src/MapServer/Gameplay/Rules/` (see `ai/map-server.md`). Both currently follow the pinned rAthena Renewal source; official kRO gameplay and protocol compatibility are not verified. Never branch on region inside gameplay code, never share a concrete algorithm between regions, and keep ruleset, region and client protocol as three separate concepts.
 
 For every request:
 1. Read `ai/README.md` first.
