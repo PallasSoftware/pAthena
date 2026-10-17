@@ -1433,7 +1433,10 @@ public sealed class MapTcpServerMonsterAuthorityIntegrationTests : IAsyncLifetim
     public async Task KillThroughRealAttack_BystanderPresent_RespawnContinuity_StaleIncarnationRejected()
     {
         var mapId = "izlude";
-        var world = MakeWorld(mapId, respawnDelayMs: 200);
+        // The fresh attack one-shots the new incarnation too, so the observable "hit" is that incarnation's Dead snapshot, which lasts
+        // exactly RespawnDelay before a third incarnation replaces it. Probe-verified: a poll landing after a 200 ms delay misses it and
+        // times out. The delay must therefore comfortably exceed the 100 ms poll interval plus CI scheduling jitter.
+        var world = MakeWorld(mapId, respawnDelayMs: 3000);
         var worldRuntime = new OrleansWorldRuntime(_cluster.Client, Resolver());
         var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused.conf"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), world, worldRuntime);
 
