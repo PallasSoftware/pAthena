@@ -43,3 +43,10 @@ Graphify is an optional discovery accelerator, not evidence. Generated graph out
 - A missing graph node or edge is never proof that source behavior is absent. Read the source.
 - Rebuilding (`graphify update .`) is a local, optional step when you want a fresher graph; it is not required after edits.
 - Read `GRAPH_REPORT.md` only for broad architecture review.
+
+## Bounded debugging
+
+- Maximum 2 fix attempts or 3 test reproductions per issue.
+- Maximum 15 minutes investigating one issue. No stress-test loops without approval.
+- If unresolved, document the findings and continue independent work. Never weaken or skip tests.
+- Run focused tests during development and the full affected suite once per completed stage. Required CI failures still block merging.
