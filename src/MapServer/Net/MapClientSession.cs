@@ -8,6 +8,7 @@ using Athena.Net.MapServer.Gameplay.Rates;
 using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
 using Athena.Net.MapServer.World.GeneratedScripts;
 using Athena.Net.Shared.MapIdentity;
 using Athena.Net.World.Contracts;
@@ -49,8 +50,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private readonly ICharacterPositionPersistence _positionPersistence;
     private readonly ICharacterQuestPersistence _questPersistence;
     private readonly ICharacterGameplayStatePersistence _gameplayStatePersistence;
-    private readonly ICharacterInventoryListPersistence _inventoryListPersistence;
-    private readonly ICharacterInventoryPersistence _inventoryPersistence;
+    private readonly ICharacterInventoryOperations _inventoryOperations;
     private readonly ICharacterSkillPersistence _skillPersistence;
     private readonly WorldMapRegistry _worldMapRegistry;
     // Step 6 cutover: the World-authoritative monster projection (position/movement/lifecycle/
@@ -420,7 +420,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private CharacterGameplayStateSession? _gameplayState;
     // The one authoritative CharInventory read (see CharacterInventorySnapshot's own doc
     // comment). Equipment is derived from this - never a second independent CharServer read.
-    private CharacterInventorySnapshot? _inventory;
+    private CharacterInventoryService? _inventoryService;
+    private CharacterInventorySnapshot? _inventory => _inventoryService?.Snapshot;
     private CharacterEquipmentSnapshot? _equipment;
     private readonly CharacterStatusEffectState _statusEffects;
     // The deployment's regional gameplay rules (composed once at startup); this session only ever sees the abstractions.
@@ -468,8 +469,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterFeedProjectionRegistry? monsterProjections = null,
         IMovementPathProvider? movementPathProvider = null,
         MonsterCombatCoordinator? combat = null,
-        ICharacterInventoryPersistence? inventoryPersistence = null,
-        ICharacterInventoryListPersistence? inventoryListPersistence = null,
+        ICharacterInventoryOperations? inventoryOperations = null,
         ICharacterSkillPersistence? skillPersistence = null,
         IMapCollisionProvider? collisionProvider = null,
         GameplayRateOptions? rates = null,
@@ -490,8 +490,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _positionPersistence = positionPersistence ?? charConnector;
         _questPersistence = questPersistence ?? charConnector;
         _gameplayStatePersistence = gameplayStatePersistence ?? charConnector;
-        _inventoryPersistence = inventoryPersistence ?? charConnector;
-        _inventoryListPersistence = inventoryListPersistence ?? charConnector;
+        _inventoryOperations = inventoryOperations ?? charConnector;
         _skillPersistence = skillPersistence ?? charConnector;
         _worldMapRegistry = worldMapRegistry;
         _monsterProjections = monsterProjections;
@@ -535,8 +534,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterFeedProjectionRegistry? monsterProjections = null,
         IMovementPathProvider? movementPathProvider = null,
         MonsterCombatCoordinator? combat = null,
-        ICharacterInventoryPersistence? inventoryPersistence = null,
-        ICharacterInventoryListPersistence? inventoryListPersistence = null,
+        ICharacterInventoryOperations? inventoryOperations = null,
         ICharacterSkillPersistence? skillPersistence = null,
         IMapCollisionProvider? collisionProvider = null,
         GameplayRateOptions? rates = null,
@@ -561,15 +559,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             monsterProjections,
             movementPathProvider,
             combat,
-            inventoryPersistence,
             // Defaults to a successful "confirmed empty inventory" read, NOT the production
             // default (falling through to charConnector, a disconnected CharServerConnector in
             // tests, whose GetInventoryAsync always returns Failed() and would make
             // CompleteIroAuthenticationAsync fail auth for every test that doesn't care about
             // inventory/equipment). Tests that need to exercise specific inventory rows or a
-            // failed read must pass inventoryListPersistence explicitly, same as
+            // failed read must pass inventoryOperations explicitly, same as
             // gameplayStatePersistence.
-            inventoryListPersistence ?? AlwaysEmptyInventoryListPersistence.Instance,
+            inventoryOperations ?? AlwaysEmptyInventoryOperations.Instance,
             // Same reasoning as inventoryListPersistence above, for skills.
             skillPersistence ?? AlwaysEmptySkillPersistence.Instance,
             collisionProvider,
@@ -668,6 +665,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     internal string? ActiveGeneratedScriptEntityId => _generatedScriptEntityId;
     internal CharacterGameplayStateSession? GameplayState => _gameplayState;
     internal CharacterInventorySnapshot? Inventory => _inventory;
+    internal CharacterInventoryService? InventoryService => _inventoryService;
     internal CharacterEquipmentSnapshot? Equipment => _equipment;
     internal CharacterStatusEffectState StatusEffects => _statusEffects;
 
@@ -801,6 +799,21 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _ = SendNotifyActorInitAsync(CancellationToken.None);
     }
 
+    // The slots and weight the character may use right now (pc_additem's inputs): the base inventory size and status_calc_weight's maximum from the
+    // job, allocated STR and the carry skills. Mount, Mado gear and item bonuses are folded in as those systems arrive.
+    private InventoryLimits CurrentInventoryLimits()
+    {
+        if (_gameplayState is not { } gameplay) return new InventoryLimits(InventoryBaseSlots, uint.MaxValue);
+        int SkillLevel(ushort id) => gameplay.Skills.Learned.FirstOrDefault(skill => skill.SkillId == id)?.Level ?? 0;
+        var maxWeight = _rules.Inventory.MaxWeight(new MaxWeightInput(gameplay.State.JobClass, gameplay.State.Strength,
+            IncreaseCarryLevel: SkillLevel(McIncCarrySkillId), AllIncreaseCarryLevel: SkillLevel(AllIncCarrySkillId)));
+        return new InventoryLimits(InventoryBaseSlots, maxWeight);
+    }
+
+    private const uint InventoryBaseSlots = 100;           // mmo.hpp INVENTORY_BASE_SIZE; expansions arrive with the capacity packet
+    private const ushort McIncCarrySkillId = 36;           // MC_INCCARRY (Enlarge Weight Limit)
+    private const ushort AllIncCarrySkillId = 681;         // ALL_INCCARRY
+
     internal async Task CompleteIroAuthenticationAsync(MapAuthOkData authOk)
     {
         var state = await _gameplayStatePersistence.GetAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
@@ -810,7 +823,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             HandleAuthFail(); return;
         }
 
-        var inventoryRead = await _inventoryListPersistence.GetInventoryAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
+        var inventoryRead = await _inventoryOperations.GetInventoryAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
         if (!inventoryRead.Succeeded)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Character inventory load failed accountId={authOk.AccountId} charId={authOk.CharId}.");
@@ -849,8 +862,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // authenticated, and that a null Equipment.RightHandItemId means authoritatively
         // unarmed, never "unknown". CharacterEquipmentSnapshot is derived from the SAME
         // inventory read - never a second independent CharServer fetch.
-        _inventory = inventoryRead.Snapshot;
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory!);
+        _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!, _rules.Inventory, GeneratedItems.ById, CurrentInventoryLimits);
+        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;
         _direction = authOk.Direction;
@@ -2881,24 +2894,21 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                     continue;
                 }
 
-                var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-                var addResult = await inventorySession.AddItemAsync(itemDefinition, (uint)drop.Count, cancellationToken);
-                if (!addResult.Success || addResult.Item is not { } addedRow || _inventory is not { } inventory)
+                var grant = _inventoryService is null ? null : await _inventoryService.GrantAsync(itemDefinition, (uint)drop.Count, cancellationToken);
+                if (grant is not { Succeeded: true })
                 {
                     MapLogger.Warning($"[iRO MAP DEBUG] Inventory persistence failed for itemId={drop.ItemId}; not notifying client.");
                     continue;
                 }
 
-                _inventory = addResult.IsNewRow
-                    ? inventory.WithNewItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound)
-                    : inventory.WithUpdatedItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound);
-                _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
-                var slotIndex = _inventory.Items.Single(i => i.DurableId == addResult.DurableId).SlotIndex;
-                var clientIndex = (ushort)(slotIndex + 2);
-                var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)drop.Count, itemDefinition.Id, itemType: 3);
-                MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 itemId={itemDefinition.Id} count={drop.Count} clientIndex={clientIndex}");
-                await WriteAsync(pickupPacket, cancellationToken);
+                _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+                foreach (var (row, added) in grant.Placements())
+                {
+                    var clientIndex = (ushort)(row.SlotIndex + 2);
+                    var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)added, itemDefinition.Id, itemType: 3);
+                    MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 itemId={itemDefinition.Id} count={added} clientIndex={clientIndex}");
+                    await WriteAsync(pickupPacket, cancellationToken);
+                }
             }
 
             // DEBUG-LOG-ONLY: quest-drop inventory persistence (a CharServer round trip per drop) runs
@@ -3611,67 +3621,34 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             }
         }
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var consumeResult = await inventorySession.ConsumeItemAsync(row.DurableId, 1, cancellationToken);
-        if (!consumeResult.Success)
+        // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
+        // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
+        // destroyed the box and delivered only some of the contents.)
+        var grants = usable.Grants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
+        var use = _inventoryService is null ? null : await _inventoryService.ConsumeAndGrantAsync(row.DurableId, 1, grants, InventoryOperationKind.Use, cancellationToken);
+        if (use is not { Succeeded: true })
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Item-use persistence failed for itemId={row.ItemId} durableId={row.DurableId}; not notifying client.");
             return;
         }
 
-        // Persistence succeeded - update the authoritative runtime snapshot BEFORE granting the
-        // container's items or notifying the client (same rule the reward path already follows).
-        // RowDeleted leaves a HOLE at this row's former runtime slot (WithoutDurableId) - it does
-        // NOT compact/renumber later rows, mirroring pinned pc_delitem exactly; a later grant may
-        // reuse that exact hole via WithNewItem.
-        _inventory = consumeResult.RowDeleted
-            ? inventory.WithoutDurableId(row.DurableId)
-            : inventory.WithUpdatedItem(row.DurableId, row.ItemId, consumeResult.NewAmount, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
+        _equipment = CharacterEquipmentSnapshot.FromInventory(use.Snapshot);
+        var consumedAmount = use.Results[0].Row?.Amount ?? 0;
         MapLogger.Info(
-            $"[iRO MAP DEBUG] Item-use consumed itemId={row.ItemId} durableId={row.DurableId} newAmount={consumeResult.NewAmount} rowDeleted={consumeResult.RowDeleted}.");
+            $"[iRO MAP DEBUG] Item-use consumed itemId={row.ItemId} durableId={row.DurableId} newAmount={consumedAmount} rowDeleted={use.Results[0].Deleted}.");
 
-        var ackPacket = IroUseItemPackets.BuildUseItemAck(request.ClientIndex, itemDefinition.ClientViewId, _accountId, consumeResult.NewAmount, success: true);
+        var ackPacket = IroUseItemPackets.BuildUseItemAck(request.ClientIndex, itemDefinition.ClientViewId, _accountId, consumedAmount, success: true);
         await WriteAsync(ackPacket, cancellationToken);
 
-        // Execute the source-backed getitem grants (script.cpp BUILDIN_FUNC(getitem)) - each
-        // grant is a normal authoritative inventory add through the SAME CharacterInventorySession/
-        // runtime-snapshot-update path the quest-drop reward loop already uses, including the
-        // SAME IsNewRow-driven slot assignment (first free slot - reusing the hole just left by
-        // this same consume, mirroring pinned pc_additem's own array-search behavior). A grant
-        // referencing an item id absent from the generated registry is a data/generation gap,
-        // logged and skipped rather than guessed at (matching the existing quest-drop convention)
-        // - it does NOT abort the remaining grants, since each is an independent getitem call in
-        // the pinned script, not a single atomic operation.
-        foreach (var grant in usable.Grants)
+        foreach (var (placedRow, added) in use.Placements())
         {
-            if (!GeneratedItems.ById.TryGetValue(grant.ItemId, out var grantedItem))
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] Item-use grant references unregistered itemId={grant.ItemId}; skipping.");
-                continue;
-            }
-
-            var grantResult = await inventorySession.AddItemAsync(grantedItem, grant.Amount, cancellationToken);
-            if (!grantResult.Success || grantResult.Item is not { } grantedRow)
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] Item-use grant persistence failed for itemId={grant.ItemId}; skipping.");
-                continue;
-            }
-
-            _inventory = grantResult.IsNewRow
-                ? _inventory.WithNewItem(grantResult.DurableId, grantedRow.ItemId, grantedRow.Amount, grantedRow.Equip, grantedRow.Identified, grantedRow.Refine, grantedRow.Favorite, grantedRow.Bound)
-                : _inventory.WithUpdatedItem(grantResult.DurableId, grantedRow.ItemId, grantedRow.Amount, grantedRow.Equip, grantedRow.Identified, grantedRow.Refine, grantedRow.Favorite, grantedRow.Bound);
-            _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
-            var grantSlotIndex = _inventory.Items.Single(i => i.DurableId == grantResult.DurableId).SlotIndex;
-            var grantClientIndex = (ushort)(grantSlotIndex + 2);
-            // Pinned clif_additem (clif.cpp): p.nameid = client_nameid(actual item), p.type =
-            // itemtype(actual item) - never a hardcoded constant. Uses the SAME item-type mapper
-            // IroInventoryListPackets uses for full-inventory serialization, so a grant's pickup
+            var placedItem = GeneratedItems.ById[placedRow.ItemId];
+            var grantClientIndex = (ushort)(placedRow.SlotIndex + 2);
+            // Pinned clif_additem (clif.cpp): p.nameid = client_nameid(actual item), p.type = itemtype(actual item) - never a hardcoded
+            // constant. Uses the SAME item-type mapper IroInventoryListPackets uses for full-inventory serialization, so a grant's pickup
             // packet and its later reconnect/full-list packet can never disagree on item type.
-            var grantPickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)grant.Amount, grantedItem.ClientViewId, IroInventoryListPackets.ItemType(grantedItem));
-            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for item-use grant itemId={grant.ItemId} count={grant.Amount} clientIndex={grantClientIndex}");
+            var grantPickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)added, placedItem.ClientViewId, IroInventoryListPackets.ItemType(placedItem));
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for item-use grant itemId={placedRow.ItemId} count={added} clientIndex={grantClientIndex}");
             await WriteAsync(grantPickupPacket, cancellationToken);
         }
     }
@@ -3820,8 +3797,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_inventory is not { } inventory || request.ClientIndex < 2) return;
         var slotIndex = (uint)(request.ClientIndex - 2);
 
-        var service = new CharacterEquipmentMutationService(_accountId, _charId, _inventoryListPersistence);
-        var (outcome, updated) = await service.EquipAsync(inventory, slotIndex, request.Position, GeneratedItems.ById, cancellationToken);
+        if (_inventoryService is null) return;
+        var service = new CharacterEquipmentMutationService(_inventoryService);
+        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, cancellationToken);
         if (outcome is not { } equipOutcome) return; // invalid slot/index - pc_equipitem sends no ack either (clif.cpp:12154-12156 early-out)
 
         var result = equipOutcome.Result switch
@@ -3834,7 +3812,6 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         if (equipOutcome.Result != EquipMutationResult.Success || updated is null) return;
 
-        _inventory = updated;
         _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
         await RefreshPresencePublicAppearanceAsync(cancellationToken);
         await SendSelfWeaponAppearanceAsync(cancellationToken);
@@ -3852,8 +3829,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         var targetItemId = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.ItemId;
         var oldEquip = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.Equip;
-        var service = new CharacterEquipmentMutationService(_accountId, _charId, _inventoryListPersistence);
-        var (outcome, updated) = await service.UnequipAsync(inventory, slotIndex, cancellationToken);
+        if (_inventoryService is null) return;
+        var service = new CharacterEquipmentMutationService(_inventoryService);
+        var (outcome, updated) = await service.UnequipAsync(slotIndex, cancellationToken);
         if (outcome is not { } unequipOutcome)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Unequip rejected (unknown slotIndex={slotIndex}); no ack sent.");
@@ -3865,7 +3843,6 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         if (unequipOutcome.Success && updated is not null)
         {
-            _inventory = updated;
             _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
             await RefreshPresencePublicAppearanceAsync(cancellationToken);
             MapLogger.Info("[iRO MAP DEBUG] Sending 0x01D7 (post-unequip appearance update).");
@@ -4458,44 +4435,27 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // the partial-failure condition loudly so it is never silently swallowed.
     async Task<bool> INpcScriptHost.DeleteItemAsync(int itemId, uint amount, CancellationToken cancellationToken)
     {
-        if (_inventory is not { } inventory) return false;
+        if (_inventoryService is not { } service) return false;
 
-        var matchingRows = inventory.Items.Where(item => item.ItemId == itemId).OrderBy(item => item.DurableId).ToArray();
-        var available = (uint)matchingRows.Sum(item => (long)item.Amount);
-        if (available < amount)
+        // Every matching row is consumed in ONE durable operation: delitem either removes the whole amount or changes nothing (there is no
+        // partial consumption to roll back any more). Rows are consumed in ascending DurableId order, pc_delitem's array-scan order.
+        var slotsBefore = service.Snapshot.Items.ToDictionary(item => item.DurableId, item => item.SlotIndex);
+        var removal = await service.RemoveByItemIdAsync(itemId, amount, cancellationToken);
+        if (!removal.Succeeded)
         {
-            MapLogger.Warning($"[iRO MAP DEBUG] delitem rejected: itemId={itemId} requested={amount} available={available}.");
+            MapLogger.Warning($"[iRO MAP DEBUG] delitem rejected: itemId={itemId} requested={amount} status={removal.Status}.");
             return false;
         }
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var remaining = amount;
-        foreach (var row in matchingRows)
+        // A row's runtime slot never changes while it exists, so the slots captured before the operation are the ones the client knows.
+        _equipment = CharacterEquipmentSnapshot.FromInventory(removal.Snapshot);
+        for (var i = 0; i < removal.Mutations.Count; i++)
         {
-            if (remaining == 0) break;
-            var consumeAmount = Math.Min(remaining, row.Amount);
-
-            var consumeResult = await inventorySession.ConsumeItemAsync(row.DurableId, consumeAmount, cancellationToken);
-            if (!consumeResult.Success)
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] delitem persistence failed mid-loop for itemId={itemId} durableId={row.DurableId}; {amount - remaining} of {amount} already consumed and NOT rolled back.");
-                return false;
-            }
-
-            _inventory = consumeResult.RowDeleted
-                ? _inventory.WithoutDurableId(row.DurableId)
-                : _inventory.WithUpdatedItem(row.DurableId, row.ItemId, consumeResult.NewAmount, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
-            _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-            remaining -= consumeAmount;
-
-            // ZC_DELETE_ITEM_FROM_BODY (0x07FA) - sent per-row, immediately after that row's own
-            // authoritative persistence/snapshot update, using THAT row's own client-facing slot
-            // (SlotIndex + 2, same transform GetItemAsync uses a few lines below for 0x0B41) and
-            // THAT row's own consumed amount, never the total requested amount. See
-            // sailor-packet-export.txt frame 7291 / IroMonsterCombatPackets.BuildDeleteItemFromBody.
-            var deleteClientIndex = (ushort)(row.SlotIndex + 2);
-            var deletePacket = IroMonsterCombatPackets.BuildDeleteItemFromBody((ushort)deleteClientIndex, (ushort)consumeAmount, PacketConstants.ZcDeleteItemFromBodyReasonScriptDelitem);
-            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x07FA for delitem itemId={itemId} durableId={row.DurableId} amount={consumeAmount} clientIndex={deleteClientIndex}");
+            var mutation = (RemoveFromRowMutation)removal.Mutations[i];
+            var slotIndex = slotsBefore[mutation.DurableId];
+            var deleteClientIndex = (ushort)(slotIndex + 2);
+            var deletePacket = IroMonsterCombatPackets.BuildDeleteItemFromBody(deleteClientIndex, (ushort)mutation.Amount, PacketConstants.ZcDeleteItemFromBodyReasonScriptDelitem);
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x07FA for delitem itemId={itemId} durableId={mutation.DurableId} amount={mutation.Amount} clientIndex={deleteClientIndex}");
             await WriteAsync(deletePacket, cancellationToken);
         }
 
@@ -4526,26 +4486,23 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             return false;
         }
 
-        if (_inventory is not { } inventory) return false;
+        if (_inventoryService is not { } service) return false;
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var addResult = await inventorySession.AddItemAsync(itemDefinition, amount, cancellationToken);
-        if (!addResult.Success || addResult.Item is not { } addedRow)
+        var grant = await service.GrantAsync(itemDefinition, amount, cancellationToken);
+        if (!grant.Succeeded)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] getitem persistence failed for itemId={itemId}; not notifying client.");
             return false;
         }
 
-        _inventory = addResult.IsNewRow
-            ? inventory.WithNewItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound)
-            : inventory.WithUpdatedItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound);
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
-        var slotIndex = _inventory.Items.Single(i => i.DurableId == addResult.DurableId).SlotIndex;
-        var clientIndex = (ushort)(slotIndex + 2);
-        var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)amount, itemDefinition.ClientViewId, IroInventoryListPackets.ItemType(itemDefinition));
-        MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for getitem itemId={itemId} count={amount} clientIndex={clientIndex}");
-        await WriteAsync(pickupPacket, cancellationToken);
+        _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+        foreach (var (row, added) in grant.Placements())
+        {
+            var clientIndex = (ushort)(row.SlotIndex + 2);
+            var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)added, itemDefinition.ClientViewId, IroInventoryListPackets.ItemType(itemDefinition));
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for getitem itemId={itemId} count={added} clientIndex={clientIndex}");
+            await WriteAsync(pickupPacket, cancellationToken);
+        }
         return true;
     }
 
@@ -6121,17 +6078,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // inventoryListPersistence parameter). Always reports a successful read with an empty
     // inventory (confirmed unarmed), so tests that never pass inventoryListPersistence
     // explicitly still authenticate successfully.
-    private sealed class AlwaysEmptyInventoryListPersistence : ICharacterInventoryListPersistence
+    private sealed class AlwaysEmptyInventoryOperations : ICharacterInventoryOperations
     {
-        internal static readonly AlwaysEmptyInventoryListPersistence Instance = new();
+        internal static readonly AlwaysEmptyInventoryOperations Instance = new();
         private static readonly CharacterInventoryReadResult Empty =
             CharacterInventoryReadResult.Success(new CharacterInventorySnapshot(Array.Empty<CharacterInventoryItem>()));
 
         public Task<CharacterInventoryReadResult> GetInventoryAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
             => Task.FromResult(Empty);
 
-        public Task<bool> SetItemEquipAsync(uint accountId, uint characterId, uint slotIndex, uint equip, CancellationToken cancellationToken)
-            => Task.FromResult(false);
+        public Task<Athena.Net.Shared.Inventory.InventoryOperationResponse?> ExecuteAsync(Athena.Net.Shared.Inventory.InventoryOperationRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<Athena.Net.Shared.Inventory.InventoryOperationResponse?>(null);
     }
 
     // Test-only default for the internal test-facing constructor (see its skillPersistence

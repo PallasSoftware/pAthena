@@ -14,7 +14,7 @@ namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 // Runs the pinned-rAthena golden fixtures against ONE region's concrete gameplay rules, composed through the production
 // factory. The two sealed subclasses give iRO and kRO each their own independently executed set of conformance assertions
 // over the same fixture inputs; the fixture values are never produced by the code under test.
-public abstract class RathenaReferenceConformanceTests(GameplayRegion region)
+public abstract partial class RathenaReferenceConformanceTests(GameplayRegion region)
 {
     protected GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
 
@@ -467,7 +467,7 @@ public sealed class RathenaReferenceFixtureValidationTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
     [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.Net;
 
@@ -15,25 +16,6 @@ public sealed class MapClientSessionEquipmentMutationTests
 {
     private const uint AccountId = 7;
     private const uint CharId = 9;
-
-    private sealed class RecordingInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        private CharacterInventorySnapshot _current = initial;
-        public List<(uint DurableId, uint Equip)> Calls { get; } = [];
-        public bool NextSetResult { get; set; } = true;
-
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) =>
-            Task.FromResult(CharacterInventoryReadResult.Success(_current));
-
-        public Task<bool> SetItemEquipAsync(uint accountId, uint characterId, uint durableId, uint equip, CancellationToken cancellationToken)
-        {
-            Calls.Add((durableId, equip));
-            if (!NextSetResult) return Task.FromResult(false);
-            var items = _current.Items.Select(i => i.DurableId == durableId ? i with { Equip = equip } : i).ToList();
-            _current = new CharacterInventorySnapshot(items);
-            return Task.FromResult(true);
-        }
-    }
 
     // Verified stock-iRO wire length (ai/iro-2026-wire.md, "Verified equip/unequip request
     // framing"): one opaque trailing byte beyond the pinned rAthena 8-byte shape.
@@ -63,7 +45,7 @@ public sealed class MapClientSessionEquipmentMutationTests
         return buffer;
     }
 
-    private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, RecordingInventoryListPersistence Persistence)> SetupAsync(
+    private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, InMemoryInventoryOperations Persistence)> SetupAsync(
         CharacterInventorySnapshot initialInventory)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -77,11 +59,11 @@ public sealed class MapClientSessionEquipmentMutationTests
 
         var gameplayState = new CharacterGameplayState(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
-        var inventoryPersistence = new RecordingInventoryListPersistence(initialInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
         var session = new MapClientSession(
             1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryPersistence,
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence,
             accountId: AccountId, charId: CharId);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0));
@@ -121,8 +103,8 @@ public sealed class MapClientSessionEquipmentMutationTests
         Assert.Equal(0x000002u, BinaryPrimitives.ReadUInt32LittleEndian(ack.AsSpan(4)));
         Assert.Equal((byte)0, ack[8]); // success, inverted flag
 
-        Assert.Single(persistence.Calls);
-        Assert.Equal((1u, 0u), persistence.Calls[0]);
+        Assert.Single(persistence.EquipUpdates);
+        Assert.Equal((1u, 0u), persistence.EquipUpdates[0]);
         Assert.Null(session.Equipment!.RightHandItemId);
 
         await client.GetStream().DisposeAsync();
@@ -149,8 +131,8 @@ public sealed class MapClientSessionEquipmentMutationTests
         Assert.Equal((short)0x01d7, BinaryPrimitives.ReadInt16LittleEndian(appearance));
         Assert.Equal(1201u, BinaryPrimitives.ReadUInt32LittleEndian(appearance.AsSpan(7))); // Knife.ClientViewId
 
-        Assert.Single(persistence.Calls);
-        Assert.Equal((1u, 0x000002u), persistence.Calls[0]);
+        Assert.Single(persistence.EquipUpdates);
+        Assert.Equal((1u, 0x000002u), persistence.EquipUpdates[0]);
         Assert.Equal(1201, session.Equipment!.RightHandItemId);
 
         await client.GetStream().DisposeAsync();
@@ -170,7 +152,7 @@ public sealed class MapClientSessionEquipmentMutationTests
         Assert.Equal((short)0x099a, BinaryPrimitives.ReadInt16LittleEndian(ack));
         Assert.Equal((byte)1, ack[8]); // failure, inverted flag
 
-        Assert.Empty(persistence.Calls);
+        Assert.Empty(persistence.EquipUpdates);
         Assert.Null(session.Equipment!.RightHandItemId);
 
         await client.GetStream().DisposeAsync();
@@ -183,7 +165,7 @@ public sealed class MapClientSessionEquipmentMutationTests
         var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0, true, 0, 0, 0)]);
         var (client, stream, session, run, persistence) = await SetupAsync(initial);
         using var _ = client;
-        persistence.NextSetResult = false;
+        persistence.DropRequests = 100; // CharServer never answers: the equip is never confirmed
 
         await stream.WriteAsync(EquipRequestPacket(2, 0x000002));
 

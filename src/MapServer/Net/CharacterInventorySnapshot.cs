@@ -1,3 +1,5 @@
+using Athena.Net.Shared.Inventory;
+
 namespace Athena.Net.MapServer.Net;
 
 // One authoritative CharInventory row, as needed by the client-facing inventory/equip-list
@@ -35,7 +37,43 @@ public sealed record CharacterInventoryItem(
     bool Identified,
     byte Refine,
     byte Favorite,
-    byte Bound);
+    byte Bound,
+    ItemInstanceDetail? Detail = null)
+{
+    // Everything else the durable row carries (cards, random options, broken flag, expiry, unique id, equip-switch, enchant grade) and
+    // the row revision CharServer uses to reject stale writers. Never null-checked by callers: a row built without details has the
+    // all-zero default (no cards/options, not broken, revision 0).
+    public ItemInstanceDetail Details => Detail ?? ItemInstanceDetail.Empty;
+
+    internal static CharacterInventoryItem FromRow(InventoryItemRow row, uint slotIndex) => new(
+        row.DurableId, slotIndex, (int)row.ItemId, row.Amount, row.Equip, row.Identify != 0, row.Refine, row.Favorite, row.Bound,
+        new ItemInstanceDetail(row.Attribute, row.EnchantGrade, row.Card0, row.Card1, row.Card2, row.Card3, row.Option0, row.Option1, row.Option2, row.Option3, row.Option4,
+            row.ExpireTime, row.UniqueId, row.EquipSwitch, row.Revision));
+
+    // The durable row this runtime row mirrors, used as the starting point of an Update mutation (callers change the field they own).
+    internal InventoryItemRow ToRow()
+    {
+        var d = Details;
+        return new(DurableId, (uint)ItemId, Amount, Equip, Identified ? (byte)1 : (byte)0, Refine, d.Attribute, Favorite, Bound, d.EnchantGrade,
+            d.Card0, d.Card1, d.Card2, d.Card3, d.Option0, d.Option1, d.Option2, d.Option3, d.Option4, d.ExpireTime, d.UniqueId, d.EquipSwitch, d.Revision);
+    }
+}
+
+// Durable per-instance item data beyond the fields the client list needs on every packet.
+public sealed record ItemInstanceDetail(
+    byte Attribute,
+    byte EnchantGrade,
+    uint Card0, uint Card1, uint Card2, uint Card3,
+    InventoryOption Option0, InventoryOption Option1, InventoryOption Option2, InventoryOption Option3, InventoryOption Option4,
+    uint ExpireTime,
+    ulong UniqueId,
+    uint EquipSwitch,
+    uint Revision)
+{
+    public static readonly ItemInstanceDetail Empty = new(0, 0, 0, 0, 0, 0, default, default, default, default, default, 0, 0, 0, 0);
+
+    public bool IsBroken => Attribute != 0;
+}
 
 // Every persisted CharInventory row for one character, carrying MapServer's own runtime
 // SlotIndex assignment for the active session (see CharacterInventoryItem's own doc comment for
@@ -52,6 +90,39 @@ public sealed record CharacterInventorySnapshot(IReadOnlyList<CharacterInventory
     // consume/equip) maintains the assignment purely in MapServer's own runtime state via
     // WithUpdatedItem/WithNewItem/WithoutDurableId below - CharServer is never asked to
     // recompute a slot again for the lifetime of this session.
+    // Login/reload from the full durable rows: CharServer's stable order becomes dense runtime slots 0..N-1.
+    internal static CharacterInventorySnapshot FromRows(IReadOnlyList<InventoryItemRow> rows) =>
+        new([.. rows.Select((row, slot) => CharacterInventoryItem.FromRow(row, (uint)slot))]);
+
+    // Applies the per-mutation results of one confirmed durable operation: a deleted row leaves a hole (pc_delitem), a known row keeps
+    // its runtime slot, a new row takes the first free slot (pc_additem). Throws on a result that contradicts this snapshot (e.g. an
+    // AddNew result for a DurableId already tracked): the service treats that as a lost-sync condition and reloads.
+    internal CharacterInventorySnapshot Apply(IReadOnlyList<InventoryMutationResult> results)
+    {
+        var items = Items.ToList();
+        foreach (var result in results)
+        {
+            var index = items.FindIndex(i => i.DurableId == result.DurableId);
+            if (result.Deleted)
+            {
+                if (index < 0) throw new InvalidOperationException($"Inventory invariant violation: no runtime row for DurableId={result.DurableId} to delete.");
+                items.RemoveAt(index);
+            }
+            else if (index >= 0)
+            {
+                items[index] = CharacterInventoryItem.FromRow(result.Row!, items[index].SlotIndex);
+            }
+            else
+            {
+                var occupied = items.Select(i => i.SlotIndex).ToHashSet();
+                uint slot = 0;
+                while (occupied.Contains(slot)) slot++;
+                items.Add(CharacterInventoryItem.FromRow(result.Row!, slot));
+            }
+        }
+        return new CharacterInventorySnapshot(items);
+    }
+
     public static CharacterInventorySnapshot FromLogin(IReadOnlyList<(uint DurableId, int ItemId, uint Amount, uint Equip, bool Identified, byte Refine, byte Favorite, byte Bound)> rows)
     {
         var items = new List<CharacterInventoryItem>(rows.Count);
@@ -156,16 +227,4 @@ public readonly record struct CharacterInventoryReadResult(bool Succeeded, Chara
 {
     public static CharacterInventoryReadResult Success(CharacterInventorySnapshot snapshot) => new(true, snapshot);
     public static CharacterInventoryReadResult Failed() => new(false, null);
-}
-
-public interface ICharacterInventoryListPersistence
-{
-    Task<CharacterInventoryReadResult> GetInventoryAsync(uint accountId, uint characterId, CancellationToken cancellationToken);
-
-    // Persists a single CharInventory row's Equip bitmask by its stable DurableId - CharServer
-    // remains the durable owner of CharInventory.Equip (see CharacterEquipmentMutationService).
-    // Returns false on any failure (row not found for this character, DB error, disconnected
-    // CharServer) - callers must never assume success and must never report success to the
-    // client before this returns true.
-    Task<bool> SetItemEquipAsync(uint accountId, uint characterId, uint durableId, uint equip, CancellationToken cancellationToken);
 }

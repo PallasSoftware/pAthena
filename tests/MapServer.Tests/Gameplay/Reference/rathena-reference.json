@@ -12848,6 +12848,1568 @@
           }
         ]
       }
+    },
+    {
+      "id": "VF-20",
+      "evidence": "ReferenceExecuted",
+      "scope": "Feature 16: base max weight (status_calc_weight: job MaxWeight + STR*300) for 14 representative jobs x STR {1,50,99}, plus the item/weight related battle_config values the pinned binary actually runs with (conf/battle, not code defaults).",
+      "input": {
+        "jobs": "representative first/second/third/expanded jobs",
+        "str": [
+          1,
+          50,
+          99
+        ]
+      },
+      "output": {
+        "config": {
+          "natural_heal_weight_rate": 70,
+          "major_overweight_rate": 90,
+          "open_box_weight_rate": 90,
+          "max_cart_weight": 80000,
+          "item_use_interval": 100,
+          "cashfood_use_interval": 60000,
+          "item_first_get_time": 3000,
+          "item_second_get_time": 2000,
+          "item_third_get_time": 2000,
+          "mvp_item_first_get_time": 10000,
+          "mvp_item_second_get_time": 10000,
+          "mvp_item_third_get_time": 2000,
+          "flooritem_lifetime": 60000,
+          "first_attack_loot_bonus": 30,
+          "drop_rate_cap": 9000,
+          "item_stacking": 1,
+          "default_bind_on_equip": 4,
+          "allow_bound_sell": 0,
+          "inventory_base": 100,
+          "max_inventory": 200,
+          "max_amount": 30000,
+          "max_storage": 600
+        },
+        "cases": [
+          {
+            "job": 0,
+            "str": 1,
+            "max_weight": 20300
+          },
+          {
+            "job": 0,
+            "str": 50,
+            "max_weight": 35000
+          },
+          {
+            "job": 0,
+            "str": 99,
+            "max_weight": 49700
+          },
+          {
+            "job": 1,
+            "str": 1,
+            "max_weight": 28300
+          },
+          {
+            "job": 1,
+            "str": 50,
+            "max_weight": 43000
+          },
+          {
+            "job": 1,
+            "str": 99,
+            "max_weight": 57700
+          },
+          {
+            "job": 2,
+            "str": 1,
+            "max_weight": 22300
+          },
+          {
+            "job": 2,
+            "str": 50,
+            "max_weight": 37000
+          },
+          {
+            "job": 2,
+            "str": 99,
+            "max_weight": 51700
+          },
+          {
+            "job": 3,
+            "str": 1,
+            "max_weight": 26300
+          },
+          {
+            "job": 3,
+            "str": 50,
+            "max_weight": 41000
+          },
+          {
+            "job": 3,
+            "str": 99,
+            "max_weight": 55700
+          },
+          {
+            "job": 4,
+            "str": 1,
+            "max_weight": 24300
+          },
+          {
+            "job": 4,
+            "str": 50,
+            "max_weight": 39000
+          },
+          {
+            "job": 4,
+            "str": 99,
+            "max_weight": 53700
+          },
+          {
+            "job": 5,
+            "str": 1,
+            "max_weight": 28300
+          },
+          {
+            "job": 5,
+            "str": 50,
+            "max_weight": 43000
+          },
+          {
+            "job": 5,
+            "str": 99,
+            "max_weight": 57700
+          },
+          {
+            "job": 6,
+            "str": 1,
+            "max_weight": 24300
+          },
+          {
+            "job": 6,
+            "str": 50,
+            "max_weight": 39000
+          },
+          {
+            "job": 6,
+            "str": 99,
+            "max_weight": 53700
+          },
+          {
+            "job": 7,
+            "str": 1,
+            "max_weight": 28300
+          },
+          {
+            "job": 7,
+            "str": 50,
+            "max_weight": 43000
+          },
+          {
+            "job": 7,
+            "str": 99,
+            "max_weight": 57700
+          },
+          {
+            "job": 10,
+            "str": 1,
+            "max_weight": 30300
+          },
+          {
+            "job": 10,
+            "str": 50,
+            "max_weight": 45000
+          },
+          {
+            "job": 10,
+            "str": 99,
+            "max_weight": 59700
+          },
+          {
+            "job": 23,
+            "str": 1,
+            "max_weight": 20300
+          },
+          {
+            "job": 23,
+            "str": 50,
+            "max_weight": 35000
+          },
+          {
+            "job": 23,
+            "str": 99,
+            "max_weight": 49700
+          },
+          {
+            "job": 24,
+            "str": 1,
+            "max_weight": 28300
+          },
+          {
+            "job": 24,
+            "str": 50,
+            "max_weight": 43000
+          },
+          {
+            "job": 24,
+            "str": 99,
+            "max_weight": 57700
+          },
+          {
+            "job": 25,
+            "str": 1,
+            "max_weight": 26300
+          },
+          {
+            "job": 25,
+            "str": 50,
+            "max_weight": 41000
+          },
+          {
+            "job": 25,
+            "str": 99,
+            "max_weight": 55700
+          },
+          {
+            "job": 4054,
+            "str": 1,
+            "max_weight": 35300
+          },
+          {
+            "job": 4054,
+            "str": 50,
+            "max_weight": 50000
+          },
+          {
+            "job": 4054,
+            "str": 99,
+            "max_weight": 64700
+          },
+          {
+            "job": 4218,
+            "str": 1,
+            "max_weight": 20300
+          },
+          {
+            "job": 4218,
+            "str": 50,
+            "max_weight": 35000
+          },
+          {
+            "job": 4218,
+            "str": 99,
+            "max_weight": 49700
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-21",
+      "evidence": "ReferenceExecuted",
+      "scope": "Feature 16: real pc_additem decisions for 22 cases - empty add, merge, non-stackable, MAX_AMOUNT and Stack.Amount limits, weight, slot capacity, bound/rental/card mismatch, unique id assignment, slot beyond the permitted inventory size - with the resulting rows, weight and free slots.",
+      "input": {
+        "potion": 501,
+        "knife": 1201,
+        "stack_limited": 12333,
+        "weightless_stackable": 766,
+        "unique_stackable": 12900
+      },
+      "output": {
+        "cases": [
+          {
+            "name": "empty-add-stackable",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 70,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "merge-into-existing-stack",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 5,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 30,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 2100,
+            "weight_after": 2450,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 35,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "non-stackable-single",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 1201,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 400,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": true
+              }
+            ]
+          },
+          {
+            "name": "non-stackable-multiple-amount",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 3,
+              "add": {
+                "nameid": 1201,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 1200,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 1201,
+                "amount": 3,
+                "bound": 0,
+                "expire": 0,
+                "unique": true
+              }
+            ]
+          },
+          {
+            "name": "overamount-argument",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 30001,
+              "add": {
+                "nameid": 766,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 5,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 99999999,
+            "free_slots": 100,
+            "rows": []
+          },
+          {
+            "name": "overamount-merge",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 2,
+              "add": {
+                "nameid": 766,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 766,
+                  "amount": 29999,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 5,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 99999999,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 766,
+                "amount": 29999,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "exactly-max-amount",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 1,
+              "add": {
+                "nameid": 766,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 766,
+                  "amount": 29999,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 99999999,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 766,
+                "amount": 30000,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "stack-limit-argument",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 4,
+              "add": {
+                "nameid": 12333,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 7,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 99999999,
+            "free_slots": 100,
+            "rows": []
+          },
+          {
+            "name": "stack-limit-merge",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 2,
+              "add": {
+                "nameid": 12333,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 12333,
+                  "amount": 2,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 5,
+            "weight_before": 20,
+            "weight_after": 20,
+            "max_weight": 99999999,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 12333,
+                "amount": 2,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "stack-limit-merge-ok",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": 99999999,
+              "amount": 1,
+              "add": {
+                "nameid": 12333,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 12333,
+                  "amount": 2,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 20,
+            "weight_after": 30,
+            "max_weight": 99999999,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 12333,
+                "amount": 3,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "overweight",
+            "in": {
+              "str": 1,
+              "slots": 100,
+              "max_weight": 100,
+              "amount": 2,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 2,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 100,
+            "free_slots": 100,
+            "rows": []
+          },
+          {
+            "name": "exact-weight-ok",
+            "in": {
+              "str": 1,
+              "slots": 100,
+              "max_weight": 140,
+              "amount": 2,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 140,
+            "max_weight": 140,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 2,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "over-item-slots-full",
+            "in": {
+              "str": 99,
+              "slots": 10,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 4,
+            "weight_before": 4000,
+            "weight_after": 4000,
+            "max_weight": 49700,
+            "free_slots": 0,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 2,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 3,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 4,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 5,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 6,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 7,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 8,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 9,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "merge-when-slots-full",
+            "in": {
+              "str": 99,
+              "slots": 10,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 3950,
+            "weight_after": 4020,
+            "max_weight": 49700,
+            "free_slots": 0,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 6,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 2,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 3,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 4,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 5,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 6,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 7,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 8,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 9,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "bound-mismatch-new-row",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 1,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 350,
+            "weight_after": 420,
+            "max_weight": 49700,
+            "free_slots": 98,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 5,
+                "bound": 1,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 501,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "bound-match-merges",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 1,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 1,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 350,
+            "weight_after": 420,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 6,
+                "bound": 1,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "rental-never-merges",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 4102444800,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 350,
+            "weight_after": 420,
+            "max_weight": 49700,
+            "free_slots": 98,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 5,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 501,
+                "amount": 1,
+                "bound": 0,
+                "expire": 4102444800,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "existing-rental-never-merged-into",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 0,
+                  "expire": 4102444800,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 350,
+            "weight_after": 420,
+            "max_weight": 49700,
+            "free_slots": 98,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 5,
+                "bound": 0,
+                "expire": 4102444800,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 501,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "card-mismatch-new-row",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 4001
+                }
+              ]
+            },
+            "result": 0,
+            "weight_before": 350,
+            "weight_after": 420,
+            "max_weight": 49700,
+            "free_slots": 98,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 501,
+                "amount": 5,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 501,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "unique-id-assigned",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 12900,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 0,
+            "weight_before": 0,
+            "weight_after": 10,
+            "max_weight": 49700,
+            "free_slots": 99,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 12900,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": true
+              }
+            ]
+          },
+          {
+            "name": "merge-slot-beyond-limit",
+            "in": {
+              "str": 99,
+              "slots": 5,
+              "max_weight": -1,
+              "amount": 1,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": [
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 1201,
+                  "amount": 1,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                },
+                {
+                  "nameid": 501,
+                  "amount": 5,
+                  "bound": 0,
+                  "expire": 0,
+                  "unique": 0,
+                  "card0": 0
+                }
+              ]
+            },
+            "result": 5,
+            "weight_before": 2750,
+            "weight_after": 2750,
+            "max_weight": 49700,
+            "free_slots": 0,
+            "rows": [
+              {
+                "slot": 0,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 1,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 2,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 3,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 4,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 5,
+                "nameid": 1201,
+                "amount": 1,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              },
+              {
+                "slot": 6,
+                "nameid": 501,
+                "amount": 5,
+                "bound": 0,
+                "expire": 0,
+                "unique": false
+              }
+            ]
+          },
+          {
+            "name": "invalid-amount",
+            "in": {
+              "str": 99,
+              "slots": 100,
+              "max_weight": -1,
+              "amount": 0,
+              "add": {
+                "nameid": 501,
+                "bound": 0,
+                "expire": 0,
+                "unique": 0,
+                "card0": 0
+              },
+              "rows": []
+            },
+            "result": 1,
+            "weight_before": 0,
+            "weight_after": 0,
+            "max_weight": 49700,
+            "free_slots": 100,
+            "rows": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-22",
+      "evidence": "ReferenceExecuted",
+      "scope": "Feature 16: pc_updateweightstatus thresholds and hysteresis (SC_WEIGHT50 / SC_WEIGHT90, regen overweight) over the weight sequence 0,699,700,701,899,900,1000,899,699,0 at max_weight 1000.",
+      "input": {
+        "max_weight": 1000,
+        "weights": [
+          0,
+          699,
+          700,
+          701,
+          899,
+          900,
+          1000,
+          899,
+          699,
+          0
+        ]
+      },
+      "output": {
+        "steps": [
+          {
+            "weight": 0,
+            "percent": 0,
+            "weight50": false,
+            "weight90": false,
+            "overweight": false
+          },
+          {
+            "weight": 699,
+            "percent": 69,
+            "weight50": false,
+            "weight90": false,
+            "overweight": false
+          },
+          {
+            "weight": 700,
+            "percent": 70,
+            "weight50": true,
+            "weight90": false,
+            "overweight": true
+          },
+          {
+            "weight": 701,
+            "percent": 70,
+            "weight50": true,
+            "weight90": false,
+            "overweight": true
+          },
+          {
+            "weight": 899,
+            "percent": 89,
+            "weight50": true,
+            "weight90": false,
+            "overweight": true
+          },
+          {
+            "weight": 900,
+            "percent": 90,
+            "weight50": false,
+            "weight90": true,
+            "overweight": true
+          },
+          {
+            "weight": 1000,
+            "percent": 100,
+            "weight50": false,
+            "weight90": true,
+            "overweight": true
+          },
+          {
+            "weight": 899,
+            "percent": 89,
+            "weight50": true,
+            "weight90": false,
+            "overweight": true
+          },
+          {
+            "weight": 699,
+            "percent": 69,
+            "weight50": false,
+            "weight90": false,
+            "overweight": false
+          },
+          {
+            "weight": 0,
+            "percent": 0,
+            "weight50": false,
+            "weight90": false,
+            "overweight": false
+          }
+        ]
+      }
     }
   ]
 }

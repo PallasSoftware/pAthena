@@ -1,4 +1,5 @@
 using Athena.Net.MapServer.Net;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.World;
 
@@ -64,18 +65,13 @@ public readonly record struct UnequipOutcome(bool Success, uint WearLocation);
 // pc_equipitem/pc_unequipitem (pc.cpp:12015-12240, 12398-12500), scoped to the structural
 // slot-conflict/EQP_ARMS logic those functions implement. Explicitly NOT modeled (see each
 // method's own doc comment): EquipLevelMin/Max, Sex, broken-item, and restricted-map
-// eligibility checks - ItemDefinition has no fields for these yet, so this service can only
-// validate EquipLocation and already-equipped/slot-conflict state, never silently claim to
-// enforce the deferred checks.
+// eligibility checks - those belong to the equipment rules (Feature 16 stage S4).
 //
-// CharServer remains the durable owner of CharInventory.Equip - every mutation persists via
-// ICharacterInventoryListPersistence.SetItemEquipAsync BEFORE this service reports success;
-// MapServer's own CharacterInventorySnapshot/CharacterEquipmentSnapshot are only rebuilt after
-// a confirmed persisted write, never mutated in place speculatively.
-public sealed class CharacterEquipmentMutationService(
-    uint accountId,
-    uint characterId,
-    ICharacterInventoryListPersistence persistence)
+// CharServer remains the durable owner of CharInventory.Equip. An equip is ONE atomic inventory operation that unequips every
+// conflicting item AND equips the target, so a failure can never leave the old item unequipped while the new one is not worn.
+// The runtime snapshot is only replaced by the confirmed result of that operation (CharacterInventoryService), and success is
+// only reported after it.
+public sealed class CharacterEquipmentMutationService(CharacterInventoryService inventoryService)
 {
     // Pinned pc_equipitem (pc.cpp:12015-12172), restricted to this service's modeled checks:
     //   1. already-equipped items.equip != 0 -> ITEM_EQUIP_ACK_FAIL (pc.cpp:12063-12070)
@@ -85,30 +81,45 @@ public sealed class CharacterEquipmentMutationService(
     //      HAND_L when both are free (pc.cpp:12108-12115, RENEWAL branch)
     //   4. slot conflict: any currently-equipped item occupying one of the resolved position's
     //      EQI slots is unequipped first (pc.cpp:12147-12157)
-    // Returns null if the requested slotIndex is not a real, currently-unequipped row in
-    // `inventory` resolving to a WeaponItemDefinition/ArmorItemDefinition (via
-    // IEquippableItemDefinition) - the caller (MapClientSession) turns that into
-    // ITEM_EQUIP_ACK_FAIL without a persistence round-trip, matching pc_equipitem's own
-    // `if (!(id = sd->inventory_data[n])) return false;` early-out.
+    // Returns a null outcome if the requested slotIndex is not a real row in the snapshot (the caller turns that into no ack,
+    // matching pc_equipitem's own `if (!(id = sd->inventory_data[n])) return false;` early-out).
     public async Task<(EquipOutcome? Outcome, CharacterInventorySnapshot? Updated)> EquipAsync(
-        CharacterInventorySnapshot inventory,
         uint slotIndex,
         uint requestedPosition,
         IReadOnlyDictionary<int, ItemDefinition> items,
         CancellationToken cancellationToken)
     {
-        var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
-        if (target is null) return (null, null);
-        if (!items.TryGetValue(target.ItemId, out var definition) || definition is not IEquippableItemDefinition equippable)
-            return (new EquipOutcome(EquipMutationResult.Fail, 0), null);
+        EquipOutcome? decided = null;
+        uint wearLocation = 0;
+        var change = await inventoryService.ExecuteAsync(InventoryOperationKind.Equip, inventory =>
+        {
+            var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, out var outcome, out wearLocation);
+            decided = outcome;
+            return plan;
+        }, cancellationToken);
 
-        if (target.Equip != 0)
-            return (new EquipOutcome(EquipMutationResult.Fail, 0), null);
+        if (decided is null) return (null, null);
+        if (decided.Value.Result != EquipMutationResult.Success) return (decided, null);
+        return change.Succeeded
+            ? (new EquipOutcome(EquipMutationResult.Success, wearLocation), change.Snapshot)
+            : (new EquipOutcome(EquipMutationResult.Fail, 0), null);
+    }
+
+    private static IReadOnlyList<InventoryMutation>? PlanEquip(
+        CharacterInventorySnapshot inventory, uint slotIndex, uint requestedPosition,
+        IReadOnlyDictionary<int, ItemDefinition> items, out EquipOutcome? outcome, out uint wearLocation)
+    {
+        wearLocation = 0;
+        var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
+        if (target is null) { outcome = null; return null; }
+        if (!items.TryGetValue(target.ItemId, out var definition) || definition is not IEquippableItemDefinition equippable
+            || target.Equip != 0 || (equippable.EquipLocation & requestedPosition) == 0)
+        {
+            outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+            return null;
+        }
 
         var pos = equippable.EquipLocation;
-        if ((pos & requestedPosition) == 0)
-            return (new EquipOutcome(EquipMutationResult.Fail, 0), null);
-
         if (pos == EquipSlots.Arms && equippable.EquipLocation == EquipSlots.Bitmask[EquipSlot.HandRight])
         {
             // Dual-wield-capable weapon (pinned pc.cpp:12108-12115): item's own possible
@@ -123,48 +134,42 @@ public sealed class CharacterEquipmentMutationService(
             }
         }
 
-        // Slot conflict: unequip whatever currently occupies any EQI slot `pos` maps to
-        // (pinned pc.cpp:12147-12157 - `if(sd->equip_index[i] >= 0) pc_unequipitem(...)`).
-        // Persistence targets each row's stable DurableId - never its runtime SlotIndex, which
-        // CharServer has no concept of at all.
-        var working = inventory;
+        // Slot conflict: unequip whatever currently occupies any EQI slot `pos` maps to (pinned pc.cpp:12147-12157). One mutation per
+        // occupying row even when it spans several slots (a two-handed weapon).
+        var mutations = new List<InventoryMutation>();
+        var unequipped = new HashSet<uint>();
         foreach (var slot in EquipSlots.Bitmask)
         {
             if ((pos & slot.Value) == 0) continue;
-            var occupying = working.Items.FirstOrDefault(i => i.SlotIndex != slotIndex && (i.Equip & slot.Value) != 0);
-            if (occupying is null) continue;
-
-            var unequipped = await persistence.SetItemEquipAsync(accountId, characterId, occupying.DurableId, 0, cancellationToken);
-            if (!unequipped) return (new EquipOutcome(EquipMutationResult.Fail, 0), null);
-            working = working.WithUpdatedItem(occupying.DurableId, occupying.ItemId, occupying.Amount, 0, occupying.Identified, occupying.Refine, occupying.Favorite, occupying.Bound);
+            var occupying = inventory.Items.FirstOrDefault(i => i.SlotIndex != slotIndex && (i.Equip & slot.Value) != 0);
+            if (occupying is null || !unequipped.Add(occupying.DurableId)) continue;
+            var cleared = occupying.ToRow() with { Equip = 0 };
+            mutations.Add(new UpdateRowMutation(InventoryContainer.Inventory, occupying.DurableId, occupying.Details.Revision, cleared));
         }
 
-        var persisted = await persistence.SetItemEquipAsync(accountId, characterId, target.DurableId, pos, cancellationToken);
-        if (!persisted) return (new EquipOutcome(EquipMutationResult.Fail, 0), null);
-
-        var updated = working.WithUpdatedItem(target.DurableId, target.ItemId, target.Amount, pos, target.Identified, target.Refine, target.Favorite, target.Bound);
-        return (new EquipOutcome(EquipMutationResult.Success, pos), updated);
+        mutations.Add(new UpdateRowMutation(InventoryContainer.Inventory, target.DurableId, target.Details.Revision, target.ToRow() with { Equip = pos }));
+        outcome = new EquipOutcome(EquipMutationResult.Success, pos);
+        wearLocation = pos;
+        return mutations;
     }
 
     // Pinned pc_unequipitem (pc.cpp:12398-12495), restricted to this service's modeled checks:
     //   - not currently equipped (items.equip == 0) -> failure (pc.cpp:12407-12410)
-    // Ammo-unequip-on-weapon-change and status-effect-cancel side effects
-    // (SC_DANCING/SC_EDP/SC_SHIELDSPELL) are out of scope - this slice has no status-effect
-    // integration for equipment changes yet.
-    public async Task<(UnequipOutcome? Outcome, CharacterInventorySnapshot? Updated)> UnequipAsync(
-        CharacterInventorySnapshot inventory,
-        uint slotIndex,
-        CancellationToken cancellationToken)
+    // Ammo-unequip-on-weapon-change and status-effect-cancel side effects are out of scope here.
+    public async Task<(UnequipOutcome? Outcome, CharacterInventorySnapshot? Updated)> UnequipAsync(uint slotIndex, CancellationToken cancellationToken)
     {
-        var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
-        if (target is null || target.Equip == 0)
-            return (new UnequipOutcome(false, 0), null);
+        var current = inventoryService.Snapshot.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
+        if (current is null || current.Equip == 0) return (new UnequipOutcome(false, 0), null);
 
-        var pos = target.Equip;
-        var persisted = await persistence.SetItemEquipAsync(accountId, characterId, target.DurableId, 0, cancellationToken);
-        if (!persisted) return (new UnequipOutcome(false, 0), null);
+        var position = current.Equip;
+        var change = await inventoryService.ExecuteAsync(InventoryOperationKind.Equip, inventory =>
+        {
+            var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
+            return target is null || target.Equip == 0
+                ? null
+                : [new UpdateRowMutation(InventoryContainer.Inventory, target.DurableId, target.Details.Revision, target.ToRow() with { Equip = 0 })];
+        }, cancellationToken);
 
-        var updated = inventory.WithUpdatedItem(target.DurableId, target.ItemId, target.Amount, 0, target.Identified, target.Refine, target.Favorite, target.Bound);
-        return (new UnequipOutcome(true, pos), updated);
+        return change.Succeeded ? (new UnequipOutcome(true, position), change.Snapshot) : (new UnequipOutcome(false, 0), null);
     }
 }

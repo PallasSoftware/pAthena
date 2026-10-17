@@ -3,6 +3,8 @@ using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
+using MapServer.Tests.Testing;
 using Athena.Net.MapServer.World.GeneratedScripts;
 
 namespace Athena.Net.MapServer.Tests.Net;
@@ -24,66 +26,7 @@ public sealed class MapClientSessionItemScriptHostTests
     private const int TestItemId = 55001;
     private const int OtherItemId = 55002;
 
-    private sealed class RecordingInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        private CharacterInventorySnapshot _current = initial;
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) => Task.FromResult(CharacterInventoryReadResult.Success(_current));
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t) => Task.FromResult(true);
-    }
-
-    // Mirrors MapClientSessionUseItemTests.RecordingInventoryPersistence exactly (multi-row
-    // durable-id-keyed add/consume, matching CharServer's real semantics) - kept as an independent
-    // copy in this file rather than shared, since test fixtures in this project are not
-    // cross-referenced between files (see the established per-file fixture convention elsewhere,
-    // e.g. GeneratedLuminIntegrationTests' own RecordingQuestPersistence vs
-    // PoringQuestDropIntegrationTests').
-    private sealed class RecordingInventoryPersistence(List<CharacterInventoryItem> rows) : ICharacterInventoryPersistence
-    {
-        private uint _nextDurableId = rows.Count == 0 ? 1 : rows.Max(r => r.DurableId) + 1;
-        public bool FailNextConsume { get; set; }
-        public bool FailNextAdd { get; set; }
-        public List<(uint DurableId, uint Amount)> ConsumeCalls { get; } = [];
-        public List<(int ItemId, uint Amount)> AddCalls { get; } = [];
-
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-        {
-            AddCalls.Add((itemId, amount));
-            if (FailNextAdd) { FailNextAdd = false; return Task.FromResult(InventoryAddPersistenceResult.Failed()); }
-
-            var existingIndex = rows.FindIndex(r => r.ItemId == itemId);
-            if (existingIndex >= 0)
-            {
-                var updated = rows[existingIndex].Amount + amount;
-                rows[existingIndex] = rows[existingIndex] with { Amount = updated };
-                return Task.FromResult(new InventoryAddPersistenceResult(true, updated, rows[existingIndex].DurableId, 0, true, 0, 0, 0, IsNewRow: false));
-            }
-
-            var durableId = _nextDurableId++;
-            rows.Add(new CharacterInventoryItem(durableId, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0));
-            return Task.FromResult(new InventoryAddPersistenceResult(true, amount, durableId, 0, true, 0, 0, 0, IsNewRow: true));
-        }
-
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken)
-        {
-            ConsumeCalls.Add((durableId, amount));
-            if (FailNextConsume) { FailNextConsume = false; return Task.FromResult(InventoryConsumePersistenceResult.Failed()); }
-
-            var index = rows.FindIndex(r => r.DurableId == durableId);
-            if (index < 0 || rows[index].Amount < amount) return Task.FromResult(InventoryConsumePersistenceResult.Failed());
-
-            var newAmount = rows[index].Amount - amount;
-            if (newAmount == 0)
-            {
-                rows.RemoveAt(index);
-                return Task.FromResult(new InventoryConsumePersistenceResult(true, 0, RowDeleted: true));
-            }
-
-            rows[index] = rows[index] with { Amount = newAmount };
-            return Task.FromResult(new InventoryConsumePersistenceResult(true, newAmount, RowDeleted: false));
-        }
-    }
-
-    private static async Task<(TcpClient Client, MapClientSession Session, RecordingInventoryPersistence Persistence, Task RunTask)> SetupAsync(
+    private static async Task<(TcpClient Client, MapClientSession Session, InMemoryInventoryOperations Persistence, Task RunTask)> SetupAsync(
         CharacterInventorySnapshot initialInventory)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -96,13 +39,12 @@ public sealed class MapClientSessionItemScriptHostTests
 
         var gameplayState = new CharacterGameplayState(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
         var gameplayPersistence = new FixedGameplayStatePersistence(gameplayState);
-        var inventoryListPersistence = new RecordingInventoryListPersistence(initialInventory);
-        var inventoryPersistence = new RecordingInventoryPersistence([.. initialInventory.Items]);
+        var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
         var session = new MapClientSession(
             1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryListPersistence,
-            inventoryPersistence: inventoryPersistence, accountId: AccountId, charId: CharId);
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence,
+            accountId: AccountId, charId: CharId);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0));
 
@@ -163,7 +105,7 @@ public sealed class MapClientSessionItemScriptHostTests
         var result = await host.DeleteItemAsync(TestItemId, 2, CancellationToken.None);
 
         Assert.False(result);
-        Assert.Empty(persistence.ConsumeCalls); // The upfront sufficiency check must reject before any persistence call.
+        Assert.Empty(persistence.Requests); // Insufficient quantity is rejected while planning: nothing is ever sent.
         Assert.Equal(1u, await host.CountItemAsync(TestItemId, CancellationToken.None)); // Nothing changed.
         await DisposeAsync(client, session, run);
     }
@@ -216,8 +158,10 @@ public sealed class MapClientSessionItemScriptHostTests
         var result = await host.DeleteItemAsync(TestItemId, 4, CancellationToken.None);
 
         Assert.True(result);
-        // DurableId 1 (2 units) fully consumed first, then 2 units from DurableId 2 (leaving 1).
-        Assert.Equal([(1u, 2u), (2u, 2u)], persistence.ConsumeCalls);
+        // DurableId 1 (2 units) fully consumed first, then 2 units from DurableId 2 (leaving 1) - all in ONE durable operation, so a
+        // failure part way can no longer leave a half-consumed delitem behind.
+        var operation = Assert.Single(persistence.Applied);
+        Assert.Equal([(1u, 2u), (2u, 2u)], operation.Mutations.Cast<RemoveFromRowMutation>().Select(m => (m.DurableId, m.Amount)));
         Assert.DoesNotContain(session.Inventory!.Items, i => i.DurableId == 1);
         Assert.Equal(1u, session.Inventory!.Items.Single(i => i.DurableId == 2).Amount);
         Assert.Equal(1u, await host.CountItemAsync(TestItemId, CancellationToken.None));
@@ -230,7 +174,7 @@ public sealed class MapClientSessionItemScriptHostTests
         var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, TestItemId, 5, 0, true, 0, 0, 0)]);
         var (client, session, persistence, run) = await SetupAsync(initial);
         var host = (INpcScriptHost)session;
-        persistence.FailNextConsume = true;
+        persistence.DropRequests = 100; // CharServer never confirms the operation
 
         var result = await host.DeleteItemAsync(TestItemId, 2, CancellationToken.None);
 
@@ -269,7 +213,7 @@ public sealed class MapClientSessionItemScriptHostTests
 
         await host.GetItemAsync(itemId: -1, amount: 5, CancellationToken.None); // No such generated item.
 
-        Assert.Empty(persistence.AddCalls);
+        Assert.Empty(persistence.Requests);
         Assert.Empty(session.Inventory!.Items);
         await DisposeAsync(client, session, run);
     }
@@ -287,7 +231,8 @@ public sealed class MapClientSessionItemScriptHostTests
 
         await host.GetItemAsync(itemId: 6008, amount: 5, CancellationToken.None);
 
-        Assert.Single(persistence.AddCalls, call => call.ItemId == 6008 && call.Amount == 5);
+        var add = Assert.IsType<AddNewRowMutation>(Assert.Single(Assert.Single(persistence.Applied).Mutations));
+        Assert.Equal((6008u, 5u), (add.Row.ItemId, add.Row.Amount));
         var row = Assert.Single(session.Inventory!.Items);
         Assert.Equal(6008, row.ItemId);
         Assert.Equal(5u, row.Amount);
@@ -301,7 +246,7 @@ public sealed class MapClientSessionItemScriptHostTests
         var initial = new CharacterInventorySnapshot([]);
         var (client, session, persistence, run) = await SetupAsync(initial);
         var host = (INpcScriptHost)session;
-        persistence.FailNextAdd = true;
+        persistence.DropRequests = 100; // CharServer never confirms the operation
 
         await host.GetItemAsync(itemId: 6008, amount: 5, CancellationToken.None);
 

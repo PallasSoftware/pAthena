@@ -17,7 +17,7 @@ namespace CharServer.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.0")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -376,6 +376,159 @@ namespace CharServer.Migrations
                     b.ToTable("char", (string)null);
                 });
 
+            modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharContainerItem", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("Amount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount");
+
+                    b.Property<byte>("Attribute")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("attribute");
+
+                    b.Property<byte>("Bound")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("bound");
+
+                    b.Property<long>("Card0")
+                        .HasColumnType("bigint")
+                        .HasColumnName("card0");
+
+                    b.Property<long>("Card1")
+                        .HasColumnType("bigint")
+                        .HasColumnName("card1");
+
+                    b.Property<long>("Card2")
+                        .HasColumnType("bigint")
+                        .HasColumnName("card2");
+
+                    b.Property<long>("Card3")
+                        .HasColumnType("bigint")
+                        .HasColumnName("card3");
+
+                    b.Property<byte>("Container")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("container");
+
+                    b.Property<byte>("EnchantGrade")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("enchantgrade");
+
+                    b.Property<long>("Equip")
+                        .HasColumnType("bigint")
+                        .HasColumnName("equip");
+
+                    b.Property<long>("EquipSwitch")
+                        .HasColumnType("bigint")
+                        .HasColumnName("equip_switch");
+
+                    b.Property<long>("ExpireTime")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expire_time");
+
+                    b.Property<byte>("Favorite")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("favorite");
+
+                    b.Property<short>("Identify")
+                        .HasColumnType("smallint")
+                        .HasColumnName("identify");
+
+                    b.Property<long>("NameId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("nameid");
+
+                    b.Property<short>("OptionId0")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_id0");
+
+                    b.Property<short>("OptionId1")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_id1");
+
+                    b.Property<short>("OptionId2")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_id2");
+
+                    b.Property<short>("OptionId3")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_id3");
+
+                    b.Property<short>("OptionId4")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_id4");
+
+                    b.Property<byte>("OptionParm0")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("option_parm0");
+
+                    b.Property<byte>("OptionParm1")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("option_parm1");
+
+                    b.Property<byte>("OptionParm2")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("option_parm2");
+
+                    b.Property<byte>("OptionParm3")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("option_parm3");
+
+                    b.Property<byte>("OptionParm4")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("option_parm4");
+
+                    b.Property<short>("OptionVal0")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_val0");
+
+                    b.Property<short>("OptionVal1")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_val1");
+
+                    b.Property<short>("OptionVal2")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_val2");
+
+                    b.Property<short>("OptionVal3")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_val3");
+
+                    b.Property<short>("OptionVal4")
+                        .HasColumnType("smallint")
+                        .HasColumnName("option_val4");
+
+                    b.Property<long>("OwnerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("owner_id");
+
+                    b.Property<byte>("Refine")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("refine");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<decimal>("UniqueId")
+                        .HasColumnType("decimal(20,0)")
+                        .HasColumnName("unique_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Container", "OwnerId");
+
+                    b.ToTable("container_item", (string)null);
+                });
+
             modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharHotkey", b =>
                 {
                     b.Property<long>("CharId")
@@ -538,6 +691,11 @@ namespace CharServer.Migrations
                         .HasColumnType("tinyint")
                         .HasColumnName("refine");
 
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
                     b.Property<decimal>("UniqueId")
                         .HasColumnType("decimal(20,0)")
                         .HasColumnName("unique_id");
@@ -547,6 +705,42 @@ namespace CharServer.Migrations
                     b.HasIndex("CharId");
 
                     b.ToTable("inventory", (string)null);
+                });
+
+            modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharInventoryOperation", b =>
+                {
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("operation_id");
+
+                    b.Property<long>("CharId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("char_id");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("kind");
+
+                    b.Property<byte[]>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("varbinary(32)")
+                        .HasColumnName("payload_hash");
+
+                    b.Property<byte[]>("ResponseBytes")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)")
+                        .HasColumnName("response_bytes");
+
+                    b.HasKey("OperationId");
+
+                    b.HasIndex("CharId", "CreatedAt");
+
+                    b.ToTable("inventory_operation", (string)null);
                 });
 
             modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharQuest", b =>

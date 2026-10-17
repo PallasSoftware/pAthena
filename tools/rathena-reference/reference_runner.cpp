@@ -3,7 +3,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <map>
 #include <vector>
 #include <memory>
@@ -12,9 +15,11 @@
 #include "battle.hpp"
 #include "clif.hpp"
 #include "itemdb.hpp"
+#include "log.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "pc.hpp"
+#include "script.hpp"
 #include "status.hpp"
 #include "../common/random.hpp"
 #include "../common/timer.hpp"
@@ -388,7 +393,208 @@ static void vf14() {
 	std::fprintf(out, "]}}");
 }
 
+
+// Feature 16 data-pipeline evidence. Neither mode contains a formula: they only read what the real pinned loaders
+// produced. RA_NAMES=<file with one script identifier per line> writes "name<TAB>value<TAB>c|p" per resolved
+// constant/parameter (script_get_constant / script_get_parameter) to RA_NAMES_OUT. RA_ITEMS_OUT writes one canonical
+// line per loaded item_db entry (sorted by id) so the C# item loader can be compared field by field.
+static void dump_constants(const char* names_path, const char* out_path) {
+	std::ifstream in(names_path);
+	std::FILE* f = std::fopen(out_path, "w");
+	std::string name;
+	while (std::getline(in, name)) {
+		if (name.empty()) continue;
+		int64 value = 0;
+		if (script_get_constant(name.c_str(), &value)) std::fprintf(f, "%s\t%lld\tc\n", name.c_str(), (long long)value);
+		else if (script_get_parameter(name.c_str(), &value)) std::fprintf(f, "%s\t%lld\tp\n", name.c_str(), (long long)value);
+	}
+	std::fclose(f);
+}
+
+
+// One canonical line per loaded item group entry (sorted), the evidence for the C# item group loader.
+static void dump_item_groups(const char* out_path) {
+	std::vector<uint16> ids;
+	for (auto& g : itemdb_group) ids.push_back(g.first);
+	std::sort(ids.begin(), ids.end());
+	std::FILE* f = std::fopen(out_path, "w");
+	for (uint16 id : ids) {
+		auto group = itemdb_group.find(id);
+		std::vector<uint16> subs;
+		for (auto& r : group->random) subs.push_back(r.first);
+		std::sort(subs.begin(), subs.end());
+		for (uint16 sub : subs) {
+			auto random = group->random[sub];
+			std::vector<uint32> indexes;
+			for (auto& e : random->data) indexes.push_back(e.first);
+			std::sort(indexes.begin(), indexes.end());
+			for (uint32 index : indexes) {
+				auto e = random->data[index];
+				std::fprintf(f, "%u|%u|%d|%u|%u|%u|%u|%u|%u|%u|%d%d%d%d|%u|%u|%u|%u|%u|%u\n", (unsigned)id, (unsigned)sub, (int)random->algorithm, (unsigned)random->total_rate, (unsigned)index,
+					(unsigned)e->nameid, (unsigned)e->rate, (unsigned)e->amount, (unsigned)e->duration, (unsigned)e->bound, e->isAnnounced, e->GUID, e->isStacked, e->isNamed,
+					e->randomOptionGroup ? (unsigned)e->randomOptionGroup->id : 0u, (unsigned)e->refineMinimum, (unsigned)e->refineMaximum, (unsigned)e->minimumEnchantgrade, (unsigned)e->maximumEnchantgrade, 0u);
+			}
+		}
+	}
+	std::fclose(f);
+}
+
+static void dump_items(const char* out_path) {
+	std::vector<std::shared_ptr<item_data>> items;
+	for (auto& it : item_db) items.push_back(it.second);
+	std::sort(items.begin(), items.end(), [](const auto& a, const auto& b) { return a->nameid < b->nameid; });
+	std::FILE* f = std::fopen(out_path, "w");
+	for (const auto& i : items) {
+		std::string line;
+		auto n = [&](long long v) { line += std::to_string(v); line += '|'; };
+		n(i->nameid); line += i->name.c_str(); line += '|'; line += i->ename.c_str(); line += '|';
+		n(i->type); n(i->subtype); n(i->value_buy); n(i->value_sell); n(i->weight); n(i->atk); n(i->matk); n(i->def); n(i->range); n(i->slots);
+		n((long long)i->class_base[0]); n((long long)i->class_base[1]); n((long long)i->class_base[2]); n(i->class_upper); n(i->sex);
+		n(i->equip); n(i->weapon_level); n(i->armor_level); n(i->elv); n(i->elvmax); n(i->flag.no_refine); n(i->flag.gradable);
+		n(i->look); n(i->view_id); n(i->flag.buyingstore); n(i->flag.dead_branch); n(i->flag.group); n(i->flag.guid);
+		n(i->flag.bindOnEquip); n(i->flag.broadcast); n(i->flag.delay_consume); n(i->flag.dropEffect);
+		n(i->delay.duration); n(i->delay.sc); n(i->stack.amount); n(i->stack.inventory); n(i->stack.cart); n(i->stack.storage); n(i->stack.guild_storage);
+		n(i->item_usage.override); n(i->item_usage.sitting); n(i->gm_lv_trade_override);
+		n(i->flag.trade_restriction.drop); n(i->flag.trade_restriction.trade); n(i->flag.trade_restriction.trade_partner);
+		n(i->flag.trade_restriction.sell); n(i->flag.trade_restriction.cart); n(i->flag.trade_restriction.storage);
+		n(i->flag.trade_restriction.guild_storage); n(i->flag.trade_restriction.mail); n(i->flag.trade_restriction.auction);
+		n(i->script != nullptr); n(i->equip_script != nullptr); n(i->unequip_script != nullptr);
+		line.back() = '\n';
+		std::fputs(line.c_str(), f);
+	}
+	std::fclose(f);
+}
+
+
+// ---- Feature 16 inventory evidence (VF-20..VF-22): real pc_additem / status_calc_weight / pc_updateweightstatus ----
+struct InvRow { int nameid; int amount; int bound = 0; unsigned expire = 0; unsigned long long unique = 0; unsigned card0 = 0; };
+
+static void fill_inventory(map_session_data* sd, const std::vector<InvRow>& rows, int slots) {
+	for (int i = 0; i < MAX_INVENTORY; i++) { memset(&sd->inventory.u.items_inventory[i], 0, sizeof(struct item)); sd->inventory_data[i] = nullptr; }
+	int slot = 0;
+	for (const InvRow& r : rows) {
+		struct item& row = sd->inventory.u.items_inventory[slot];
+		row.nameid = r.nameid; row.amount = r.amount; row.identify = 1; row.bound = r.bound; row.expire_time = r.expire; row.unique_id = r.unique; row.card[0] = r.card0;
+		sd->inventory_data[slot] = itemdb_search(r.nameid);
+		slot++;
+	}
+	sd->status.inventory_slots = slots;
+	status_calc_weight(sd, static_cast<e_status_calc_weight_opt>(CALCWT_ITEM | CALCWT_MAXBONUS));
+}
+
+template <typename Pred> static int find_item(Pred pred) {
+	int best = 0;
+	for (auto& it : item_db) if (pred(it.second.get()) && (best == 0 || (int)it.second->nameid < best)) best = (int)it.second->nameid;
+	return best;
+}
+
+static void dump_rows(map_session_data* sd) {
+	std::fprintf(out, "\"rows\":[");
+	bool firstRow = true;
+	for (int i = 0; i < MAX_INVENTORY; i++) {
+		const struct item& row = sd->inventory.u.items_inventory[i];
+		if (!row.nameid) continue;
+		std::fprintf(out, "%s{\"slot\":%d,\"nameid\":%d,\"amount\":%d,\"bound\":%d,\"expire\":%u,\"unique\":%s}", firstRow ? "" : ",", i, (int)row.nameid, (int)row.amount, (int)row.bound, (unsigned)row.expire_time, row.unique_id ? "true" : "false");
+		firstRow = false;
+	}
+	std::fprintf(out, "]");
+}
+
+// VF-20: base weight limit per job and STR through the real status_calc_pc -> status_calc_weight, plus the weight-related battle config.
+static void vf20() {
+	std::fprintf(out, "{\"id\":\"VF-20\",\"input\":{\"jobs\":\"representative first/second/third/expanded jobs\",\"str\":[1,50,99]},\"output\":{\"config\":{");
+	std::fprintf(out, "\"natural_heal_weight_rate\":%d,\"major_overweight_rate\":%d,\"open_box_weight_rate\":%d,\"max_cart_weight\":%d,\"item_use_interval\":%d,\"cashfood_use_interval\":%d,\"item_first_get_time\":%d,\"item_second_get_time\":%d,\"item_third_get_time\":%d,\"mvp_item_first_get_time\":%d,\"mvp_item_second_get_time\":%d,\"mvp_item_third_get_time\":%d,\"flooritem_lifetime\":%d,\"first_attack_loot_bonus\":%d,\"drop_rate_cap\":%d,\"item_stacking\":%d,\"default_bind_on_equip\":%d,\"allow_bound_sell\":%d,\"inventory_base\":%d,\"max_inventory\":%d,\"max_amount\":%d,\"max_storage\":%d},\"cases\":[",
+		battle_config.natural_heal_weight_rate, battle_config.major_overweight_rate, battle_config.open_box_weight_rate, battle_config.max_cart_weight, battle_config.item_use_interval, battle_config.cashfood_use_interval,
+		battle_config.item_first_get_time, battle_config.item_second_get_time, battle_config.item_third_get_time, battle_config.mvp_item_first_get_time, battle_config.mvp_item_second_get_time, battle_config.mvp_item_third_get_time,
+		battle_config.flooritem_lifetime, battle_config.first_attack_loot_bonus, battle_config.drop_rate_cap, battle_config.item_stacking, battle_config.default_bind_on_equip, battle_config.allow_bound_sell, INVENTORY_BASE_SIZE, MAX_INVENTORY, MAX_AMOUNT, MAX_STORAGE);
+	const int jobs[] = {JOB_NOVICE, JOB_SWORDMAN, JOB_MAGE, JOB_ARCHER, JOB_ACOLYTE, JOB_MERCHANT, JOB_THIEF, JOB_KNIGHT, JOB_BLACKSMITH, JOB_SUPER_NOVICE, JOB_GUNSLINGER, JOB_NINJA, JOB_RUNE_KNIGHT, JOB_SUMMONER};
+	uint32 id = 2001000;
+	bool firstCase = true;
+	for (int job : jobs) for (int str : {1, 50, 99}) {
+		NoviceSpec n; n.job = job; n.str = str;
+		map_session_data* sd = make_novice(id++, n);
+		std::fprintf(out, "%s{\"job\":%d,\"str\":%d,\"max_weight\":%d}", firstCase ? "" : ",", job, str, (int)sd->max_weight);
+		firstCase = false;
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-21: real pc_additem decisions: capacity, weight, stacking, binding/rental/card mismatch, stack limits, unique ids.
+static void vf21() {
+	const int potion = 501, knife = 1201;
+	const int ancilla = find_item([](item_data* d) { return d->stack.inventory && d->stack.amount == 3; });
+	const int light = find_item([](item_data* d) { return itemdb_isstackable2(d) && d->weight == 0 && !d->stack.inventory && !d->flag.guid && d->type == IT_ETC; });
+	const int unique = find_item([](item_data* d) { return d->flag.guid && itemdb_isstackable2(d); });
+	std::fprintf(out, "{\"id\":\"VF-21\",\"input\":{\"potion\":%d,\"knife\":%d,\"stack_limited\":%d,\"weightless_stackable\":%d,\"unique_stackable\":%d},\"output\":{\"cases\":[", potion, knife, ancilla, light, unique);
+	struct Case { const char* name; int str; int slots; long long max_weight; std::vector<InvRow> rows; InvRow add; int amount; };
+	std::vector<InvRow> full10; for (int i = 0; i < 10; i++) full10.push_back({knife, 1});
+	const std::vector<Case> cases = {
+		{"empty-add-stackable", 99, 100, -1, {}, {potion, 0}, 1},
+		{"merge-into-existing-stack", 99, 100, -1, {{potion, 30}}, {potion, 0}, 5},
+		{"non-stackable-single", 99, 100, -1, {}, {knife, 0}, 1},
+		{"non-stackable-multiple-amount", 99, 100, -1, {}, {knife, 0}, 3},
+		{"overamount-argument", 99, 100, 99999999, {}, {light, 0}, 30001},
+		{"overamount-merge", 99, 100, 99999999, {{light, 29999}}, {light, 0}, 2},
+		{"exactly-max-amount", 99, 100, 99999999, {{light, 29999}}, {light, 0}, 1},
+		{"stack-limit-argument", 99, 100, 99999999, {}, {ancilla, 0}, 4},
+		{"stack-limit-merge", 99, 100, 99999999, {{ancilla, 2}}, {ancilla, 0}, 2},
+		{"stack-limit-merge-ok", 99, 100, 99999999, {{ancilla, 2}}, {ancilla, 0}, 1},
+		{"overweight", 1, 100, 100, {}, {potion, 0}, 2},
+		{"exact-weight-ok", 1, 100, 140, {}, {potion, 0}, 2},
+		{"over-item-slots-full", 99, 10, -1, full10, {potion, 0}, 1},
+		{"merge-when-slots-full", 99, 10, -1, [&] { auto v = full10; v[0] = {potion, 5}; return v; }(), {potion, 0}, 1},
+		{"bound-mismatch-new-row", 99, 100, -1, {{potion, 5, 1}}, {potion, 0, 0}, 1},
+		{"bound-match-merges", 99, 100, -1, {{potion, 5, 1}}, {potion, 0, 1}, 1},
+		{"rental-never-merges", 99, 100, -1, {{potion, 5}}, {potion, 0, 0, 4102444800u}, 1},
+		{"existing-rental-never-merged-into", 99, 100, -1, {{potion, 5, 0, 4102444800u}}, {potion, 0}, 1},
+		{"card-mismatch-new-row", 99, 100, -1, {{potion, 5, 0, 0, 0, 4001}}, {potion, 0}, 1},
+		{"unique-id-assigned", 99, 100, -1, {}, {unique, 0}, 1},
+		{"merge-slot-beyond-limit", 99, 5, -1, [&] { std::vector<InvRow> v(7, InvRow{knife, 1}); v[6] = {potion, 5}; return v; }(), {potion, 0}, 1},
+		{"invalid-amount", 99, 100, -1, {}, {potion, 0}, 0},
+	};
+	uint32 id = 2002000;
+	bool firstCase = true;
+	for (const Case& c : cases) {
+		NoviceSpec n; n.str = c.str;
+		map_session_data* sd = make_novice(id++, n);
+		fill_inventory(sd, c.rows, c.slots);
+		if (c.max_weight >= 0) sd->max_weight = (int)c.max_weight;
+		struct item it{}; it.nameid = c.add.nameid; it.identify = 1; it.bound = c.add.bound; it.expire_time = c.add.expire; it.card[0] = c.add.card0; it.unique_id = c.add.unique;
+		const int before_weight = sd->weight;
+		const int result = (int)pc_additem(sd, &it, c.amount, LOG_TYPE_NONE);
+		std::fprintf(out, "%s{\"name\":\"%s\",\"in\":{\"str\":%d,\"slots\":%d,\"max_weight\":%lld,\"amount\":%d,\"add\":{\"nameid\":%d,\"bound\":%d,\"expire\":%u,\"unique\":%llu,\"card0\":%u},\"rows\":[", firstCase ? "" : ",", c.name, c.str, c.slots, c.max_weight, c.amount, c.add.nameid, c.add.bound, c.add.expire, c.add.unique, c.add.card0);
+		for (size_t r = 0; r < c.rows.size(); r++) std::fprintf(out, "%s{\"nameid\":%d,\"amount\":%d,\"bound\":%d,\"expire\":%u,\"unique\":%llu,\"card0\":%u}", r ? "," : "", c.rows[r].nameid, c.rows[r].amount, c.rows[r].bound, c.rows[r].expire, c.rows[r].unique, c.rows[r].card0);
+		std::fprintf(out, "]},\"result\":%d,\"weight_before\":%d,\"weight_after\":%d,\"max_weight\":%d,\"free_slots\":%d,", result, before_weight, (int)sd->weight, (int)sd->max_weight, (int)pc_inventoryblank(sd));
+		dump_rows(sd);
+		std::fprintf(out, "}");
+		firstCase = false;
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-22: weight status thresholds and hysteresis through the real pc_updateweightstatus (SC_WEIGHT50 / SC_WEIGHT90, regen overweight).
+static void vf22() {
+	std::fprintf(out, "{\"id\":\"VF-22\",\"input\":{\"max_weight\":1000,\"weights\":[0,699,700,701,899,900,1000,899,699,0]},\"output\":{\"steps\":[");
+	map_session_data* sd = make_novice(2003000);
+	sd->max_weight = 1000;
+	bool firstStep = true;
+	for (int w : {0, 699, 700, 701, 899, 900, 1000, 899, 699, 0}) {
+		sd->weight = w;
+		pc_updateweightstatus(*sd);
+		std::fprintf(out, "%s{\"weight\":%d,\"percent\":%d,\"weight50\":%s,\"weight90\":%s,\"overweight\":%s}", firstStep ? "" : ",", w, (int)pc_getpercentweight(*sd),
+			sd->sc.getSCE(SC_WEIGHT50) ? "true" : "false", sd->sc.getSCE(SC_WEIGHT90) ? "true" : "false", sd->regen.state.overweight ? "true" : "false");
+		firstStep = false;
+	}
+	std::fprintf(out, "]}}");
+}
+
 void ra_reference_run() {
+	if (const char* names = std::getenv("RA_NAMES")) {
+		dump_constants(names, std::getenv("RA_NAMES_OUT"));
+		dump_items(std::getenv("RA_ITEMS_OUT"));
+		if (const char* groups = std::getenv("RA_GROUPS_OUT")) dump_item_groups(groups);
+		std::exit(0);
+	}
 	const char* path = std::getenv("RA_OUT");
 	out = std::fopen(path ? path : "reference.json", "w");
 #ifdef RENEWAL
@@ -418,6 +624,12 @@ void ra_reference_run() {
 	vf07_vf08();
 	std::fprintf(out, ",");
 	vf14();
+	std::fprintf(out, ",");
+	vf20();
+	std::fprintf(out, ",");
+	vf21();
+	std::fprintf(out, ",");
+	vf22();
 	std::fprintf(out, "]}\n");
 	std::fclose(out);
 	std::exit(0);

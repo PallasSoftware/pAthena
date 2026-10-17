@@ -1,0 +1,40 @@
+# Feature 16 — Complete Item & Equipment Effects (branch `feature/epic-16-item-effects`, one PR)
+
+Phase 3 / Epic 3, Feature 16. Reference: pinned rAthena Renewal `e985006171d2eb320ee512a653f4c83aea3d81b6` (`legacy/rathena`). Baseline: `main` @ `33c0186` (Feature 15 merged). One branch, one PR, left open, never merged without explicit approval. Some older docs call these "Epic N"; Feature N and Epic N are the same numbering.
+
+## Ownership (confirmed)
+
+| Concern | Owner |
+|---|---|
+| Item data and metadata, equip eligibility/slots, equip/unequip effects, bonus accumulation, refine and enchant grades, cards/combos/set bonuses, random options/enchants, inventory/storage/cart/ground-item rules, identify/break/repair, bound/rental/expiry, item use/containers, item-transfer primitives, item-triggered-effect registration and dispatch contract | **Feature 16** |
+| Combat formulas that consume accumulated bonuses (cardfix, elements, accuracy/crit rolls, ranged/dual-wield formula branches) | Feature 17 |
+| Skill execution (autospell/itemskill targets, Heal, repair/break *as skills*) | Feature 18 |
+| General-purpose script execution (`goto/callsub/callfunc`, variables, loops, NPC refine/repair scripts) | Feature 20 |
+| Trade sessions, mail, vending, auction, buying store, party loot sharing | later social/economy features (F16 supplies the atomic, idempotent transfer primitives) |
+
+Cards split: F16 owns cards as items (slots, compound, combos, bonus accumulation); F17 owns `battle_calc_cardfix` and every formula that reads the accumulated bonuses.
+
+## Architecture decisions (final)
+1. **Scripts.** Item/combo/randopt scripts go through the existing `RathenaLexer/Parser` → `Semantics` → `ScriptLowering` pipeline, extended with an item/player context and a bonus-command catalog. No second language or runtime. The lowered IR is serialized into the item data pack; the original script source is always kept with a support classification (`Lowered` or `Deferred(F18|F20, construct)`). A MapServer evaluator over the typed IR runs through an `IItemEffectHost` and produces `EquipmentBonuses`. F20 later extends the lowerer/host, not the item-effect data model.
+2. **Regions.** New rule surfaces (`IEquipmentRules`, `IItemBonusRules`, `IInventoryRules`) are implemented by separate concrete `Iro*`/`Kro*` classes, registered only by the matching branch of `GameplayRulesFactory`. No region flags in gameplay code, no shared concrete algorithms, parity/architecture tests extended. Shared: generated data, DTOs/protocols, packet serializers.
+3. **Item data.** A versioned, deterministic binary data pack (pinned commit hash and content hash in the header) loaded once into lookup tables, plus small generated C# for enums/constants. Committed when its measured size is reasonable (S1 spike result below); CI verifies deterministic regeneration and the hash. No hand edits.
+4. **Persistence.** CharServer owns durable inventory, equipment, storage, cart. All mutations carry an operation id and are idempotent; multi-row mutations are atomic; ground-item claim is exactly-once across concurrent pickup, lost acks, retries and crashes.
+5. **Protocol.** Server-authoritative behavior is independent of packet serialization. Only iRO packets backed by captures are projected; everything else is listed under "Outstanding captures".
+
+## Completion definition
+Every requirement below is *Implemented* (rules + tests, plus a reference fixture where pinned rAthena has the behavior), *Owned elsewhere* (F17/F18/F20 with the exact construct, plus a hook/test that proves the contract), or *Protocol-pending-capture* (server logic done and tested; only wire projection waits). `Unsupported` markers never count as implementation. No silently ignored bonus, item effect or persistence column (automated catalog/column coverage tests). Existing tests may change only when a contract legitimately changes, never weakened.
+
+## Stages (status is updated in the coverage matrix as each lands)
+S0 baseline/docs · S1 item data pipeline and data pack · S2 persistence/idempotency/storage/ground-claim · S3 inventory rules, consumption, ground items · S4 equipment eligibility/slots/switch · S5 bonus model and recalculation · S6 refine and grades · S7 cards/combos/random options/enchant · S8 triggered effects and client sync · S9 completion audit.
+
+## Pinned battle configuration (conf values, not code defaults)
+The reference binary reads `conf/battle/*.conf`; Athena options take the conf value. Differences from code defaults that matter: `vending_max_value=1000000000`, `vending_tax=500`, `vending_tax_min=100000000`, `allow_consume_restricted_item=no`, `pet_equip_required=yes`, `rental_item_novalue=no`, `ban_hack_trade=5`. Item/drop defaults: `item_first/second/third_get_time=3000/2000/2000`, `mvp_item_*=10000/10000/2000`, `flooritem_lifetime=60000`, `first_attack_loot_bonus=30`, `item_use_interval=100`, `cashfood_use_interval=60000`, `natural_heal_weight_rate=70`, `open_box_weight_rate=90`, `major_overweight_rate=90`, `max_cart_weight=8000(x10)`, `default_bind_on_equip=4`, `item_stacking=yes`, `drop_rate_cap=9000`.
+
+## PACKETVER note
+The reference runner builds at `PACKETVER 20211103` (RE); stock iRO is `20220406`. Compile-time gates differ for a few client features (package select needs `MAIN_NUM >= 20220216`; enchant/reform need `RE_NUM >= 20211103`). Server rules follow reference behavior; client projection follows captures only.
+
+## Outstanding iRO captures (nothing below is claimed as client-compatible until captured)
+Stat resend after equip/unequip (0x00B0 family, ASPD/ATK/DEF), equip/unequip failure acks (0x0999/0x099A fail codes, FAILLEVEL), inventory items carrying cards/options/grade/expire/bind (0x0B39/0x0B09 fields), item add failure acks (0x0B41 results), ground item show/vanish/pickup (drop/appear/take packets), weight update and weight-limit packets, item use of Healing/Usable with effect, identify list/reply, repair list/reply, refine UI, card insert/compound, enchant/reform/Laphine windows, equip switch, favorite toggle, storage/cart open and transfer, trailing opaque byte of 0x0998/0x00AB.
+
+## Spike results (S0)
+Recorded in the S1 commit message and this section once measured.

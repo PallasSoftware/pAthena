@@ -42,6 +42,8 @@ internal static partial class CharacterDataCompiler
         internal SortedDictionary<ushort, ulong> BaseHp = [], BaseSp = [];
         internal readonly HpSpFactors Factors = new();
         internal bool HasJobStatsBlock;
+        // job_stats.yml MaxWeight (pc.cpp JobDatabase::parseBodyNode): overwritten when named, 20000 the first time a job appears without it.
+        internal uint MaxWeight = 20000;
         // Renewal BaseASPD per weapon_type plus a trailing Shield column; default AMOTION_ZERO_ASPD / AMOTION_INTERVAL = 200 (pc.cpp:13945-13999).
         internal readonly int[] Aspd = Enumerable.Repeat(200, AspdWeaponNames.Length).ToArray();
         internal readonly SortedDictionary<ushort, StatBonus> Bonuses = [];
@@ -98,6 +100,7 @@ internal static partial class CharacterDataCompiler
             new("Progression/GeneratedProgressionData.cs", EmitProgressions(progressions, commit)),
             new("Progression/GeneratedProgressionRegistry.cs", EmitProgressionRegistry(progressions, commit)),
             new("Progression/GeneratedJobAspd.cs", EmitJobAspd(progressions, builders, commit)),
+            new("Progression/GeneratedJobWeight.cs", EmitJobWeight(progressions, builders, commit)),
             new("Skills/GeneratedSkillRegistry.cs", EmitSkills(skills, commit)),
             new("Skills/GeneratedSkillTrees.cs", EmitTrees(effectiveTrees, commit)),
             new("Skills/GeneratedSkillTreeRegistry.cs", EmitTreeRegistry(effectiveTrees, commit)),
@@ -187,6 +190,7 @@ internal static partial class CharacterDataCompiler
                     ApplyFactor(node, "HpIncrease", firstBlockForJob, value => target.Factors.HpIncrease = value, () => target.Factors.HpIncrease = 500, context);
                     ApplyFactor(node, "SpFactor", firstBlockForJob, value => target.Factors.SpFactor = value, () => target.Factors.SpFactor = 0, context);
                     ApplyFactor(node, "SpIncrease", firstBlockForJob, value => target.Factors.SpIncrease = value, () => target.Factors.SpIncrease = 100, context);
+                    ApplyFactor(node, "MaxWeight", firstBlockForJob, value => target.MaxWeight = value, () => target.MaxWeight = 20000, context);
                 }
                 if (includeAspd && node.Optional("BaseASPD") is { } aspdNode)
                 {
@@ -842,6 +846,18 @@ internal static partial class CharacterDataCompiler
         output.AppendLine("    };");
         output.AppendLine("    internal static int Base(ushort jobClass, WeaponType weapon) => ByJobClass.TryGetValue((JobClass)jobClass, out var row) ? row[(int)weapon] : throw new NotSupportedException($\"No BaseASPD is generated for job class {jobClass}.\");");
         output.AppendLine("    internal static int Shield(ushort jobClass) => ByJobClass.TryGetValue((JobClass)jobClass, out var row) ? row[^1] : throw new NotSupportedException($\"No BaseASPD is generated for job class {jobClass}.\");");
+        return output.AppendLine("}").ToString();
+    }
+
+    private static string EmitJobWeight(IReadOnlyList<Progression> progressions, IReadOnlyDictionary<ushort, ProgressionBuilder> builders, string commit)
+    {
+        var output = new StringBuilder(Header(commit, "db/re/job_stats.yml")).AppendLine("using Athena.Net.MapServer.Generated.Jobs;").AppendLine("namespace Athena.Net.MapServer.Generated.Progression;").AppendLine()
+            .AppendLine("// Base maximum weight per job (job_stats.yml MaxWeight, JobDatabase::get_maxWeight); status_calc_weight adds STR * 300 and the skill/equipment bonuses.")
+            .AppendLine("internal static class GeneratedJobWeight").AppendLine("{").AppendLine("    private static readonly IReadOnlyDictionary<JobClass, uint> ByJobClass = new Dictionary<JobClass, uint>").AppendLine("    {");
+        foreach (var item in progressions)
+            output.Append("        [JobClass.").Append(item.Job.CSharpIdentifier).Append("] = ").Append(builders[item.Job.Id].MaxWeight).AppendLine(",");
+        output.AppendLine("    };");
+        output.AppendLine("    internal static uint MaxWeight(ushort jobClass) => ByJobClass.TryGetValue((JobClass)jobClass, out var value) ? value : throw new NotSupportedException($\"No MaxWeight is generated for job class {jobClass}.\");");
         return output.AppendLine("}").ToString();
     }
 
