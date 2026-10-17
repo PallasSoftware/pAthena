@@ -135,15 +135,17 @@ for the interleaving (it needs a hook between the check and the record), so this
 deterministically*. Earlier CI failures in `KillThroughRealAttack…` and `RealRathenaOnTouch…` were timing tests under CPU starvation and were
 mitigated by parsing the reference fixture once per run; their root cause was not separately proven.
 
-## Gameplay-profile guard lifecycle (verified limitation)
+## Gameplay-profile guard lifecycle (hardened)
 
-`IWorldGameplayProfileGrain` keeps the established profile in memory and delays deactivation. Verified with a throw-away Orleans test
-cluster: after a silo restart the profile is **lost**, so the next registration - even a different region - is accepted. Failure scenarios:
-(1) a World restart while `ATHENA_NET_MAP_EXIT_ON_WORLD_LOSS=false` (`WorldConnectionWatchdog` is enabled unless its environment variable is `false`),
-so already-running MapServers are not restarted and a differently configured MapServer can establish a new profile; (2) in a multi-silo World,
-the silo hosting the grain fails and the grain re-activates elsewhere empty while the other MapServers keep running. The guard therefore
-enforces the invariant only against MapServers that register against a *live* activation. **Minimal hardening proposal (needs approval, no
-persistent storage):** give each World silo its expected `(region, ruleset)` from its own configuration and have the grain initialise from it on
-every activation, so any activation (including after failure) starts with the configured profile and rejects mismatches. Optionally also
-re-register the MapServer profile on Orleans client reconnect. Neither is implemented.
-
+The World owns an immutable, deployment-configured profile: `ATHENA_WORLD_GAMEPLAY_REGION` (`Iro` default, `Kro`) and
+`ATHENA_WORLD_GAMEPLAY_RULESET` (`Renewal`); invalid values fail World startup. There is no first-MapServer-wins. Every silo must be
+given the same values.
+- `IWorldGameplayProfileGrain` is stateless: any activation (first, re-activated, failed over to another silo) answers from its hosting silo's
+  configuration, so the profile survives silo restart and failover without persistence. A mismatched request is rejected, never adopted.
+- A silo startup task registers its own profile with the cluster; a silo configured differently from the cluster fails to start.
+  Limit: agreement is checked when a silo starts/joins (against the current activation host), not continuously.
+- MapServer checks the profile at startup and again on every recovered Orleans connection (`WorldConnectionWatchdog.ConnectionRecovered` ->
+  `WorldGameplayProfileMonitor`); mismatch or an unverifiable World stops MapServer with exit code 78 (fail closed).
+- Tests: `WorldGameplayProfileConfigurationTests`, `WorldGameplayProfileGrainTests` (incl. reactivation), `WorldGameplayProfileClusterTests`
+  (startup mismatch, same-profile join, hosting-silo failover), `WorldGameplayProfileMonitorTests`, `WorldConnectionWatchdogRecoveryTests`.
+- Not done: AppHost does not set the variables (defaults iRO/Renewal apply); kRO gameplay/protocol compatibility remains unverified.

@@ -2,8 +2,8 @@ using Athena.Net.World.Contracts;
 
 namespace Athena.Net.MapServer.Gameplay.Rules;
 
-// Startup handshake: this deployment's gameplay profile (region + ruleset) is registered with the shared Orleans world,
-// which accepts the first one and rejects any different one. Called once at the composition root before serving traffic.
+// Handshake: this deployment's gameplay profile (region + ruleset) is checked against the shared Orleans world, whose profile is
+// fixed by the World's own deployment configuration (never by the first MapServer). Called at startup and after every reconnect.
 public static class WorldGameplayProfileGuard
 {
     public static WorldGameplayProfile ProfileOf(GameplayOptions options) => new(options.Region.ToString(), options.RuleSet.ToString());
@@ -15,7 +15,7 @@ public static class WorldGameplayProfileGuard
         if (!result.Accepted)
         {
             throw new InvalidOperationException(
-                $"This MapServer runs gameplay region '{requested.Region}' / ruleset '{requested.RuleSet}', but the shared World is already serving " +
+                $"This MapServer runs gameplay region '{requested.Region}' / ruleset '{requested.RuleSet}', but the shared World is configured for " +
                 $"region '{result.Established.Region}' / ruleset '{result.Established.RuleSet}'. One world must not mix gameplay profiles; " +
                 "align gameplay_region/gameplay_ruleset on every MapServer of this deployment.");
         }

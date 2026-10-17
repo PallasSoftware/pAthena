@@ -761,8 +761,10 @@ golden fixtures against each region independently.
 `hostBuilder.Services.AddGameplayRules(options)` (the host's existing container - no second container), resolves
 `GameplayRuleServices`, and hands it to `MapServerWorld.Build`; `MapClientSession`, `MonsterCombatCoordinator`,
 `MonsterAttackCadenceExecutor`, `CharacterStatusEffectState` and `CharacterProgressionService` receive the abstractions. After the Orleans client starts,
-`WorldGameplayProfileGuard` registers `(region, ruleset)` with `IWorldGameplayProfileGrain`: the first MapServer fixes the world's
-profile and any MapServer with a different one fails startup, so one Orleans world never silently mixes regional gameplay.
+`WorldGameplayProfileGuard` checks `(region, ruleset)` against `IWorldGameplayProfileGrain`, whose profile comes from the World's own
+configuration (`ATHENA_WORLD_GAMEPLAY_REGION`/`..._RULESET`, default iRO/Renewal; never the first MapServer). A MapServer with a different
+profile fails startup, and `WorldGameplayProfileMonitor` re-checks after every Orleans reconnect (exit code 78, fail closed), so one Orleans
+world never silently mixes regional gameplay.
 
 The weapon-ATK and monster-ATK rolls are injectable through the concrete combat classes' constructors (tests pin them; production
 uses `Random.Shared`). `MapClientSession.HandleIroAttackRequestAsync` resolves the equipped weapon through `EquippedWeaponResolver`

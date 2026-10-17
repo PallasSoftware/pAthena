@@ -44,11 +44,15 @@ public sealed class WorldConnectionWatchdog : IClusterConnectionStatusObserver
     /// <summary>Completes when the World connection was lost (never when the watchdog is disabled).</summary>
     public Task Lost => _lost.Task;
 
+    /// <summary>Raised when the Orleans client reports a recovered connection to the World (the World may have restarted or been replaced).</summary>
+    public event Action? ConnectionRecovered;
+
     public void NotifyGatewayCountChanged(int currentNumberOfGateways, int previousNumberOfGateways, bool connectionRecovered)
     {
         if (currentNumberOfGateways > 0)
         {
             Interlocked.Exchange(ref _connected, 1);
+            if (connectionRecovered) ConnectionRecovered?.Invoke();
             return;
         }
 

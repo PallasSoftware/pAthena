@@ -10,17 +10,17 @@ public readonly record struct WorldGameplayProfile(
     [property: Id(0)] string Region,
     [property: Id(1)] string RuleSet);
 
-// Accepted = the requested profile is (now) the world's profile. When false, Established is the profile that is already in
-// force, which the caller must not contradict.
+// Accepted = the requested profile equals the World's configured profile. Established is always the World's configured
+// profile (what the caller must match), whether or not the request was accepted.
 [GenerateSerializer]
 public readonly record struct WorldGameplayProfileRegistration(
     [property: Id(0)] bool Accepted,
     [property: Id(1)] WorldGameplayProfile Established);
 
-// One well-known instance per cluster. The first MapServer to register fixes the world's gameplay profile for the life of
-// the World process; every later registration must match or is rejected, so one Orleans world can never silently mix
-// incompatible regional gameplay configurations. The profile lives in this grain's memory and the grain refuses idle
-// deactivation; a World restart restarts MapServer (WorldConnectionWatchdog), which registers afresh.
+// One well-known instance per cluster. The World owns an immutable, deployment-configured profile (never learned from a
+// MapServer): the grain answers from the configuration of the silo hosting it, so a re-created activation or a failover to another
+// silo recovers the same profile with no persisted state, and every silo verifies at startup that it agrees with the cluster.
+// MapServers register their profile at startup and again on every Orleans reconnect, and stop serving on a mismatch.
 public interface IWorldGameplayProfileGrain : IGrainWithIntegerKey
 {
     Task<WorldGameplayProfileRegistration> RegisterAsync(WorldGameplayProfile requested);

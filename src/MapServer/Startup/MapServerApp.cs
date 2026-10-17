@@ -224,11 +224,24 @@ public static class MapServerApp
         // One Orleans world serves one gameplay profile: refuse to start next to MapServers that run a different
         // region/ruleset (the first MapServer to register fixes the profile).
         //
-        await WorldGameplayProfileGuard.EnsureCompatibleAsync(
-            profile => clusterClient
-                .GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey)
-                .RegisterAsync(profile),
-            gameplayOptions);
+        Func<WorldGameplayProfile, Task<WorldGameplayProfileRegistration>> registerProfile = profile => clusterClient
+            .GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey)
+            .RegisterAsync(profile);
+
+        await WorldGameplayProfileGuard.EnsureCompatibleAsync(registerProfile, gameplayOptions);
+
+        //
+        // The World may restart or be replaced while this process keeps running (watchdog disabled, or a surviving gateway):
+        // verify again on every recovered connection and stop serving - fail closed - when the profile no longer matches.
+        //
+        var profileMonitor =
+            new WorldGameplayProfileMonitor(
+                registerProfile,
+                gameplayOptions,
+                MapLogger.Error,
+                applicationLifetime.StopApplication);
+
+        worldWatchdog.ConnectionRecovered += () => _ = profileMonitor.VerifyAfterReconnectAsync();
 
         var worldRuntime =
             new OrleansWorldRuntime(
@@ -312,6 +325,8 @@ public static class MapServerApp
             await orleansHost.StopAsync(
                 CancellationToken.None);
         }
+
+        if (profileMonitor.Failed) return WorldGameplayProfileMonitor.ExitCode;
 
         return worldWatchdog.WorldLost ? WorldConnectionWatchdog.ExitCode : 0;
     }

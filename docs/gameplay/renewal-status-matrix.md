@@ -38,7 +38,7 @@ Stage 15.R; that logic now lives, duplicated on purpose, in the regional `Iro*Ru
 | Experience / level-up progression | Implemented (existing behavior preserved) | tests; S | one level per grant | rates are configuration policy (not regional) |
 | Equipment: loadouts, size fix | Partial | R VF-05/06/15 | generated Knife + Cotton Shirt | other items/slots, scripts, cards, refine |
 | Client stat-up response | Partial | I (existing) | 0x0141 plus (job + buffs), 0x00B0 var 9, 0x00BC from one snapshot | MaxHP/MaxSp resend and derived cascade (captures needed, `ai/iro-2026-wire.md`) |
-| Regional rule architecture | Implemented | tests | iRO / kRO independent implementations, per-deployment selection, world profile guard | profile guard not durable across activation loss (see plan doc); kRO gameplay/protocol compatibility not verified or implemented |
+| Regional rule architecture | Implemented | tests | iRO / kRO independent implementations, per-deployment selection, world profile guard | World-configured profile (survives restart/failover), MapServer re-verifies on reconnect; silo agreement checked at silo start only; kRO gameplay/protocol compatibility not verified or implemented |
 | Regeneration, traits, skills, cards, refinement, full combat, other statuses | Deferred | - | - | Epics 16/17/18 or later approval |
 
 ## Reconstructed calculation architecture

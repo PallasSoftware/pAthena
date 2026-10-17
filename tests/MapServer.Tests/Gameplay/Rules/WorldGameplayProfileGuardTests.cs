@@ -35,3 +35,45 @@ public sealed class WorldGameplayProfileGuardTests
         Assert.Contains("Kro", ex.Message);
     }
 }
+
+public sealed class WorldGameplayProfileMonitorTests
+{
+    private static readonly WorldGameplayProfile Iro = new("Iro", "Renewal");
+    private static readonly WorldGameplayProfile Kro = new("Kro", "Renewal");
+
+    private static (Athena.Net.MapServer.Startup.WorldGameplayProfileMonitor Monitor, Func<int> Stops) Create(
+        Func<WorldGameplayProfile, Task<WorldGameplayProfileRegistration>> register)
+    {
+        var stops = 0;
+        var monitor = new Athena.Net.MapServer.Startup.WorldGameplayProfileMonitor(register, new GameplayOptions(), _ => { }, () => stops++);
+        return (monitor, () => stops);
+    }
+
+    [Fact]
+    public async Task CompatibleWorldAfterReconnect_KeepsServing()
+    {
+        var (monitor, stops) = Create(p => Task.FromResult(new WorldGameplayProfileRegistration(true, p)));
+        await monitor.VerifyAfterReconnectAsync();
+        Assert.False(monitor.Failed);
+        Assert.Equal(0, stops());
+    }
+
+    [Fact]
+    public async Task RestartedWorldWithAnotherProfile_StopsMapServerOnce()
+    {
+        var (monitor, stops) = Create(_ => Task.FromResult(new WorldGameplayProfileRegistration(false, Kro)));
+        await monitor.VerifyAfterReconnectAsync();
+        await monitor.VerifyAfterReconnectAsync();
+        Assert.True(monitor.Failed);
+        Assert.Equal(1, stops());
+    }
+
+    [Fact]
+    public async Task UnverifiableWorld_FailsClosed()
+    {
+        var (monitor, stops) = Create(_ => throw new TimeoutException());
+        await monitor.VerifyAfterReconnectAsync();
+        Assert.True(monitor.Failed);
+        Assert.Equal(1, stops());
+    }
+}

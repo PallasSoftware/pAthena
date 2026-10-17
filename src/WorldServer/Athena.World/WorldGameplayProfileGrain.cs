@@ -3,23 +3,15 @@ using Orleans;
 
 namespace Athena.Net.World;
 
-// See IWorldGameplayProfileGrain. Orleans' single-threaded activation turns make register-or-compare race-free without locks.
-public sealed class WorldGameplayProfileGrain : Grain, IWorldGameplayProfileGrain
+// See IWorldGameplayProfileGrain. Stateless: the answer always comes from the hosting silo's deployment configuration, so a
+// re-created activation (idle collection, silo failure and re-activation on another silo) recovers the identical profile with no
+// stored state. Consistency between silos is enforced at silo startup (AddWorldGameplayProfile).
+public sealed class WorldGameplayProfileGrain(WorldGameplayProfileOptions configured) : Grain, IWorldGameplayProfileGrain
 {
-    private WorldGameplayProfile? _established;
-
-    public override Task OnActivateAsync(CancellationToken cancellationToken)
-    {
-        // The established profile is in-memory only, so the activation must not be idle-collected while the silo runs.
-        DelayDeactivation(TimeSpan.MaxValue);
-        return base.OnActivateAsync(cancellationToken);
-    }
-
     public Task<WorldGameplayProfileRegistration> RegisterAsync(WorldGameplayProfile requested)
     {
         if (string.IsNullOrWhiteSpace(requested.Region) || string.IsNullOrWhiteSpace(requested.RuleSet))
             throw new ArgumentException("A gameplay profile needs a region and a ruleset.", nameof(requested));
-        _established ??= requested;
-        return Task.FromResult(new WorldGameplayProfileRegistration(_established.Value.Equals(requested), _established.Value));
+        return Task.FromResult(new WorldGameplayProfileRegistration(configured.Profile.Equals(requested), configured.Profile));
     }
 }
