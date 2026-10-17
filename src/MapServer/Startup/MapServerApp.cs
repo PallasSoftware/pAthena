@@ -70,11 +70,12 @@ public static class MapServerApp
         //
         var gameplayOptions = new GameplayOptions
         {
-            RuleSet = mergedConfig.GameplayRuleSet
+            RuleSet = mergedConfig.GameplayRuleSet,
+            Region = mergedConfig.GameplayRegion
         };
 
         MapLogger.Status(
-            $"Gameplay ruleset: {gameplayOptions.RuleSet}");
+            $"Gameplay ruleset: {gameplayOptions.RuleSet}, region: {gameplayOptions.Region}");
 
         var gameplayRules =
             GameplayRulesFactory.Create(gameplayOptions);

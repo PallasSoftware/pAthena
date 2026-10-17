@@ -18,7 +18,14 @@ public static class GameplayRulesFactory
     // implementation in this codebase yet (see Gameplay/Rules/PreRenewal/README.md)
     // - selecting it must fail startup loudly, never silently fall back to Renewal
     // and never return a fake/stub rules object.
-    public static GameplayRuleServices Create(GameplayOptions options) => options.RuleSet switch
+    public static GameplayRuleServices Create(GameplayOptions options)
+    {
+        if (options.Region != GameplayRegion.Iro)
+            throw new NotSupportedException($"Gameplay region '{options.Region}' has no registered rule implementations yet.");
+        return CreateForRuleSet(options);
+    }
+
+    private static GameplayRuleServices CreateForRuleSet(GameplayOptions options) => options.RuleSet switch
     {
         RagnarokRuleSet.Renewal => new GameplayRuleServices(new RenewalBasicAttackRules()),
         RagnarokRuleSet.PreRenewal => throw new NotSupportedException("Pre-Renewal gameplay rules are not implemented."),

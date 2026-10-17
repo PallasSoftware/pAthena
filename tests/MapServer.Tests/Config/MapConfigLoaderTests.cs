@@ -154,6 +154,43 @@ public sealed class MapConfigLoaderTests
         Assert.Throws<InvalidOperationException>(() => MapConfigLoader.Load(path));
     }
 
+    [Theory]
+    [InlineData("iRO", GameplayRegion.Iro)]
+    [InlineData("IRO", GameplayRegion.Iro)]
+    [InlineData("kRO", GameplayRegion.Kro)]
+    [InlineData("kro", GameplayRegion.Kro)]
+    public void Load_ParsesGameplayRegion_CaseInsensitively(string value, GameplayRegion expected)
+    {
+        var path = Path.Combine(CreateTempDir(), "map_athena.conf");
+        File.WriteAllText(path, $"gameplay_region: {value}\n");
+
+        Assert.Equal(expected, MapConfigLoader.Load(path).GameplayRegion);
+    }
+
+    [Fact]
+    public void Load_GameplayRegionDefaultsToIro_WhenAbsent()
+    {
+        var path = Path.Combine(CreateTempDir(), "map_athena.conf");
+        File.WriteAllText(path, "gameplay_ruleset: Renewal\n");
+
+        Assert.Equal(GameplayRegion.Iro, MapConfigLoader.Load(path).GameplayRegion);
+    }
+
+    // Like gameplay_ruleset: a typo must fail loading, never run as the default region; numeric enum values are not names.
+    [Theory]
+    [InlineData("jRO")]
+    [InlineData("")]
+    [InlineData("1")]
+    [InlineData("iRO,kRO")]
+    public void Load_InvalidGameplayRegion_Throws(string value)
+    {
+        var path = Path.Combine(CreateTempDir(), "map_athena.conf");
+        File.WriteAllText(path, $"gameplay_region: {value}\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => MapConfigLoader.Load(path));
+        Assert.Contains("gameplay_region", ex.Message);
+    }
+
     [Fact]
     public void Load_ParsesExplicitValues()
     {

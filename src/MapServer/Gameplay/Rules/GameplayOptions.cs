@@ -9,4 +9,7 @@ namespace Athena.Net.MapServer.Gameplay.Rules;
 public sealed class GameplayOptions
 {
     public RagnarokRuleSet RuleSet { get; init; } = RagnarokRuleSet.Renewal;
+
+    // Regional gameplay implementations; iRO preserves the behavior that existed before regions were introduced.
+    public GameplayRegion Region { get; init; } = GameplayRegion.Iro;
 }

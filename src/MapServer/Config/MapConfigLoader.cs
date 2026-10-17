@@ -23,6 +23,7 @@ public static class MapConfigLoader
         var consoleLogFilePath = "./log/map-msg_log.log";
         var timestampFormat = string.Empty;
         var gameplayRuleSet = RagnarokRuleSet.Renewal;
+        var gameplayRegion = GameplayRegion.Iro;
         var gameplayRates = new GameplayRateOptions();
         var collisionArtifacts = new List<MapCollisionArtifactConfig>();
         string? mapCachePath = null;
@@ -45,6 +46,7 @@ public static class MapConfigLoader
                 ConsoleLogFilePath = consoleLogFilePath,
                 TimestampFormat = timestampFormat,
                 GameplayRuleSet = gameplayRuleSet,
+                GameplayRegion = gameplayRegion,
                 GameplayRates = gameplayRates,
                 CustomsEnabled = customsEnabled,
             };
@@ -148,6 +150,20 @@ public static class MapConfigLoader
                         $"Invalid gameplay_ruleset value '{value}' in '{path}'. Valid values: {string.Join(", ", Enum.GetNames<RagnarokRuleSet>())}.");
                 }
             }
+            else if (key.Equals("gameplay_region", StringComparison.OrdinalIgnoreCase))
+            {
+                // Same strictness as gameplay_ruleset: an unknown region must fail startup, never quietly run as iRO.
+                // Names only - Enum.TryParse would also accept "0"/"1".
+                var region = GameplayRegion.Iro;
+                if (!Enum.GetNames<GameplayRegion>().Any(name => name.Equals(value, StringComparison.OrdinalIgnoreCase)) ||
+                    !Enum.TryParse(value, ignoreCase: true, out region))
+                {
+                    throw new InvalidOperationException(
+                        $"Invalid gameplay_region value '{value}' in '{path}'. Valid values: iRO, kRO.");
+                }
+
+                gameplayRegion = region;
+            }
             else if (TryApplyGameplayRate(key, value, path, gameplayRates, out var updatedRates))
             {
                 gameplayRates = updatedRates;
@@ -205,6 +221,7 @@ public static class MapConfigLoader
             ConsoleLogFilePath = consoleLogFilePath,
             TimestampFormat = timestampFormat,
             GameplayRuleSet = gameplayRuleSet,
+            GameplayRegion = gameplayRegion,
             GameplayRates = gameplayRates,
             CollisionArtifacts = collisionArtifacts,
             MapCachePath = mapCachePath,
