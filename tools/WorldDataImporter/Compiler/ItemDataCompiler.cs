@@ -115,7 +115,7 @@ internal static class ItemDataCompiler
     // whose Script block matches the narrow getitem-only shape this compiler recognizes (see
     // TryParseGetItemScript) - null for every other row, including a Usable row with no Script
     // or with a script this compiler cannot represent (that case throws instead, see below).
-    internal sealed record ItemDefinitionData(int Id, string AegisName, string Name, string Type, bool Stackable, int ClientViewId, int? Attack, int? WeaponLevel, WeaponType? WeaponType, int? Range, uint? EquipLocation, IReadOnlyList<(int ItemId, uint Amount)>? Grants, int? Defense = null);
+    internal sealed record ItemDefinitionData(int Id, string AegisName, string Name, string Type, bool Stackable, int ClientViewId, int? Attack, int? WeaponLevel, WeaponType? WeaponType, int? Range, uint? EquipLocation, IReadOnlyList<(int ItemId, uint Amount)>? Grants, int? Defense = null, int? MagicAttack = null);
 
     internal static ItemDefinitionData ReadItemDefinition(string itemDbYaml, int itemId)
     {
@@ -157,6 +157,8 @@ internal static class ItemDataCompiler
         // summed into base_status->def by status_calc_pc_sub for every equipped item. Read for Armor rows only.
         var defense = isArmor ? (OptionalScalar(block, "Defense") is { } defenseText ? int.Parse(defenseText, CultureInfo.InvariantCulture) : 0) : (int?)null;
 
+        var magicAttack = isWeapon ? (OptionalScalar(block, "MagicAttack") is { } matkText ? int.Parse(matkText, CultureInfo.InvariantCulture) : 0) : (int?)null;
+
         uint? equipLocation = null;
         if (isWeapon || isArmor)
         {
@@ -168,7 +170,7 @@ internal static class ItemDataCompiler
         // entirely and must not be misread as a container).
         var grants = type == "Usable" ? TryParseGetItemScript(block) : null;
 
-        return new ItemDefinitionData(itemId, aegisName, name, type, !NonStackableTypes.Contains(type), clientViewId, attack, weaponLevel, weaponType, range, equipLocation, grants, defense);
+        return new ItemDefinitionData(itemId, aegisName, name, type, !NonStackableTypes.Contains(type), clientViewId, attack, weaponLevel, weaponType, range, equipLocation, grants, defense, magicAttack);
     }
 
     // Recognizes ONLY the narrow script shape this project models: a Script block consisting
@@ -316,7 +318,8 @@ internal static class ItemDataCompiler
                 .Append("        WeaponLevel: ").Append(item.WeaponLevel!.Value.ToString(CultureInfo.InvariantCulture)).AppendLine(",")
                 .Append("        WeaponType: WeaponType.").Append(item.WeaponType!.Value).AppendLine(",")
                 .Append("        Range: ").Append(item.Range!.Value.ToString(CultureInfo.InvariantCulture)).AppendLine(",")
-                .Append("        EquipLocation: 0x").Append(item.EquipLocation!.Value.ToString("X6", CultureInfo.InvariantCulture)).AppendLine(",");
+                .Append("        EquipLocation: 0x").Append(item.EquipLocation!.Value.ToString("X6", CultureInfo.InvariantCulture)).AppendLine(",")
+                .Append("        MagicAttack: ").Append(item.MagicAttack!.Value.ToString(CultureInfo.InvariantCulture)).AppendLine(",");
         }
         else if (isArmor)
         {

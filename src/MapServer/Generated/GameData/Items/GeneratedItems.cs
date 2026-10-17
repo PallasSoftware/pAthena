@@ -31,6 +31,7 @@ internal static class GeneratedItems
         WeaponType: WeaponType.Dagger,
         Range: 1,
         EquipLocation: 0x000002,
+        MagicAttack: 0,
         Source: new WorldSourceInfo("rAthena", "e985006171d2eb320ee512a653f4c83aea3d81b6", "legacy/rathena/db/re/item_db_equip.yml", 0));
 
     // Generated via `compile-item --item-id 2301 --item-db-file db/re/item_db_equip.yml`.

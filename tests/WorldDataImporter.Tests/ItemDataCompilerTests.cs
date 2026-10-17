@@ -270,6 +270,17 @@ public sealed class ItemDataCompilerTests
         Assert.DoesNotContain("Attack:", generated);
     }
 
+    [Fact]
+    public void ReadItemDefinition_WeaponMagicAttack_DefaultsToZeroAndIsReadWhenPresent()
+    {
+        Assert.Equal(0, ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 1301).MagicAttack);
+        var staff = ItemDbFixture.Replace("    Attack: 17\n", "    Attack: 17\n    MagicAttack: 15\n", StringComparison.Ordinal);
+        var item = ItemDataCompiler.ReadItemDefinition(staff, 1301);
+        Assert.Equal(15, item.MagicAttack);
+        Assert.Contains("MagicAttack: 15,", ItemDataCompiler.Generate(item, "abc", "C", "Staff", "db/re/item_db_equip.yml", 1));
+        Assert.Null(ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 2301).MagicAttack);
+    }
+
     // item_db_equip.yml header: "Defense  Armor's defense. (Default: 0)".
     [Fact]
     public void ReadItemDefinition_ArmorWithoutDefenseColumn_DefaultsToZero_AndWeaponsHaveNone()

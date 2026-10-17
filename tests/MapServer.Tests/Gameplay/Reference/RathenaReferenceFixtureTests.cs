@@ -128,7 +128,7 @@ public sealed class RathenaReferenceFixtureTests
 
     private static DerivedStats Expected(System.Text.Json.JsonElement b) => new(
         b.GetProperty("batk").GetInt32(), b.GetProperty("hit").GetInt32(), b.GetProperty("flee").GetInt32(), b.GetProperty("flee2").GetInt32(),
-        b.GetProperty("cri").GetInt32(), b.GetProperty("def2").GetInt32(), b.GetProperty("mdef2").GetInt32());
+        b.GetProperty("cri").GetInt32(), b.GetProperty("def2").GetInt32(), b.GetProperty("mdef2").GetInt32(), MagicAttackMin: b.GetProperty("matk_min").GetInt32(), MagicAttackMax: b.GetProperty("matk_max").GetInt32());
 
     private static CharacterGameplayState StateFrom(System.Text.Json.JsonElement i)
     {

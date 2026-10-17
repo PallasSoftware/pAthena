@@ -2,7 +2,7 @@ using Athena.Net.MapServer.World;
 
 namespace Athena.Net.MapServer.Gameplay.Rules.Renewal;
 
-public readonly record struct DerivedStats(int BaseAttack, int Hit, int Flee, int PerfectFlee, int Critical, int SoftDefense, int SoftMagicDefense, int HardDefense = 0);
+public readonly record struct DerivedStats(int BaseAttack, int Hit, int Flee, int PerfectFlee, int Critical, int SoftDefense, int SoftMagicDefense, int HardDefense = 0, int MagicAttackMin = 0, int MagicAttackMax = 0);
 
 // Renewal PC derived stats for the supported scope: armor hard DEF only from equipment (no refine/cards/scripts), no passives or map penalties, and only the
 // Blessing / Increase AGI overlays. Mirrors status_calc_misc (base_status, status.cpp:2600-2746) and the delta
@@ -45,7 +45,12 @@ internal static class DerivedStatCalculator
         // CRI and perfect FLEE have no overlay from the supported statuses (LUK is unchanged by them).
         // Hard DEF = summed equipped-armor DEF; status_calc_def with no active DEF status is cap_value(def, SHRT_MIN, SHRT_MAX).
         var hardDef = Math.Clamp(equipment.HardDefense, short.MinValue, ShortMax);
-        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef };
+
+        // status_calc_bl_main SCB_MATK, RENEWAL (status.cpp:6283-6361): StatusMATK from the EFFECTIVE stats; weapon MATK, %,
+        // pseudo-buffs and equipment MATK are not modeled, so a weapon with MagicAttack is rejected rather than ignored.
+        if ((equipment.Weapon?.MagicAttack ?? 0) != 0) throw new NotSupportedException("Weapon MATK is not modeled.");
+        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4, 0, ushort.MaxValue);
+        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef, MagicAttackMin = matk, MagicAttackMax = matk };
     }
 
     // status_calc_misc, RENEWAL, BL_PC (status.cpp:2638-2745).

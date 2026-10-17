@@ -98,7 +98,10 @@ public sealed record WeaponItemDefinition(
     WeaponType WeaponType,
     int Range,
     uint EquipLocation,
-    WorldSourceInfo Source)
+    WorldSourceInfo Source,
+    // item_db_equip.yml `MagicAttack` (Default 0): the weapon's MATK term in the Renewal MATK formula. Carried so a weapon
+    // with MATK cannot be mistaken for a plain one; DerivedStatCalculator rejects MagicAttack > 0 until weapon MATK is modeled.
+    int MagicAttack = 0)
     : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source), IEquippableItemDefinition;
 
 // Armor-slot equipment (pinned Type: Armor - EQP_ARMOR/EQP_HEAD_*/EQP_SHOES/etc via item_db
