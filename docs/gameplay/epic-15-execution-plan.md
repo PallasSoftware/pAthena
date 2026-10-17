@@ -142,10 +142,22 @@ The World owns an immutable, deployment-configured profile: `ATHENA_WORLD_GAMEPL
 given the same values.
 - `IWorldGameplayProfileGrain` is stateless: any activation (first, re-activated, failed over to another silo) answers from its hosting silo's
   configuration, so the profile survives silo restart and failover without persistence. A mismatched request is rejected, never adopted.
-- A silo startup task registers its own profile with the cluster; a silo configured differently from the cluster fails to start.
-  Limit: agreement is checked when a silo starts/joins (against the current activation host), not continuously.
+  It is only a *secondary* check - where it activates is a placement detail - so before answering it also requires every active peer silo
+  to have published the same profile; a differing or unverifiable peer makes the call throw (MapServers treat that as fail closed).
+- Silo metadata is the authoritative cluster check: each silo publishes `athena.world.gameplay-profile` through `UseSiloMetadata`
+  (immutable, from the same World configuration). At startup every active peer (read via `ISiloMetadataCache`) must show an equal value; a
+  differing value fails startup, and a missing/empty/not-yet-fetched value is *pending*, never a match - pending past
+  `PeerMetadataTimeout` (30 s) fails startup. A monitor repeats the check every 5 s while the silo runs; on a disagreement only the
+  *newer* silo (higher `SiloAddress.Generation`) stops, so a misconfigured newcomer cannot take down the established cluster.
+- Remaining race (documented, fail-closed): two differently configured silos that become active together each skip the other at startup
+  (it is not yet active) and run until the monitor's next tick (<= 5 s); the grain check also fails closed while they disagree. A rejected
+  silo that is still listed as active until membership declares it dead keeps the profile grain failing closed (MapServers fail rather than
+  being told a wrong profile). Smallest stronger alternative if this window is not acceptable: gate silo activation on an external
+  deployment-time guarantee (identical environment on all silos, e.g. one orchestrator manifest) - a cluster-internal check cannot close a
+  concurrent-join window completely without persistent coordination.
 - MapServer checks the profile at startup and again on every recovered Orleans connection (`WorldConnectionWatchdog.ConnectionRecovered` ->
   `WorldGameplayProfileMonitor`); mismatch or an unverifiable World stops MapServer with exit code 78 (fail closed).
 - Tests: `WorldGameplayProfileConfigurationTests`, `WorldGameplayProfileGrainTests` (incl. reactivation), `WorldGameplayProfileClusterTests`
-  (startup mismatch, same-profile join, hosting-silo failover), `WorldGameplayProfileMonitorTests`, `WorldConnectionWatchdogRecoveryTests`.
+  (startup mismatch, kRO join after the grain was deactivated, same-profile join, missing peer metadata, hosting-silo failover, concurrent
+  iRO/kRO startups, monitor catching a join race and stopping only the newer silo), `WorldGameplayProfileMonitorTests`, `WorldConnectionWatchdogRecoveryTests`.
 - Not done: AppHost does not set the variables (defaults iRO/Renewal apply); kRO gameplay/protocol compatibility remains unverified.

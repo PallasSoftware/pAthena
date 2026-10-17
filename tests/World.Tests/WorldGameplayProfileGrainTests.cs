@@ -94,20 +94,30 @@ public sealed class WorldGameplayProfileGrainTests : IAsyncLifetime
     }
 }
 
-// Cluster-level behavior: silos must agree, and a failover to another silo keeps the profile.
+// Cluster-level behavior: silos must agree (silo metadata is authoritative, the grain is secondary), and a failover keeps the profile.
 public sealed class WorldGameplayProfileClusterTests
 {
-    // The profile the NEXT silo to be built should carry; tests set it before (re)starting a silo.
-    private static WorldGameplayProfile s_nextSiloProfile = new("Iro", "Renewal");
+    private static readonly WorldGameplayProfile Iro = new("Iro", "Renewal");
+    private static readonly WorldGameplayProfile Kro = new("Kro", "Renewal");
+
+    // Options for the NEXT silo(s) to be built, consumed one per silo (null = a silo that publishes no profile at all).
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<WorldGameplayProfileOptions?> s_next = new();
 
     public sealed class PerSiloProfile : ISiloConfigurator
     {
-        public void Configure(ISiloBuilder siloBuilder) => siloBuilder.AddWorldGameplayProfile(new WorldGameplayProfileOptions(s_nextSiloProfile));
+        public void Configure(ISiloBuilder siloBuilder)
+        {
+            if (s_next.TryDequeue(out var options) && options is not null) siloBuilder.AddWorldGameplayProfile(options);
+        }
     }
 
-    private static async Task<TestCluster> DeployAsync(WorldGameplayProfile profile, short silos)
+    private static WorldGameplayProfileOptions Opts(WorldGameplayProfile profile) =>
+        new(profile) { PeerMetadataTimeout = TimeSpan.FromSeconds(3), MonitorInterval = TimeSpan.FromMilliseconds(100) };
+
+    private static async Task<TestCluster> DeployAsync(WorldGameplayProfileOptions? first, short silos = 1)
     {
-        s_nextSiloProfile = profile;
+        s_next.Clear();
+        for (var i = 0; i < silos; i++) s_next.Enqueue(first);
         var builder = new TestClusterBuilder(silos);
         builder.AddSiloBuilderConfigurator<PerSiloProfile>();
         var cluster = builder.Build();
@@ -115,42 +125,59 @@ public sealed class WorldGameplayProfileClusterTests
         return cluster;
     }
 
-    private static readonly WorldGameplayProfile Iro = new("Iro", "Renewal");
-    private static readonly WorldGameplayProfile Kro = new("Kro", "Renewal");
+    // While a rejected silo is still being torn down the grain fails closed (it throws instead of answering); the answer itself
+    // is only asserted once the call succeeds. A call that keeps failing for 15 s fails the test with the last exception.
+    // After a rejected join the half-started silo can linger as an active peer until membership declares it dead; the grain then
+    // fails closed. Either outcome is fine - answering "accepted" for the foreign profile is the only violation.
+    private static async Task AssertNeverAcceptsAsync(TestCluster cluster, WorldGameplayProfile foreign)
+    {
+        var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
+        WorldGameplayProfileRegistration? answer = null;
+        try { answer = await grain.RegisterAsync(foreign); } catch (Exception) { /* failed closed */ }
+        Assert.False(answer?.Accepted ?? false);
+    }
+
+    private static async Task<WorldGameplayProfileRegistration> RegisterAsync(TestCluster cluster, WorldGameplayProfile profile)
+    {
+        var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (true)
+        {
+            try { return await grain.RegisterAsync(profile); }
+            catch (Exception) when (DateTime.UtcNow < deadline) { await Task.Delay(200); }
+        }
+    }
 
     [Fact]
     public async Task ASiloConfiguredDifferentlyFromTheCluster_FailsToStart()
     {
-        var cluster = await DeployAsync(Iro, 1);
+        var cluster = await DeployAsync(Opts(Iro));
         try
         {
-            s_nextSiloProfile = Kro;
+            s_next.Enqueue(Opts(Kro));
             await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
 
-            // The running cluster is unaffected and still serves the iRO profile.
-            var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
-            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
-            Assert.False((await grain.RegisterAsync(Kro)).Accepted);
+            await AssertNeverAcceptsAsync(cluster, Kro);
         }
         finally { await cluster.StopAllSilosAsync(); }
     }
 
-    // The profile grain is deactivated first, so the joining silo's own startup registration could activate it afresh.
+    // Regression for the CI failure: with the grain deactivated, the joining silo must be rejected by the metadata check
+    // even if the grain would activate on the joining silo itself and accept its own profile.
     [Fact]
     public async Task ADifferentlyConfiguredSiloJoiningAfterTheGrainWasDeactivated_StillFailsToStart()
     {
-        var cluster = await DeployAsync(Iro, 1);
+        var cluster = await DeployAsync(Opts(Iro));
         try
         {
-            var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
-            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
+            Assert.True((await RegisterAsync(cluster, Iro)).Accepted);
             await cluster.GrainFactory.GetGrain<IManagementGrain>(0).ForceActivationCollection(TimeSpan.Zero);
 
-            s_nextSiloProfile = Kro;
-            await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
+            s_next.Enqueue(Opts(Kro));
+            var ex = await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
 
-            Assert.False((await grain.RegisterAsync(Kro)).Accepted);
-            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
+            Assert.Contains("mismatch", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+            await AssertNeverAcceptsAsync(cluster, Kro);
         }
         finally { await cluster.StopAllSilosAsync(); }
     }
@@ -158,44 +185,99 @@ public sealed class WorldGameplayProfileClusterTests
     [Fact]
     public async Task ASiloWithTheSameProfile_JoinsAndTheClusterKeepsOneProfile()
     {
-        var cluster = await DeployAsync(Kro, 1);
+        var cluster = await DeployAsync(Opts(Kro));
         try
         {
-            s_nextSiloProfile = Kro;
+            s_next.Enqueue(Opts(Kro));
             await cluster.StartAdditionalSiloAsync();
 
-            var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
-            Assert.True((await grain.RegisterAsync(Kro)).Accepted);
-            Assert.False((await grain.RegisterAsync(Iro)).Accepted);
+            Assert.Equal(2, cluster.GetActiveSilos().Count());
+            Assert.True((await RegisterAsync(cluster, Kro)).Accepted);
+            Assert.False((await RegisterAsync(cluster, Iro)).Accepted);
         }
         finally { await cluster.StopAllSilosAsync(); }
     }
 
-    // Failover: stop the silo that hosts the profile grain; the grain re-activates on the surviving silo and still answers with
-    // the configured profile (a first-registrant-wins design would have been empty here).
+    // Fail closed: a peer that publishes no profile is never treated as a match.
+    [Fact]
+    public async Task APeerWithoutProfileMetadata_IsNeverTreatedAsAMatch()
+    {
+        var cluster = await DeployAsync(null);
+        try
+        {
+            s_next.Enqueue(Opts(Iro));
+            var ex = await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
+
+            Assert.Contains("could not be verified", ex.ToString());
+        }
+        finally { await cluster.StopAllSilosAsync(); }
+    }
+
+    // Failover: stop the silo that hosts the profile grain; the grain re-activates on the survivor with the same profile, and the
+    // dead peer (no longer active) does not make the peer verification fail.
     [Fact]
     public async Task WhenTheHostingSiloStops_TheGrainFailsOverWithTheSameProfile()
     {
-        var cluster = await DeployAsync(Iro, 2);
+        var cluster = await DeployAsync(Opts(Iro), 2);
         try
         {
-            var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
-            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
+            Assert.True((await RegisterAsync(cluster, Iro)).Accepted);
 
             var management = cluster.GrainFactory.GetGrain<IManagementGrain>(0);
             var host = (await management.GetSimpleGrainStatistics())
                 .First(g => g.GrainType.Contains("WorldGameplayProfileGrain", StringComparison.OrdinalIgnoreCase) && g.ActivationCount > 0).SiloAddress;
             var hostSilo = cluster.GetActiveSilos().First(s => s.SiloAddress.Equals(host));
-            var survivor = cluster.GetActiveSilos().First(s => !s.SiloAddress.Equals(host));
 
             await cluster.StopSiloAsync(hostSilo);
 
-            var kro = await grain.RegisterAsync(Kro);
-            var iro = await grain.RegisterAsync(Iro);
+            var kro = await RegisterAsync(cluster, Kro);
             Assert.False(kro.Accepted);
             Assert.Equal(Iro, kro.Established);
-            Assert.True(iro.Accepted);
-            Assert.Contains(cluster.GetActiveSilos(), s => s.SiloAddress.Equals(survivor.SiloAddress));
+            Assert.True((await RegisterAsync(cluster, Iro)).Accepted);
+        }
+        finally { await cluster.StopAllSilosAsync(); }
+    }
+
+    // Two differently configured silos starting at the same moment against an iRO cluster: exactly the kRO one is rejected.
+    [Fact]
+    public async Task ConcurrentIroAndKroStartups_OnlyTheMatchingSiloJoins()
+    {
+        var cluster = await DeployAsync(Opts(Iro));
+        try
+        {
+            s_next.Enqueue(Opts(Iro));
+            s_next.Enqueue(Opts(Kro));
+            var starts = new[] { cluster.StartAdditionalSiloAsync(), cluster.StartAdditionalSiloAsync() };
+            try { await Task.WhenAll(starts); } catch { /* the rejected silo's failure is asserted below */ }
+
+            Assert.Equal(1, starts.Count(t => t.IsFaulted));
+            Assert.Equal(2, cluster.GetActiveSilos().Count());
+            await AssertNeverAcceptsAsync(cluster, Kro);
+        }
+        finally { await cluster.StopAllSilosAsync(); }
+    }
+
+    // The join race itself: a silo that skipped (or could not yet see its peers in) the startup check becomes active next to a
+    // differently configured one. The running monitors must find the mismatch and stop exactly the NEWER silo - never leave a
+    // mixed cluster running, and never stop the established silo because of a newcomer.
+    [Fact]
+    public async Task SilosThatBecameActiveTogetherWithDifferentProfiles_AreCaughtByTheMonitor_AndOnlyTheNewerStops()
+    {
+        var olderReports = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var newerReports = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var cluster = await DeployAsync(Opts(Iro) with { OnPeerMismatch = olderReports.Add });
+        try
+        {
+            s_next.Enqueue(Opts(Kro) with { VerifyAtStartup = false, OnPeerMismatch = newerReports.Add });
+            await cluster.StartAdditionalSiloAsync();
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (newerReports.IsEmpty && DateTime.UtcNow < deadline) await Task.Delay(100);
+            await Task.Delay(500); // give the older silo's monitor several more ticks in which it could wrongly report
+
+            Assert.Single(newerReports);
+            Assert.Contains("gameplay profile", newerReports.Single());
+            Assert.Empty(olderReports);
         }
         finally { await cluster.StopAllSilosAsync(); }
     }
