@@ -1172,6 +1172,13 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         CharacterMovementState movement, CancellationToken cancellationToken)
     {
         MapLogger.Info($"[iRO MAP DEBUG] World rejected {context} status={status} map='{_mapName}' movementId={_worldMovementId}");
+        // StopCoreAsync cancels the session and then removes this player's World presence BEFORE the movement loop is
+        // joined, so a tick already in flight legitimately sees NotFound/PresenceMismatch from our own departure. That
+        // is not a lost presence: end the loop quietly (it swallows cancellation) instead of failing the shutdown.
+        // Order guarantees the token is already cancelled whenever World can report this, so a rejection while the
+        // session is still alive keeps throwing below.
+        if (_sessionCancellation.IsCancellationRequested)
+            throw new OperationCanceledException(cancellationToken.IsCancellationRequested ? cancellationToken : _sessionCancellation.Token);
         // PresenceMismatch (a different PresenceId owns this character in World) and NotFound
         // (World has no presence for this player at all) are lifecycle invariant failures, never
         // ordinary reconciliation cases - even when World also returns a Presence alongside them

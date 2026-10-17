@@ -373,6 +373,36 @@ public sealed class MapClientSessionMovementRetargetTests
         catch (Exception) { /* expected: the invariant failure may surface here instead of being silently swallowed. */ }
     }
 
+    // Shutdown race (seen as an intermittent CI failure of Attack_MovementRequest_CancelsActiveRepeatAttack): StopCoreAsync
+    // cancels the session and removes the player's World presence BEFORE joining the movement loop, so a movement tick
+    // that was already in flight legitimately gets NotFound back. That is the session's own departure, not a lost
+    // presence, and must end the loop quietly instead of failing the session shutdown. (The sibling test above keeps the
+    // invariant failure for a NotFound that arrives while the session is still alive.)
+    [Fact]
+    public async Task RejectedAdvance_NotFoundCausedByOwnShutdown_DoesNotFailSessionShutdown()
+    {
+        var (client, stream, session, run, clock, world) = await SetupDistributedAsync(100, 100);
+        using var _ = client;
+        await stream.WriteAsync(BuildMovementRequest(105, 100));
+        await ReadExact(stream, 12);
+
+        using var advanceEntered = new ManualResetEventSlim();
+        using var sessionCancelled = new ManualResetEventSlim();
+        session.DebugAfterSessionCancelledHook = sessionCancelled.Set;
+        world.AdvanceOverride = _ =>
+        {
+            advanceEntered.Set();
+            Assert.True(sessionCancelled.Wait(TimeSpan.FromSeconds(10))); // return only after shutdown began, like World after the presence left
+            return new WorldMovementAdvanceResult(WorldMovementAdvanceStatus.NotFound, null);
+        };
+
+        clock.Advance(TimeSpan.FromMilliseconds(150));
+        Assert.True(advanceEntered.Wait(TimeSpan.FromSeconds(10)));
+        var stop = session.DisposeAsync().AsTask();
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(10)); // must not throw the lifecycle invariant InvalidOperationException
+    }
+
     // Correction #4: CancelMovementAsync reporting anything other than Cancelled/AlreadyAbsent
     // (including PresenceNotFound) is an invariant failure at every call site.
     [Fact]
