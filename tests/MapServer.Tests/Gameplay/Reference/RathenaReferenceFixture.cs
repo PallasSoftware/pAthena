@@ -11,8 +11,12 @@ internal sealed class RathenaReferenceFixture
 
     private readonly Dictionary<string, JsonElement> _scenarios = [];
 
-    public static RathenaReferenceFixture LoadCommitted() =>
-        Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Gameplay", "Reference", "rathena-reference.json")));
+    // Parsed once per test run: the fixture is several MB and ~2000 theory cases read it, so re-parsing per test starved the
+    // timing-sensitive integration tests that share the process (seen as intermittent CI timeouts).
+    private static readonly Lazy<RathenaReferenceFixture> Committed = new(() =>
+        Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Gameplay", "Reference", "rathena-reference.json"))));
+
+    public static RathenaReferenceFixture LoadCommitted() => Committed.Value;
 
     public static RathenaReferenceFixture Parse(string json)
     {
