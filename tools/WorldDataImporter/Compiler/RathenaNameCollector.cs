@@ -27,6 +27,8 @@ internal static partial class RathenaNameCollector
         foreach (var name in new[] { "EQP_Left_Hand", "EQP_Shadow_Armor", "EQP_Shadow_Weapon", "EQP_Shadow_Shield", "EQP_Shadow_Shoes", "EQP_Shadow_Right_Accessory", "EQP_Shadow_Left_Accessory" })
             names.Add(name);
 
+        AddItemGroupNames(RathenaYaml.Parse(readFile("db/re/item_group_db.yml"), "db/re/item_group_db.yml"), names);
+
         foreach (var file in ScriptBearingFiles)
             foreach (var script in Scripts(RathenaYaml.Parse(readFile(file), file)))
                 foreach (var token in new RathenaLexer(script, file).Lex())
@@ -36,6 +38,28 @@ internal static partial class RathenaNameCollector
             names.Add(match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value);
 
         return [.. names];
+    }
+
+    // The prefixed names ItemGroupLoader resolves for the group database (IG_<group>, GROUP_ALGORITHM_<x>, BOUND_<x>, ENCHANTGRADE_<x>).
+    private static void AddItemGroupNames(YamlNode root, SortedSet<string> names)
+    {
+        if (((YamlMap)root).Get("Body") is not YamlSequence body) return;
+        foreach (var group in body.Items.OfType<YamlMap>())
+        {
+            if (group.Scalar("Group") is { } name) names.Add("IG_" + name);
+            if (group.Get("SubGroups") is not YamlSequence subGroups) continue;
+            foreach (var subGroup in subGroups.Items.OfType<YamlMap>())
+            {
+                if (subGroup.Scalar("Algorithm") is { } algorithm) names.Add("GROUP_ALGORITHM_" + algorithm);
+                if (subGroup.Get("List") is not YamlSequence list) continue;
+                foreach (var entry in list.Items.OfType<YamlMap>())
+                {
+                    if (entry.Scalar("Bound") is { } bound) names.Add("BOUND_" + bound);
+                    if (entry.Scalar("GradeMinimum") is { } minimum) names.Add("ENCHANTGRADE_" + minimum);
+                    if (entry.Scalar("GradeMaximum") is { } maximum) names.Add("ENCHANTGRADE_" + maximum);
+                }
+            }
+        }
     }
 
     // The prefixed names ItemDatabaseLoader.ParseNode resolves for one item row.

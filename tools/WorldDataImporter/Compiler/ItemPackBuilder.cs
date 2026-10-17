@@ -37,7 +37,9 @@ internal static class ItemPackBuilder
             })
             .ToArray();
 
-        return new(new ItemPack(commit, items, scripts), Report(items, scripts, loaded.Warnings.Count));
+        var itemsByAegisName = items.ToDictionary(item => item.AegisName.ToLowerInvariant());
+        var groups = ItemGroupLoader.Load(readFile, constants, itemsByAegisName);
+        return new(new ItemPack(commit, items, scripts, groups), Report(items, scripts, groups, loaded.Warnings.Count));
     }
 
     // Named accessors used by hand-written code and tests. The items themselves live in the data pack; this file only gives a
@@ -75,12 +77,13 @@ internal static class ItemPackBuilder
         return builder.AppendLine("}").ToString();
     }
 
-    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, int loaderWarnings)
+    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, IReadOnlyList<PackItemGroup> groups, int loaderWarnings)
     {
         var report = new StringBuilder();
         report.AppendLine($"items: {items.Count}");
         report.AppendLine($"loader warnings (pinned data quirks the real loader also reports): {loaderWarnings}");
         foreach (var group in items.GroupBy(item => item.Type).OrderBy(group => group.Key)) report.AppendLine($"  type {group.Key,2}: {group.Count()}");
+        report.AppendLine($"item groups: {groups.Count} ({groups.Sum(group => group.SubGroups.Count)} sub groups, {groups.Sum(group => group.SubGroups.Sum(sub => sub.Entries.Count))} entries)");
         report.AppendLine($"distinct scripts: {scripts.Count}");
         report.AppendLine($"  lowered: {scripts.Count(script => script.Support == PackScriptSupport.Lowered)}");
         report.AppendLine($"  deferred: {scripts.Count(script => script.Support == PackScriptSupport.Deferred)}");

@@ -5,7 +5,7 @@ namespace Athena.Net.MapServer.Gameplay.Rules;
 
 // The one place MapServer decides which regional/ruleset gameplay implementations to register, called once from the
 // composition root (MapServerApp registers the result with the host's service collection via AddGameplayRules).
-// Every consumer downstream depends only on the ICombatRules/IStatRules/ITimingRules/IStatusEffectRules/IExperienceRules
+// Every consumer downstream depends only on the ICombatRules/IStatRules/ITimingRules/IStatusEffectRules/IExperienceRules/IInventoryRules
 // abstractions. The two regions have completely separate concrete implementations (no sharing, inheritance or delegation
 // between them), so each can evolve independently; they currently reproduce the same pinned rAthena Renewal behavior.
 //
@@ -35,12 +35,12 @@ public static class GameplayRulesFactory
     private static GameplayRuleServices CreateIro()
     {
         var stats = new IroStatRules();
-        return new GameplayRuleServices(new IroCombatRules(), stats, new IroTimingRules(), new IroStatusEffectRules(), new IroExperienceRules(stats));
+        return new GameplayRuleServices(new IroCombatRules(), stats, new IroTimingRules(), new IroStatusEffectRules(), new IroExperienceRules(stats), new IroInventoryRules());
     }
 
     private static GameplayRuleServices CreateKro()
     {
         var stats = new KroStatRules();
-        return new GameplayRuleServices(new KroCombatRules(), stats, new KroTimingRules(), new KroStatusEffectRules(), new KroExperienceRules(stats));
+        return new GameplayRuleServices(new KroCombatRules(), stats, new KroTimingRules(), new KroStatusEffectRules(), new KroExperienceRules(stats), new KroInventoryRules());
     }
 }

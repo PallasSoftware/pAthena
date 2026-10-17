@@ -2,12 +2,13 @@
 # Feature 16 data-pipeline evidence from the REAL pinned rAthena (same disposable build as run.ps1):
 #   - resolves script identifiers through script_get_constant / script_get_parameter  -> -ConstantsOut (name<TAB>value<TAB>c|p)
 #   - dumps every item_db entry as the real item loader stored it                     -> -ItemsOut (gzip, one canonical line per item)
-# Usage: pwsh tools/rathena-reference/run-data.ps1 -NamesFile <identifiers.txt> -ConstantsOut <file.tsv> -ItemsOut <file.txt.gz>
+# Usage: pwsh tools/rathena-reference/run-data.ps1 -NamesFile <identifiers.txt> -ConstantsOut <file.tsv> -ItemsOut <file.txt.gz> [-GroupsOut <file.txt.gz>]
 # Regeneration is deliberate; the importer and its tests only read the committed outputs.
 param(
     [Parameter(Mandatory)][string]$NamesFile,
     [Parameter(Mandatory)][string]$ConstantsOut,
-    [Parameter(Mandatory)][string]$ItemsOut
+    [Parameter(Mandatory)][string]$ItemsOut,
+    [string]$GroupsOut
 )
 $ErrorActionPreference = 'Stop'
 $pin = 'e985006171d2eb320ee512a653f4c83aea3d81b6'
@@ -42,7 +43,7 @@ for i in $(seq 1 60); do mariadb -e 'select 1' >/dev/null 2>&1 && break; sleep 1
 mariadb -e "create database ragnarok; create user 'ragnarok'@'127.0.0.1' identified by 'ragnarok'; create user 'ragnarok'@'localhost' identified by 'ragnarok'; grant all on ragnarok.* to 'ragnarok'@'127.0.0.1'; grant all on ragnarok.* to 'ragnarok'@'localhost';"
 for f in main logs; do mariadb ragnarok < /src/rathena/sql-files/$f.sql; done
 cd /src/rathena
-RA_NAMES=/io/names.txt RA_NAMES_OUT=/io/constants.tsv RA_ITEMS_OUT=/io/items.txt ./map-server >/tmp/map.log 2>&1 || { tail -60 /tmp/map.log >&2; exit 1; }
+RA_NAMES=/io/names.txt RA_NAMES_OUT=/io/constants.tsv RA_ITEMS_OUT=/io/items.txt RA_GROUPS_OUT=/io/groups.txt ./map-server >/tmp/map.log 2>&1 || { tail -60 /tmp/map.log >&2; exit 1; }
 '@ -replace "`r", ''
     Invoke-Native docker @('run', '--rm', '-v', "${io}:/io", 'athena-rathena-reference', 'sh', '-c', $inner)
 
@@ -51,12 +52,16 @@ RA_NAMES=/io/names.txt RA_NAMES_OUT=/io/constants.tsv RA_ITEMS_OUT=/io/items.txt
     (Get-Content (Join-Path $io 'constants.tsv') | Sort-Object { $_.Split("`t")[0] } -CaseSensitive) -join "`n" | Set-Content -Path $ConstantsOut -NoNewline
     Add-Content -Path $ConstantsOut -Value "`n" -NoNewline
 
-    $bytes = [IO.File]::ReadAllBytes((Join-Path $io 'items.txt'))
-    $fs = [IO.File]::Create($ItemsOut)
-    try {
-        $gz = [IO.Compression.GZipStream]::new($fs, [IO.Compression.CompressionLevel]::SmallestSize)
-        $gz.Write($bytes, 0, $bytes.Length)
-        $gz.Dispose()
-    } finally { $fs.Dispose() }
+    function Write-Gzip([string]$source, [string]$target) {
+        $bytes = [IO.File]::ReadAllBytes($source)
+        $fs = [IO.File]::Create($target)
+        try {
+            $gz = [IO.Compression.GZipStream]::new($fs, [IO.Compression.CompressionLevel]::SmallestSize)
+            $gz.Write($bytes, 0, $bytes.Length)
+            $gz.Dispose()
+        } finally { $fs.Dispose() }
+    }
+    Write-Gzip (Join-Path $io 'items.txt') $ItemsOut
+    if ($GroupsOut) { New-Item -ItemType Directory -Force (Split-Path -Parent $GroupsOut) | Out-Null; Write-Gzip (Join-Path $io 'groups.txt') $GroupsOut }
 }
 finally { Remove-Item -Recurse -Force $ctx -ErrorAction SilentlyContinue }

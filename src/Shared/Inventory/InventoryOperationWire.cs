@@ -41,6 +41,9 @@ public sealed record InventoryItemRow(
 {
     public const int WireLength = 83;
 
+    /// <summary>UniqueId value of an AddNew template meaning "CharServer assigns a fresh unique id" (pc_generate_unique_id).</summary>
+    public const ulong GenerateUniqueId = ulong.MaxValue;
+
     public static InventoryItemRow New(uint itemId, uint amount, byte identify = 1) =>
         new(0, itemId, amount, 0, identify, 0, 0, 0, 0, 0, 0, 0, 0, 0, default, default, default, default, default, 0, 0, 0, 0);
 

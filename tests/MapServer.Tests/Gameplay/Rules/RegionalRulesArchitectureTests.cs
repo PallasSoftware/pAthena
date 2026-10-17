@@ -8,7 +8,7 @@ namespace Athena.Net.MapServer.Tests.Gameplay.Rules;
 // Guards the regional-independence rules of Stage 15.R by scanning the actual production source and types.
 public sealed class RegionalRulesArchitectureTests
 {
-    private static readonly string[] RuleKinds = ["Combat", "Stat", "Timing", "StatusEffect", "Experience"];
+    private static readonly string[] RuleKinds = ["Combat", "Stat", "Timing", "StatusEffect", "Experience", "Inventory"];
 
     private static string RepoRoot()
     {
@@ -43,8 +43,8 @@ public sealed class RegionalRulesArchitectureTests
     [Fact]
     public void RegionalImplementations_AreSealedAndDeriveOnlyFromObject_SoNothingInheritsAnotherRegionsEngine()
     {
-        Type[] iro = [typeof(IroCombatRules), typeof(IroStatRules), typeof(IroTimingRules), typeof(IroStatusEffectRules), typeof(IroExperienceRules)];
-        Type[] kro = [typeof(KroCombatRules), typeof(KroStatRules), typeof(KroTimingRules), typeof(KroStatusEffectRules), typeof(KroExperienceRules)];
+        Type[] iro = [typeof(IroCombatRules), typeof(IroStatRules), typeof(IroTimingRules), typeof(IroStatusEffectRules), typeof(IroExperienceRules), typeof(IroInventoryRules)];
+        Type[] kro = [typeof(KroCombatRules), typeof(KroStatRules), typeof(KroTimingRules), typeof(KroStatusEffectRules), typeof(KroExperienceRules), typeof(KroInventoryRules)];
         Assert.All(iro.Concat(kro), t =>
         {
             Assert.True(t.IsSealed, $"{t.Name} must be sealed");

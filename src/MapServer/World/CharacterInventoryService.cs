@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.Net;
 using Athena.Net.Shared.Inventory;
@@ -21,6 +22,9 @@ public enum InventoryChangeStatus
 public sealed record InventoryChange(InventoryChangeStatus Status, CharacterInventorySnapshot Snapshot, IReadOnlyList<InventoryMutationResult> Results, Guid OperationId)
 {
     public bool Succeeded => Status == InventoryChangeStatus.Applied;
+
+    /// <summary>For a rejected grant: the pinned pc_additem result (overweight, no free slot, ...) that stopped it.</summary>
+    public AddItemResult? Failure { get; init; }
 
     /// <summary>The mutations that were sent (same order as <see cref="Results"/>).</summary>
     public IReadOnlyList<InventoryMutation> Mutations { get; init; } = [];
@@ -54,10 +58,19 @@ public sealed class CharacterInventoryService
     private CharacterInventorySnapshot _snapshot;
     private bool _needsReload;
 
+    private readonly IInventoryRules _rules;
+    private readonly IReadOnlyDictionary<int, ItemDefinition> _items;
+    private readonly Func<InventoryLimits> _limits;
+
     public CharacterInventoryService(
         uint accountId, uint charId, ICharacterInventoryOperations operations, CharacterInventorySnapshot initial,
+        IInventoryRules rules, IReadOnlyDictionary<int, ItemDefinition> items, Func<InventoryLimits>? limits = null,
         int maxAttempts = 3, TimeSpan? retryDelay = null)
     {
+        _rules = rules;
+        _items = items;
+        // Without a stats-derived provider the character gets the base inventory and no practical weight limit (tests, tools).
+        _limits = limits ?? (() => new InventoryLimits(100, uint.MaxValue));
         _accountId = accountId;
         _charId = charId;
         _operations = operations;
@@ -94,12 +107,48 @@ public sealed class CharacterInventoryService
         finally { _gate.Release(); }
     }
 
-    /// <summary>Grants several items in ONE durable operation (all or nothing).</summary>
-    public async Task<InventoryChange> GrantAsync(IReadOnlyList<(ItemDefinition Definition, uint Amount)> grants, InventoryOperationKind kind, CancellationToken cancellationToken) =>
-        await ExecuteAsync(kind, inventory => InventoryPlanner.PlanGrants(inventory, grants), cancellationToken);
+    /// <summary>
+    /// Grants several items in ONE durable operation (all or nothing). The regional pc_additem rules decide each unit against the capacity and
+    /// weight limits current at planning time; when one does not fit, nothing is sent and <see cref="InventoryChange.Failure"/> carries its code.
+    /// </summary>
+    public async Task<InventoryChange> GrantAsync(IReadOnlyList<InventoryPlanner.GrantRequest> grants, InventoryOperationKind kind, CancellationToken cancellationToken)
+    {
+        InventoryPlanner.GrantPlan? plan = null;
+        var change = await ExecuteAsync(kind, inventory =>
+        {
+            plan = InventoryPlanner.PlanGrants(_rules, inventory, _limits(), _items, grants);
+            return plan.Mutations;
+        }, cancellationToken);
+        return plan is { Succeeded: false } ? change with { Failure = plan.Result } : change;
+    }
+
+    /// <summary>
+    /// Consumes units of one row and creates the granted items in ONE durable operation (a container opened: the box is gone exactly when its
+    /// contents exist). The grants are planned against the inventory as it is AFTER the consumption, so the freed slot and weight count.
+    /// </summary>
+    public async Task<InventoryChange> ConsumeAndGrantAsync(uint durableId, uint consume, IReadOnlyList<InventoryPlanner.GrantRequest> grants, InventoryOperationKind kind, CancellationToken cancellationToken)
+    {
+        InventoryPlanner.GrantPlan? plan = null;
+        var change = await ExecuteAsync(kind, inventory =>
+        {
+            var row = inventory.Items.FirstOrDefault(item => item.DurableId == durableId);
+            if (row is null || row.Amount < consume) return null;
+
+            var remaining = row.Amount - consume;
+            var afterConsumption = remaining == 0
+                ? inventory.WithoutDurableId(durableId)
+                : inventory.WithUpdatedItem(durableId, row.ItemId, remaining, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
+            plan = InventoryPlanner.PlanGrants(_rules, afterConsumption, _limits(), _items, grants);
+            return plan.Mutations is null ? null : [InventoryPlanner.RemoveFromRow(row, consume), .. plan.Mutations];
+        }, cancellationToken);
+        return plan is { Succeeded: false } ? change with { Failure = plan.Result } : change;
+    }
+
+    public Task<InventoryChange> GrantAsync(IReadOnlyList<(ItemDefinition Definition, uint Amount)> grants, InventoryOperationKind kind, CancellationToken cancellationToken) =>
+        GrantAsync([.. grants.Select(grant => new InventoryPlanner.GrantRequest(grant.Definition, grant.Amount))], kind, cancellationToken);
 
     public Task<InventoryChange> GrantAsync(ItemDefinition definition, uint amount, CancellationToken cancellationToken) =>
-        GrantAsync([(definition, amount)], InventoryOperationKind.Add, cancellationToken);
+        GrantAsync([new InventoryPlanner.GrantRequest(definition, amount)], InventoryOperationKind.Add, cancellationToken);
 
     /// <summary>Removes an amount of an item id across its rows in ONE durable operation.</summary>
     public Task<InventoryChange> RemoveByItemIdAsync(int itemId, uint amount, CancellationToken cancellationToken) =>

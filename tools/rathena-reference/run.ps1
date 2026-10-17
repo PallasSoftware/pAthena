@@ -52,6 +52,9 @@ cat /out/reference.json
         'VF-17' = 'Attack motion/delay, weapon type, range and weapon ATK for the VF-16 jobs wearing nothing or one representative real weapon per weapon_type (Knife, Sword, Axe, Javelin, Club, Rod, Bow, Waghnakh, Violin), base 1/job 1, fixed stats.'
         'VF-07' = 'Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.'
         'VF-08' = 'Increase AGI started twice via status_change_start on a fresh Novice: retained val1/val2, stats, speed, ASPD, timer deadline movement and state after status_change_end.'
+        'VF-20' = 'Feature 16: base max weight (status_calc_weight: job MaxWeight + STR*300) for 14 representative jobs x STR {1,50,99}, plus the item/weight related battle_config values the pinned binary actually runs with (conf/battle, not code defaults).'
+        'VF-21' = 'Feature 16: real pc_additem decisions for 22 cases - empty add, merge, non-stackable, MAX_AMOUNT and Stack.Amount limits, weight, slot capacity, bound/rental/card mismatch, unique id assignment, slot beyond the permitted inventory size - with the resulting rows, weight and free slots.'
+        'VF-22' = 'Feature 16: pc_updateweightstatus thresholds and hysteresis (SC_WEIGHT50 / SC_WEIGHT90, regen overweight) over the weight sequence 0,699,700,701,899,900,1000,899,699,0 at max_weight 1000.'
         'VF-14' = 'Loader values for mob 1002, plus mobs 1002/1031/1013 spawned (SZ_SMALL) and attacking the VF-01 Novice through real battle_calc_attack: 2000 seeded samples each (std::mt19937 reseeded 1..2000), histogram of non-zero damage, zero/miss count. Covers roll bounds, batk and def2 for ordinary non-skill attacks; hit/flee outcome is recorded but not compared.'
     }
     $fixture = [ordered]@{

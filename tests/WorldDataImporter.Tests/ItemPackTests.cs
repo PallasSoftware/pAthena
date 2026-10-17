@@ -43,6 +43,9 @@ public sealed class ItemPackTests
         Assert.Equal(Commit, read.RathenaCommit);
         Assert.Equal(Built.Value.Pack.Items, read.Items);
         Assert.Equal(Built.Value.Pack.Scripts.Count, read.Scripts.Count);
+        Assert.Equal(Built.Value.Pack.Groups.Count, read.Groups.Count);
+        Assert.Equal(Built.Value.Pack.Groups.Sum(g => g.SubGroups.Sum(s => s.Entries.Count)), read.Groups.Sum(g => g.SubGroups.Sum(s => s.Entries.Count)));
+        Assert.Equal(Built.Value.Pack.Groups.SelectMany(g => g.SubGroups).SelectMany(s => s.Entries), read.Groups.SelectMany(g => g.SubGroups).SelectMany(s => s.Entries));
         for (var i = 0; i < read.Scripts.Count; i++)
         {
             var expected = Built.Value.Pack.Scripts[i];

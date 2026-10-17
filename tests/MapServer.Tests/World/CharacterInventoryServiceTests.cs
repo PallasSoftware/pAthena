@@ -20,7 +20,7 @@ public sealed class CharacterInventoryServiceTests
     {
         var snapshot = new CharacterInventorySnapshot(rows);
         var operations = new InMemoryInventoryOperations(snapshot);
-        return (operations, new CharacterInventoryService(AccountId, CharId, operations, snapshot, retryDelay: TimeSpan.Zero));
+        return (operations, global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, snapshot));
     }
 
     private static CharacterInventoryItem Row(uint id, uint slot, int itemId, uint amount, uint equip = 0, ItemInstanceDetail? detail = null) =>
@@ -56,16 +56,17 @@ public sealed class CharacterInventoryServiceTests
         Assert.Equal([0u, 1u, 2u], service.Snapshot.Items.Select(row => row.SlotIndex));
     }
 
+    // Pinned pc_additem never splits a stack: an add that would pass MAX_AMOUNT (30000) is ADDITEM_OVERAMOUNT and changes nothing.
     [Fact]
-    public async Task Grant_ExceedingTheStackLimit_SplitsIntoSeveralRows()
+    public async Task Grant_ExceedingTheStackLimit_IsRejected_NothingIsSent()
     {
         var (operations, service) = Setup(Row(1, 0, 6008, 29_990));
 
         var change = await service.GrantAsync(Wood, 25, CancellationToken.None);
 
-        Assert.True(change.Succeeded);
-        Assert.Equal([30_000u, 15u], service.Snapshot.Items.Select(row => row.Amount));
-        Assert.Equal(30_015, operations.AmountOf(6008));
+        Assert.Equal(InventoryChangeStatus.Rejected, change.Status);
+        Assert.Empty(operations.Requests);
+        Assert.Equal(29_990, operations.AmountOf(6008));
     }
 
     [Fact]
@@ -190,7 +191,7 @@ public sealed class CharacterInventoryServiceTests
     {
         var (operations, service) = Setup(Row(1, 0, 6008, 5));
         // Someone else (e.g. a second session on another replica) changed the row.
-        var other = new CharacterInventoryService(AccountId, CharId, operations, service.Snapshot, retryDelay: TimeSpan.Zero);
+        var other = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, service.Snapshot);
         await other.GrantAsync(Wood, 10, CancellationToken.None);
 
         var change = await service.GrantAsync(Wood, 1, CancellationToken.None);
@@ -204,7 +205,7 @@ public sealed class CharacterInventoryServiceTests
     public async Task ReloadFailure_AfterAConflict_KeepsTheServiceFailingClosedUntilItCanReload()
     {
         var (operations, service) = Setup(Row(1, 0, 6008, 5));
-        var other = new CharacterInventoryService(AccountId, CharId, operations, service.Snapshot, retryDelay: TimeSpan.Zero);
+        var other = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, service.Snapshot);
         await other.GrantAsync(Wood, 10, CancellationToken.None);
         operations.FailReads = true;
 

@@ -435,7 +435,7 @@ public sealed class CompilerTests
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(firstDir)));
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(secondDir)));
             static string[] Files(string root) => Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories).Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')).Order(StringComparer.Ordinal).ToArray();
-            var expected = new[] { "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
+            var expected = new[] { "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedJobWeight.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
             Assert.Equal(expected, Files(firstDir)); Assert.Equal(expected, Files(secondDir));
             var checkedIn = Path.Combine(repository, "src/MapServer/Generated");
             foreach (var relative in expected)

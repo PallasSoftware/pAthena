@@ -15,6 +15,7 @@ public static class GameplayRulesServiceCollectionExtensions
         services.AddSingleton(rules.Timing);
         services.AddSingleton(rules.StatusEffects);
         services.AddSingleton(rules.Experience);
+        services.AddSingleton(rules.Inventory);
         return services;
     }
 }

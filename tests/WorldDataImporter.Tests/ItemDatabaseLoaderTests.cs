@@ -79,4 +79,26 @@ public sealed class ItemDatabaseLoaderTests
         Assert.Equal(result.Items.Count, result.Items.Select(item => item.Item.Id).Distinct().Count());
         Assert.Contains(result.Items, item => item.Item.Id == 1201 && item.Item.AegisName == "Knife");
     }
+
+    // The group loader against the real loader's stored groups (random option groups are not resolved by the dump, hence the 0 column).
+    [Fact]
+    public void GroupLoader_MatchesTheRealPinnedLoaderForEveryEntry()
+    {
+        using var stream = File.OpenRead(Path.Combine(Root(), "tests/WorldDataImporter.Tests/Reference/item-groups-loaded.txt.gz"));
+        using var gzip = new GZipStream(stream, CompressionMode.Decompress);
+        using var reader = new StreamReader(gzip);
+        var reference = reader.ReadToEnd().TrimEnd('\n').Split('\n');
+
+        var items = LoadPinned().Items.Select(item => item.Item).ToDictionary(item => item.AegisName.ToLowerInvariant());
+        var groups = ItemGroupLoader.Load(relative => File.ReadAllText(Path.Combine(Root(), "legacy/rathena", relative)), Constants(), items);
+        var actual = groups.OrderBy(g => g.GroupId).SelectMany(g => g.SubGroups.OrderBy(s => s.SubGroup).SelectMany(s => s.Entries.OrderBy(e => e.Index).Select(e =>
+            $"{g.GroupId}|{s.SubGroup}|{s.Algorithm}|{s.TotalRate}|{e.Index}|{e.ItemId}|{e.Rate}|{e.Amount}|{e.DurationMinutes}|{e.Bound}|{(e.Announced ? 1 : 0)}{(e.UniqueId ? 1 : 0)}{(e.Stacked ? 1 : 0)}{(e.Named ? 1 : 0)}|{(e.RandomOptionGroup is null ? 0 : -1)}|{e.RefineMinimum}|{e.RefineMaximum}|{e.GradeMinimum}|{e.GradeMaximum}|0")))
+            .ToArray();
+
+        Assert.Equal(reference.Length, actual.Length);
+        // Random option group ids are resolved by name in the pack; compare everything else.
+        static string Strip(string line) { var f = line.Split('|'); f[11] = f[11] == "0" ? "0" : "r"; return string.Join('|', f); }
+        var differences = reference.Zip(actual).Where(pair => Strip(pair.First) != Strip(pair.Second)).Take(5).Select(pair => $"reference: {pair.First}\n   actual: {pair.Second}").ToArray();
+        Assert.True(differences.Length == 0, string.Join("\n", differences));
+    }
 }

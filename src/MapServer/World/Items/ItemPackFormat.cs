@@ -131,11 +131,24 @@ public enum PackScriptSupport : byte { Lowered = 0, Deferred = 1 }
 
 public sealed record PackScript(string Source, PackScriptSupport Support, string? DeferredConstruct, ItemScriptOwner DeferredOwner, PackScriptUses Uses, IrNode? Program);
 
-public sealed record ItemPack(string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts);
+// pinned e_group_algorithm_type: USEDB 0, DROP 1, ALL 2, RANDOM 3, SHAREDPOOL 4 (values as exported by script_constants).
+public static class PackGroupAlgorithm { public const byte Drop = 1, All = 2, Random = 3, SharedPool = 4; }
+
+// One entry of an item group sub group (s_item_group_entry, minus the runtime-only adjusted rate and given counter).
+public sealed record PackGroupEntry(
+    uint Index, uint ItemId, uint Rate, uint Amount, uint DurationMinutes,
+    bool Announced, bool UniqueId, bool Stacked, bool Named, byte Bound,
+    string? RandomOptionGroup, uint RefineMinimum, uint RefineMaximum, byte GradeMinimum, byte GradeMaximum);
+
+public sealed record PackSubGroup(uint SubGroup, byte Algorithm, uint TotalRate, IReadOnlyList<PackGroupEntry> Entries);
+
+public sealed record PackItemGroup(uint GroupId, string Name, IReadOnlyList<PackSubGroup> SubGroups);
+
+public sealed record ItemPack(string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts, IReadOnlyList<PackItemGroup> Groups);
 
 public static class ItemPackFormat
 {
-    public const ushort Version = 1;
+    public const ushort Version = 2;
     private static readonly byte[] Magic = "AIP1"u8.ToArray();
 
     public static byte[] Write(ItemPack pack)
@@ -176,6 +189,23 @@ public static class ItemPackFormat
                 w.Write((byte)script.DeferredOwner); w.Write((ushort)script.Uses);
                 w.Write(script.Program is not null);
                 if (script.Program is not null) WriteNode(w, script.Program, Intern);
+            }
+
+            w.Write(pack.Groups.Count);
+            foreach (var group in pack.Groups)
+            {
+                w.Write(group.GroupId); w.Write(Intern(group.Name)); w.Write(group.SubGroups.Count);
+                foreach (var sub in group.SubGroups)
+                {
+                    w.Write(sub.SubGroup); w.Write(sub.Algorithm); w.Write(sub.TotalRate); w.Write(sub.Entries.Count);
+                    foreach (var e in sub.Entries)
+                    {
+                        w.Write(e.Index); w.Write(e.ItemId); w.Write(e.Rate); w.Write(e.Amount); w.Write(e.DurationMinutes);
+                        w.Write(e.Announced); w.Write(e.UniqueId); w.Write(e.Stacked); w.Write(e.Named); w.Write(e.Bound);
+                        w.Write(e.RandomOptionGroup is null ? -1 : Intern(e.RandomOptionGroup));
+                        w.Write(e.RefineMinimum); w.Write(e.RefineMaximum); w.Write(e.GradeMinimum); w.Write(e.GradeMaximum);
+                    }
+                }
             }
         }
 
@@ -238,7 +268,30 @@ public static class ItemPackFormat
             scripts[i] = new PackScript(source, support, construct < 0 ? null : strings[construct], owner, uses, program);
         }
 
-        return new ItemPack(commit, items, scripts);
+        var groups = new PackItemGroup[r.ReadInt32()];
+        for (var g = 0; g < groups.Length; g++)
+        {
+            var groupId = r.ReadUInt32();
+            var name = strings[r.ReadInt32()];
+            var subs = new PackSubGroup[r.ReadInt32()];
+            for (var sIndex = 0; sIndex < subs.Length; sIndex++)
+            {
+                var subGroup = r.ReadUInt32(); var algorithm = r.ReadByte(); var totalRate = r.ReadUInt32();
+                var entries = new PackGroupEntry[r.ReadInt32()];
+                for (var e = 0; e < entries.Length; e++)
+                {
+                    var index = r.ReadUInt32(); var itemId = r.ReadUInt32(); var rate = r.ReadUInt32(); var amount = r.ReadUInt32(); var duration = r.ReadUInt32();
+                    var announced = r.ReadBoolean(); var unique = r.ReadBoolean(); var stacked = r.ReadBoolean(); var named = r.ReadBoolean(); var bound = r.ReadByte();
+                    var randomOptions = r.ReadInt32();
+                    entries[e] = new PackGroupEntry(index, itemId, rate, amount, duration, announced, unique, stacked, named, bound,
+                        randomOptions < 0 ? null : strings[randomOptions], r.ReadUInt32(), r.ReadUInt32(), r.ReadByte(), r.ReadByte());
+                }
+                subs[sIndex] = new PackSubGroup(subGroup, algorithm, totalRate, entries);
+            }
+            groups[g] = new PackItemGroup(groupId, name, subs);
+        }
+
+        return new ItemPack(commit, items, scripts, groups);
     }
 
     private static void WriteNode(BinaryWriter w, IrNode node, Func<string, int> intern)

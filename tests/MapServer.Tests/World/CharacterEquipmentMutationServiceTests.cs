@@ -31,7 +31,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     private static (InMemoryInventoryOperations Operations, CharacterInventoryService Inventory, CharacterEquipmentMutationService Service) Setup(CharacterInventorySnapshot inventory)
     {
         var operations = new InMemoryInventoryOperations(inventory);
-        var service = new CharacterInventoryService(AccountId, CharId, operations, inventory, retryDelay: TimeSpan.Zero);
+        var service = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, inventory);
         return (operations, service, new CharacterEquipmentMutationService(service));
     }
 
@@ -150,7 +150,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var (operations, inventory, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0, true, 0, 0, 0)]));
         // Another writer changed the durable row after this session's snapshot was taken.
-        var other = new CharacterInventoryService(AccountId, CharId, operations, inventory.Snapshot, retryDelay: TimeSpan.Zero);
+        var other = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, inventory.Snapshot);
         await other.ExecuteAsync(Athena.Net.Shared.Inventory.InventoryOperationKind.Update, snapshot =>
             [new Athena.Net.Shared.Inventory.UpdateRowMutation(Athena.Net.Shared.Inventory.InventoryContainer.Inventory, 1, 0, snapshot.Items[0].ToRow() with { Favorite = 1 })], CancellationToken.None);
 

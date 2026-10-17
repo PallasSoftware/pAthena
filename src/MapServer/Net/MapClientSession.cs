@@ -799,6 +799,21 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _ = SendNotifyActorInitAsync(CancellationToken.None);
     }
 
+    // The slots and weight the character may use right now (pc_additem's inputs): the base inventory size and status_calc_weight's maximum from the
+    // job, allocated STR and the carry skills. Mount, Mado gear and item bonuses are folded in as those systems arrive.
+    private InventoryLimits CurrentInventoryLimits()
+    {
+        if (_gameplayState is not { } gameplay) return new InventoryLimits(InventoryBaseSlots, uint.MaxValue);
+        int SkillLevel(ushort id) => gameplay.Skills.Learned.FirstOrDefault(skill => skill.SkillId == id)?.Level ?? 0;
+        var maxWeight = _rules.Inventory.MaxWeight(new MaxWeightInput(gameplay.State.JobClass, gameplay.State.Strength,
+            IncreaseCarryLevel: SkillLevel(McIncCarrySkillId), AllIncreaseCarryLevel: SkillLevel(AllIncCarrySkillId)));
+        return new InventoryLimits(InventoryBaseSlots, maxWeight);
+    }
+
+    private const uint InventoryBaseSlots = 100;           // mmo.hpp INVENTORY_BASE_SIZE; expansions arrive with the capacity packet
+    private const ushort McIncCarrySkillId = 36;           // MC_INCCARRY (Enlarge Weight Limit)
+    private const ushort AllIncCarrySkillId = 681;         // ALL_INCCARRY
+
     internal async Task CompleteIroAuthenticationAsync(MapAuthOkData authOk)
     {
         var state = await _gameplayStatePersistence.GetAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
@@ -847,7 +862,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // authenticated, and that a null Equipment.RightHandItemId means authoritatively
         // unarmed, never "unknown". CharacterEquipmentSnapshot is derived from the SAME
         // inventory read - never a second independent CharServer fetch.
-        _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!);
+        _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!, _rules.Inventory, GeneratedItems.ById, CurrentInventoryLimits);
         _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;
@@ -3609,14 +3624,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
         // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
         // destroyed the box and delivered only some of the contents.)
-        var grants = usable.Grants.Select(grant => (GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
-        var use = _inventoryService is null ? null : await _inventoryService.ExecuteAsync(InventoryOperationKind.Use, snapshot =>
-        {
-            var current = snapshot.Items.FirstOrDefault(i => i.DurableId == row.DurableId);
-            if (current is null) return null;
-            var grantMutations = InventoryPlanner.PlanGrants(snapshot, grants);
-            return grantMutations is null ? null : [InventoryPlanner.RemoveFromRow(current, 1), .. grantMutations];
-        }, cancellationToken);
+        var grants = usable.Grants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
+        var use = _inventoryService is null ? null : await _inventoryService.ConsumeAndGrantAsync(row.DurableId, 1, grants, InventoryOperationKind.Use, cancellationToken);
         if (use is not { Succeeded: true })
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Item-use persistence failed for itemId={row.ItemId} durableId={row.DurableId}; not notifying client.");

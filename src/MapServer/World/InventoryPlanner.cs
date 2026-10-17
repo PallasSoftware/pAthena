@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
@@ -10,81 +11,87 @@ namespace Athena.Net.MapServer.World;
 // inventory rules before a plan is made.
 public static class InventoryPlanner
 {
-    /// <summary>Pinned MAX_AMOUNT (mmo.hpp): the largest stack of any item unless the item declares a smaller Stack.Amount.</summary>
-    public const uint MaxAmount = 30_000;
+    /// <summary>One thing to put into the inventory. <see cref="Stacked"/> false gives stackable items one row per unit (item group Stacked: false).</summary>
+    public sealed record GrantRequest(ItemDefinition Item, uint Amount, InventoryItemRow? Template = null, bool Stacked = true);
 
-    public static uint StackLimit(ItemDefinition definition)
+    /// <summary>Outcome of planning several grants: the mutations, or the pinned pc_additem failure of the first grant that does not fit.</summary>
+    public sealed record GrantPlan(AddItemResult Result, IReadOnlyList<InventoryMutation>? Mutations, int FailedGrant)
     {
-        var data = definition.Meta?.Data;
-        return data is { StackAmount: > 0 } && data.Flags.HasFlag(PackItemFlags.StackInventory) ? Math.Min(data.StackAmount, MaxAmount) : MaxAmount;
+        public bool Succeeded => Result == AddItemResult.Success;
+    }
+
+    private sealed class Target
+    {
+        public CharacterInventoryItem? Existing;
+        public InventoryItemRow? New;
+        public uint Added;
     }
 
     /// <summary>
-    /// Plans granting several items at once (a container's contents, a quest reward). Stackable items extend an existing mergeable stack
-    /// before opening a new row; non-stackable items get one row each. Returns null when there is nothing to grant or the operation would
-    /// need more than one wire operation can carry.
+    /// Plans granting several items as ONE all-or-nothing operation by running the regional pc_additem rules for each unit in order against a
+    /// simulated copy of the inventory (so capacity, weight and merging see the earlier grants of the same operation). Stackable items extend the
+    /// first matching stack or open a new row; non-stackable items get one row per unit. The first grant that does not fit fails the whole plan.
     /// </summary>
-    public static IReadOnlyList<InventoryMutation>? PlanGrants(CharacterInventorySnapshot inventory, IEnumerable<(ItemDefinition Definition, uint Amount)> grants)
+    public static GrantPlan PlanGrants(
+        IInventoryRules rules, CharacterInventorySnapshot inventory, InventoryLimits limits, IReadOnlyDictionary<int, ItemDefinition> items, IEnumerable<GrantRequest> grants)
     {
-        // Targets in first-touched order, so the resulting mutations (and the client's pickup notifications) follow the order the grants were given.
-        var targets = new List<GrantTarget>();
+        var simulated = inventory;
+        var weight = rules.TotalWeight(inventory, items);
+        var targets = new List<Target>();
+        uint temporaryId = uint.MaxValue;
+        var index = 0;
 
-        foreach (var (definition, requested) in grants)
+        foreach (var grant in grants)
         {
-            if (requested == 0) return null;
-            if (!definition.Stackable)
-            {
-                for (var i = 0; i < requested; i++) targets.Add(new GrantTarget(definition, null) { Amount = 1 });
-                continue;
-            }
+            // pc_additem takes one amount; callers split non-stackable (or unstacked) grants into single units.
+            var units = grant.Item.Stackable && grant.Stacked ? [grant.Amount] : Enumerable.Repeat(1u, (int)Math.Min(grant.Amount, InventoryOperationWire.MaxMutations + 1u)).ToArray();
+            if (grant.Amount == 0) return new(AddItemResult.Invalid, null, index);
 
-            var limit = StackLimit(definition);
-            var remaining = requested;
-            foreach (var row in inventory.Items.Where(row => CanMerge(row, definition)).OrderBy(row => row.DurableId))
+            foreach (var unit in units)
             {
-                if (remaining == 0) break;
-                var target = targets.FirstOrDefault(t => t.Existing?.DurableId == row.DurableId) ?? Add(targets, new GrantTarget(definition, row));
-                if (row.Amount + target.Amount >= limit) continue;
-                var add = Math.Min(remaining, limit - row.Amount - target.Amount);
-                target.Amount += add;
-                remaining -= add;
-            }
+                var template = grant.Template;
+                var candidate = new AddItemCandidate(grant.Item, unit, template?.Bound ?? 0, template?.ExpireTime ?? 0, template?.UniqueId ?? 0,
+                    template?.Card0 ?? 0, template?.Card1 ?? 0, template?.Card2 ?? 0, template?.Card3 ?? 0);
+                var decision = rules.EvaluateAdd(simulated, limits, weight, candidate);
+                if (!decision.Succeeded) return new(decision.Result, null, index);
 
-            foreach (var target in targets.Where(t => t.Existing is null && t.Definition.Id == definition.Id && t.Amount < limit))
-            {
-                if (remaining == 0) break;
-                var add = Math.Min(remaining, limit - target.Amount);
-                target.Amount += add;
-                remaining -= add;
+                weight += decision.AddedWeight;
+                if (decision.MergeInto is { } row)
+                {
+                    var target = targets.FirstOrDefault(t => t.Existing?.DurableId == row.DurableId) ?? Add(targets, new Target { Existing = row });
+                    target.Added += unit;
+                    simulated = simulated.WithUpdatedItem(row.DurableId, row.ItemId, row.Amount + unit, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
+                }
+                else
+                {
+                    var created = (template ?? InventoryItemRow.New((uint)grant.Item.Id, unit, rules.IsCreatedIdentified(grant.Item) ? (byte)1 : (byte)0))
+                        with { ItemId = (uint)grant.Item.Id, Amount = unit, DurableId = 0, Revision = 0 };
+                    if (candidate.UniqueId == 0 && grant.Item.Meta?.Data.Flags.HasFlag(PackItemFlags.UniqueId) == true) created = created with { UniqueId = InventoryItemRow.GenerateUniqueId };
+                    Add(targets, new Target { New = created, Added = unit });
+                    simulated = new CharacterInventorySnapshot([.. simulated.Items, CharacterInventoryItem.FromRow(created with { DurableId = temporaryId-- }, decision.NewSlot!.Value)]);
+                }
             }
-
-            while (remaining > 0)
-            {
-                var amount = Math.Min(remaining, limit);
-                targets.Add(new GrantTarget(definition, null) { Amount = amount });
-                remaining -= amount;
-            }
+            index++;
         }
 
         var mutations = new List<InventoryMutation>();
-        foreach (var target in targets.Where(t => t.Amount > 0))
+        foreach (var target in targets)
         {
-            mutations.Add(target.Existing is { } row
-                ? new AddToStackMutation(InventoryContainer.Inventory, row.DurableId, (uint)row.ItemId, target.Amount, row.Amount, MaxAmount, row.Details.Revision)
-                : new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New((uint)target.Definition.Id, target.Amount)));
+            mutations.Add(target.Existing is { } existing
+                ? new AddToStackMutation(InventoryContainer.Inventory, existing.DurableId, (uint)existing.ItemId, target.Added, existing.Amount, StackCap(items, existing.ItemId), existing.Details.Revision)
+                : new AddNewRowMutation(InventoryContainer.Inventory, target.New!));
         }
 
-        return mutations.Count is 0 or > InventoryOperationWire.MaxMutations ? null : mutations;
+        return mutations.Count is 0 or > InventoryOperationWire.MaxMutations
+            ? new(mutations.Count == 0 ? AddItemResult.Invalid : AddItemResult.OverItem, null, -1)
+            : new(AddItemResult.Success, mutations, -1);
     }
 
-    private sealed class GrantTarget(ItemDefinition definition, CharacterInventoryItem? existing)
-    {
-        public ItemDefinition Definition { get; } = definition;
-        public CharacterInventoryItem? Existing { get; } = existing;
-        public uint Amount { get; set; }
-    }
+    // CharServer re-checks the cap on the row it updates (defense in depth): Stack.Amount when the item declares one for the inventory, else MAX_AMOUNT.
+    private static uint StackCap(IReadOnlyDictionary<int, ItemDefinition> items, int itemId) =>
+        items.TryGetValue(itemId, out var definition) && definition.Meta?.Data is { StackAmount: > 0 } data && data.Flags.HasFlag(PackItemFlags.StackInventory) ? Math.Min(data.StackAmount, 30_000u) : 30_000u;
 
-    private static GrantTarget Add(List<GrantTarget> targets, GrantTarget target) { targets.Add(target); return target; }
+    private static Target Add(List<Target> targets, Target target) { targets.Add(target); return target; }
 
     /// <summary>
     /// Plans removing <paramref name="amount"/> of an item id across its rows in ascending durable id order (pc_delitem scanning the array);
@@ -111,8 +118,4 @@ public static class InventoryPlanner
     public static RemoveFromRowMutation RemoveFromRow(CharacterInventoryItem row, uint amount) =>
         new(InventoryContainer.Inventory, row.DurableId, amount, row.Amount, row.Details.Revision);
 
-    // Stackable rows merge only when everything that distinguishes two stacks matches (pc_additem: nameid, bound, unique id, expiry,
-    // cards). Equipped rows never merge; a rental (expire_time) never stacks.
-    private static bool CanMerge(CharacterInventoryItem row, ItemDefinition definition) =>
-        row.ItemId == definition.Id && row.Equip == 0 && row.Bound == 0 && row.Details is { ExpireTime: 0, UniqueId: 0, Card0: 0, Card1: 0, Card2: 0, Card3: 0 };
 }

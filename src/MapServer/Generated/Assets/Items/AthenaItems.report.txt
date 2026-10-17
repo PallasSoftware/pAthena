@@ -11,6 +11,7 @@ loader warnings (pinned data quirks the real loader also reports): 0
   type 10: 123
   type 12: 1028
   type 18: 2410
+item groups: 2996 (3105 sub groups, 34315 entries)
 distinct scripts: 16246
   lowered: 16186
   deferred: 60
