@@ -1866,9 +1866,22 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // the live stutter/jump-forward bug: resetting _stepStartedAt here on every rapid 0x035F
         // would discard whatever real progress had already elapsed through the current cell.
         var movementState = EnsureMovementState();
-        if (movementState.IsMoving)
+        // The "is a step in flight" check and the retarget record must be ONE step under the movement gate, the same gate
+        // ProcessDueMovementAsync advances under. Unlocked, a retarget arriving exactly as the final step completes could
+        // observe IsMoving == true, lose the race to the loop (walk finished, no pending retarget yet), and then park its
+        // destination on a finished walk where nothing would ever consume it - the click silently dropped (seen as an
+        // intermittent RetargetExactlyAtStepBoundary timeout). Under the gate it either defers to a walk that WILL cross
+        // another boundary, or sees the finished walk and starts a fresh one below.
+        bool deferred;
+        await _movementGate.WaitAsync(cancellationToken);
+        try
         {
-            movementState.RequestRetarget(request.TargetX, request.TargetY);
+            deferred = movementState.IsMoving;
+            if (deferred) movementState.RequestRetarget(request.TargetX, request.TargetY);
+        }
+        finally { _movementGate.Release(); }
+        if (deferred)
+        {
             MapLogger.Info(
                 $"[iRO MAP DEBUG] Movement retarget deferred current=({movementState.CurrentX},{movementState.CurrentY}) requested=({request.TargetX},{request.TargetY}) nextCell={movementState.NextCell} currentStepDueAt={movementState.NextStepDueAt:O}");
             return;

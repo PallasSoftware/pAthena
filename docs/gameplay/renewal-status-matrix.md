@@ -16,6 +16,31 @@ Read alongside the [dependency matrix](renewal-status-dependencies.md) and [impl
 
 No complete derived-stat domain below qualifies as fully implemented. Bounded working pieces include immutable allocated-stat storage, single-step stat cost arithmetic, authoritative inventory-slot resolution, generated six-stat job-bonus arrays, the simple Increase AGI movement formula, and existing persistence/idempotency infrastructure. Their wider domains remain partial.
 
+## Epic 15 closure summary (Stage 15.8)
+
+Status at the end of Epic 15 on PR #47. **Evidence key:** R = reproduced against real pinned-rAthena execution (golden fixtures VF-01…VF-17,
+`ReferenceExecuted`, byte-reproducible via `pwsh tools/rathena-reference/run.ps1`); I = verified stock-iRO capture; S = source reading only.
+Row annotations below that name `StatusCalculator`, `DerivedStatCalculator`, `AttackDelayCalculator`, `MovementSpeedCalculator`,
+`PlayerDamageMotionCalculator`, `MobBasicAttackCalculator`, `WeaponAttackCalculator` or `RenewalBasicAttackRules` were written before
+Stage 15.R; that logic now lives, duplicated on purpose, in the regional `Iro*Rules` / `Kro*Rules` classes behind `ICombatRules`, `IStatRules`,
+`ITimingRules`, `IStatusEffectRules` and `IExperienceRules` (both currently equal to pinned rAthena; neither is verified against official behavior).
+
+| Mechanic | Status | Evidence | Supported scope | Unsupported / open |
+|---|---|---|---|---|
+| Blessing / Increase AGI start, retain, replace, end | Implemented | R VF-07/08 | both statuses | other statuses; client resend on retained start (I missing) |
+| Monster basic attack | Implemented (ordinary non-skill) | R VF-14/15 | roll bounds, BATK, soft/hard DEF | accuracy/FLEE, crit, elements, cards, skills (Epic 17) |
+| Player weapon basic attack | Partial | R VF-06 | refine-0 Knife vs Poring/Fabre/Wolf incl. size fix | other weapons/mobs unfixtured, elements, cards, crit |
+| Six stats + job-level bonuses | Partial | R VF-02/16 | 35 verified job classes (`JobSupport`) | transcendent/fourth/Hyper Novice/Super Novice 70+/Kagerou unverified; equipment/passive stat bonuses |
+| BATK/HIT/FLEE/perfect dodge/CRI/DEF2/MDEF2/MATK, armor hard DEF | Partial | R VF-01/02/05/07/08/16 | no-equipment PC + Knife/Cotton Shirt + Blessing/Inc AGI | refine, cards, scripts, passives, weapon MATK (rejected), 4th-job traits |
+| Max HP/SP, VIT/INT resource transition | Partial | R VF-04/11/16 | 35 verified jobs | x1.25 upper/fourth, Taekwon ranker, equipment/skill HP-SP bonuses |
+| ASPD / attack delay / motion | Partial | R VF-17 | non-ranged weapons for verified jobs, cap = 100 | Bow/Musical/Whip/firearms (throw), shields, dual wield, ASPD potions, max_aspd 193 classes |
+| Walk speed, damage motion, attack animation speed | Implemented for modeled statuses | R VF-02/07/08/17 + contract test | | mounts, Run, slow statuses |
+| Experience / level-up progression | Implemented (existing behavior preserved) | tests; S | one level per grant | rates are configuration policy (not regional) |
+| Equipment: loadouts, size fix | Partial | R VF-05/06/15 | generated Knife + Cotton Shirt | other items/slots, scripts, cards, refine |
+| Client stat-up response | Partial | I (existing) | 0x0141 plus (job + buffs), 0x00B0 var 9, 0x00BC from one snapshot | MaxHP/MaxSp resend and derived cascade (captures needed, `ai/iro-2026-wire.md`) |
+| Regional rule architecture | Implemented | tests | iRO / kRO independent implementations, per-deployment selection, world profile guard | profile guard not durable across activation loss (see plan doc); kRO gameplay/protocol compatibility not verified or implemented |
+| Regeneration, traits, skills, cards, refinement, full combat, other statuses | Deferred | - | - | Epics 16/17/18 or later approval |
+
 ## Reconstructed calculation architecture
 
 The call graph, not a list of candidate functions, determines order:

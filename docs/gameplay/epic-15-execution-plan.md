@@ -4,7 +4,7 @@ Approved execution plan for Epic 15 on branch `feature/epic-15-reference-runner`
 
 ## A. Verified baseline (today)
 - Branch has 15.1: `tools/rathena-reference/{Dockerfile,run.ps1,reference_runner.cpp,README.md}`; fixture `tests/MapServer.Tests/Gameplay/Reference/rathena-reference.json` (schema 1, commit-pinned, all `ReferenceExecuted`); loader `RathenaReferenceFixture.cs`; tests `RathenaReferenceFixtureTests.cs`.
-- **CI:** PR #47 `Validate` is now green after re-run (the earlier failure was `Attack_MovementRequest_CancelsActiveRepeatAttack`, world `NotFound` lifecycle rejection during shutdown; 6/6 local passes; it did not recur). Not proven unrelated — it is an intermittent test in the same area Stage 15.2/15.5 touches. Task T0 below: run it in a loop (e.g. 50×, under CPU load) on this branch and `main`; if it reproduces on `main`, record it in memory/PR; if the cause is a real shutdown race in `MapClientSession.StopCoreAsync`/`ProcessDueMovementAsync` (`ReconcileAfterGameplayRejectionAsync` throws on `NotFound` while stopping), stabilize with an evidence-backed fix + regression test, no test weakening.
+- **CI:** PR #47 `Validate` is now green after re-run (the earlier failure was `Attack_MovementRequest_CancelsActiveRepeatAttack`, world `NotFound` lifecycle rejection during shutdown; 6/6 local passes; it did not recur). Not proven unrelated — it is an intermittent test in the same area Stage 15.2/15.5 touches. Task T0 below was a bounded investigation (see "Movement-retarget race" at the end of this document); stabilize with an evidence-backed fix + regression test, no test weakening.
 - **Active comparisons:** VF-01 only `battle_status.adelay` vs `AttackDelayCalculator` (matches). VF-07 sequences 3→10, 10→10 (val1/val2 only). Schema/provenance tests.
 - **Skipped:** `Vf07_Blessing_WeakerRefreshKeepsStronger` (10→3: reference retains 10, Athena overwrites in `CharacterStatusEffectState.Start`, `src/MapServer/World/CharacterStatusEffects.cs:68`).
 - **Not independently verified:** all other VF-01 fields (stats, BATK, MATK, DEF/MDEF, HIT/FLEE/CRI, motion, speed, HP/SP); Blessing/IncAGI timers, deadlines, identity, expiry; Increase AGI at all; mob attack roll (VF-14 only holds loader values: Poring `Attack: 1` in `db/re/mob_db.yml`, loaded `batk 7, watk 0, watk2 1`. Bounds 0..1 are plausibly consistent with the pinned integer calculation for Attack=1 — NOT classified as a discrepancy; only the executed attack roll and the BATK contribution can establish one); host support only macOS tested; VF-14 extension not rerun twice (do that first).
@@ -79,7 +79,7 @@ Rerun runner twice for VF-14 determinism; add a small loader helper to read name
 - **Decision recorded:** the world-level profile check adds `IWorldGameplayProfileGrain` (in-memory, deactivation delayed) to the World contracts - the only Orleans contract change in this stage, required by "one world must not silently mix regional gameplay".
 
 ### 15.8 Closure
-Full suites (all test projects, `WorldDataImporter` + `git diff --check` if generated), 50× loop of combat/movement flake test, reconnect + cross-replica tests, fixture regeneration twice identical, submodule unchanged, matrix final pass with Implemented/Partial/Unsupported/Deferred(16/17/18)/Unverified lists, PR checklist final.
+Full suites (all test projects, `WorldDataImporter` + `git diff --check` if generated), one normal full run of the affected suites (no repeated stress loops - `CLAUDE.md` bounded debugging), reconnect + cross-replica tests, fixture regeneration twice identical, submodule unchanged, matrix final pass with Implemented/Partial/Unsupported/Deferred(16/17/18)/Unverified lists, PR checklist final.
 
 ## D. Commit sequence (single branch)
 1 docs: execution plan  2 test: runner determinism + named-field fixture helper (+ CI flake investigation commit(s) if needed)  3 test: Blessing/IncAGI fixtures  4 fix: status transition outcomes + stale-timer guard (+ enable skipped test)  5 test: mob attack capture  6 fix: mob BATK/roll bound  7 test: job-bonus fixtures  8 feat: StatusCalculator stats stage + snapshot/revision  9 refactor: consumers on snapshot (separate from 8)  10 test: derived stat fixtures  11 feat: derived stats  12 feat: HP/SP + resource transition  13 test+feat: ASPD/speed/dmotion (fixture and implementation separate commits)  14 test+feat: minimal equipment  15 feat: iRO projection (if evidence)  16 docs: matrix/closure. Fixture commits always precede the behavior commit.
@@ -121,14 +121,29 @@ Evidence types are kept apart: **R** = reproduced against real pinned-rAthena ex
 Open follow-ups: iRO captures listed in `ai/iro-2026-wire.md`; generator support for map.hpp job flags (upper/third/fourth) to
 retire `JobSupport` divergences; Super Novice `die_counter`; weapon MATK; Kagerou/Oboro SP table discrepancy at level 1.
 
-## Open issue: intermittent `MapClientSessionMovementRetargetTests.RetargetExactlyAtStepBoundary_IsAppliedAtThatBoundary` (revisit before merge)
+## Movement-retarget race (bounded investigation, fixed)
 
-Observed once (5 s read timeout) in 1 of 25 local runs of `MapClientSessionMonsterCombatTests` + `MapClientSessionMovementRetargetTests` +
-`MapTcpServerMonsterAuthorityIntegrationTests` on this branch (Debug, macOS). The same filter ran 25/25 green on a clean `origin/main`
-worktree, and the retarget class alone ran 30/30 green on this branch, so the evidence is **inconclusive** - neither "caused by this
-branch" nor "pre-existing/unrelated" is established. A separate stress comparison (CPU burners, 20 runs each) was stopped before
-producing results. CI also failed intermittently on earlier pushes in `KillThroughRealAttack_BystanderPresent_...` and
-`GeneratedIntroToIzludeDistributedIntegrationTests.RealRathenaOnTouch_...` (both timing/10 s-wait tests); the latest push (`3c5ffa5`)
-passed all three workflows, after the reference fixture was parsed once per run instead of ~2000 times. No test was weakened or skipped.
-Next step (needs approval, per the bounded-debugging rules): a bounded investigation of the retarget boundary test's clock/read
-synchronization before the final merge.
+`MapClientSessionMovementRetargetTests.RetargetExactlyAtStepBoundary_IsAppliedAtThatBoundary` timed out once in 25 local runs (and
+earlier CI runs showed related timing failures). Read-only analysis of `HandleIroMovementAsync` found a genuine time-of-check/time-of-use
+race rather than test noise: the "is a step in flight" check (`movementState.IsMoving`) and `RequestRetarget` ran **without**
+`_movementGate`, while `ProcessDueMovementAsync` advances under that gate. A retarget arriving exactly as the final step completed could see
+`IsMoving == true`, lose the race to the movement loop (walk finished, nothing pending to consume), and then park its destination on a
+finished walk where nothing ever consumes it - the click was silently dropped and the client never got a movement response (the observed
+timeout). Fix: check and record under `_movementGate`, so the retarget either defers to a walk that will cross another boundary or sees the
+finished walk and starts a fresh one. The existing boundary test and the other 91 movement tests pass; there is no deterministic regression test
+for the interleaving (it needs a hook between the check and the record), so this stays classified as *fixed with reasoning, not reproduced
+deterministically*. Earlier CI failures in `KillThroughRealAttack…` and `RealRathenaOnTouch…` were timing tests under CPU starvation and were
+mitigated by parsing the reference fixture once per run; their root cause was not separately proven.
+
+## Gameplay-profile guard lifecycle (verified limitation)
+
+`IWorldGameplayProfileGrain` keeps the established profile in memory and delays deactivation. Verified with a throw-away Orleans test
+cluster: after a silo restart the profile is **lost**, so the next registration - even a different region - is accepted. Failure scenarios:
+(1) a World restart while `ATHENA_NET_MAP_EXIT_ON_WORLD_LOSS=false` (`WorldConnectionWatchdog` is enabled unless its environment variable is `false`),
+so already-running MapServers are not restarted and a differently configured MapServer can establish a new profile; (2) in a multi-silo World,
+the silo hosting the grain fails and the grain re-activates elsewhere empty while the other MapServers keep running. The guard therefore
+enforces the invariant only against MapServers that register against a *live* activation. **Minimal hardening proposal (needs approval, no
+persistent storage):** give each World silo its expected `(region, ruleset)` from its own configuration and have the grain initialise from it on
+every activation, so any activation (including after failure) starts with the configured profile and rejects mismatches. Optionally also
+re-register the MapServer profile on Orleans client reconnect. Neither is implemented.
+
