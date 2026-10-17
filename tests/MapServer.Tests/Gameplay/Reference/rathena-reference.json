@@ -39,6 +39,7 @@
           "matk_min": 1,
           "matk_max": 1,
           "def": 0,
+          "range": 1,
           "def2": 1,
           "mdef": 0,
           "mdef2": 1,
@@ -68,6 +69,7 @@
           "matk_min": 1,
           "matk_max": 1,
           "def": 0,
+          "range": 1,
           "def2": 1,
           "mdef": 0,
           "mdef2": 1,
@@ -119,6 +121,7 @@
               "matk_min": 9,
               "matk_max": 9,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -148,6 +151,7 @@
               "matk_min": 9,
               "matk_max": 9,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -189,6 +193,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -218,6 +223,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -259,6 +265,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -288,6 +295,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -329,6 +337,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -358,6 +367,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -399,6 +409,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -428,6 +439,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -469,6 +481,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -498,6 +511,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -539,6 +553,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -568,6 +583,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -609,6 +625,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -638,6 +655,7 @@
               "matk_min": 10,
               "matk_max": 10,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 7,
@@ -679,6 +697,7 @@
               "matk_min": 12,
               "matk_max": 12,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 8,
@@ -708,6 +727,7 @@
               "matk_min": 12,
               "matk_max": 12,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 8,
@@ -749,6 +769,7 @@
               "matk_min": 12,
               "matk_max": 12,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 8,
@@ -778,6 +799,7 @@
               "matk_min": 12,
               "matk_max": 12,
               "def": 0,
+              "range": 1,
               "def2": 4,
               "mdef": 0,
               "mdef2": 8,
@@ -819,6 +841,7 @@
               "matk_min": 17,
               "matk_max": 17,
               "def": 0,
+              "range": 1,
               "def2": 14,
               "mdef": 0,
               "mdef2": 13,
@@ -848,6 +871,7 @@
               "matk_min": 17,
               "matk_max": 17,
               "def": 0,
+              "range": 1,
               "def2": 14,
               "mdef": 0,
               "mdef2": 13,
@@ -889,6 +913,7 @@
               "matk_min": 109,
               "matk_max": 109,
               "def": 0,
+              "range": 1,
               "def2": 88,
               "mdef": 0,
               "mdef2": 75,
@@ -918,6 +943,7 @@
               "matk_min": 109,
               "matk_max": 109,
               "def": 0,
+              "range": 1,
               "def2": 88,
               "mdef": 0,
               "mdef2": 75,
@@ -1509,6 +1535,707 @@
       }
     },
     {
+      "id": "VF-05",
+      "evidence": "ReferenceExecuted",
+      "scope": "Novice (Lv10/J5, mixed stats) wearing nothing / Knife (1201) / Cotton Shirt (2301) / both through the real equipment pass of status_calc_pc: full base_status and battle_status incl. hard DEF, weapon ATK, range, ASPD.",
+      "input": {
+        "job": "Novice",
+        "base_level": 10,
+        "job_level": 5,
+        "str": 20,
+        "agi": 15,
+        "vit": 12,
+        "int": 5,
+        "dex": 18,
+        "luk": 7
+      },
+      "output": {
+        "loadouts": [
+          {
+            "items": [],
+            "base_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 0,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 0,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 410,
+              "adelay": 820,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 47,
+              "sp": 1
+            },
+            "battle_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 0,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 0,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 410,
+              "adelay": 820,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 40,
+              "sp": 11
+            }
+          },
+          {
+            "items": [
+              1201
+            ],
+            "base_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 17,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 0,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 560,
+              "adelay": 1120,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 47,
+              "sp": 1
+            },
+            "battle_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 17,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 0,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 560,
+              "adelay": 1120,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 40,
+              "sp": 11
+            }
+          },
+          {
+            "items": [
+              2301
+            ],
+            "base_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 0,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 10,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 410,
+              "adelay": 820,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 47,
+              "sp": 1
+            },
+            "battle_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 0,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 10,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 410,
+              "adelay": 820,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 40,
+              "sp": 11
+            }
+          },
+          {
+            "items": [
+              1201,
+              2301
+            ],
+            "base_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 17,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 10,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 560,
+              "adelay": 1120,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 47,
+              "sp": 1
+            },
+            "battle_status": {
+              "str": 20,
+              "agi": 16,
+              "vit": 12,
+              "int": 5,
+              "dex": 19,
+              "luk": 8,
+              "batk": 28,
+              "watk": 17,
+              "watk2": 0,
+              "matk_min": 14,
+              "matk_max": 14,
+              "def": 10,
+              "range": 1,
+              "def2": 14,
+              "mdef": 0,
+              "mdef2": 13,
+              "hit": 206,
+              "flee": 127,
+              "flee2": 18,
+              "cri": 35,
+              "amotion": 560,
+              "adelay": 1120,
+              "dmotion": 736,
+              "speed": 150,
+              "max_hp": 95,
+              "max_sp": 21,
+              "hp": 40,
+              "sp": 11
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-06",
+      "evidence": "ReferenceExecuted",
+      "scope": "Novice with a Knife vs mobs 1002/1007/1013 through real battle_calc_attack, 2000 seeded rolls: normal and critical damage histograms plus miss counts. Covers weapon damage, size fix, element and mob DEF for refine-0 daggers.",
+      "input": {
+        "attacker": {
+          "base_level": 10,
+          "job_level": 5,
+          "str": 20,
+          "agi": 15,
+          "vit": 12,
+          "int": 5,
+          "dex": 18,
+          "luk": 7,
+          "items": [
+            1201
+          ]
+        },
+        "samples": 2000
+      },
+      "output": {
+        "weapon_atkmods": {
+          "small": 100,
+          "medium": 75,
+          "large": 50
+        },
+        "loaded_size_fix_db": [
+          {
+            "weapon": 0,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 1,
+            "entry": [
+              100,
+              75,
+              50
+            ]
+          },
+          {
+            "weapon": 2,
+            "entry": [
+              75,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 3,
+            "entry": [
+              75,
+              75,
+              100
+            ]
+          },
+          {
+            "weapon": 4,
+            "entry": [
+              75,
+              75,
+              100
+            ]
+          },
+          {
+            "weapon": 5,
+            "entry": [
+              75,
+              75,
+              100
+            ]
+          },
+          {
+            "weapon": 6,
+            "entry": [
+              50,
+              75,
+              100
+            ]
+          },
+          {
+            "weapon": 7,
+            "entry": [
+              50,
+              75,
+              100
+            ]
+          },
+          {
+            "weapon": 8,
+            "entry": [
+              75,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 9,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 10,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 11,
+            "entry": [
+              100,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 12,
+            "entry": [
+              100,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 13,
+            "entry": [
+              75,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 14,
+            "entry": [
+              75,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 15,
+            "entry": [
+              100,
+              100,
+              50
+            ]
+          },
+          {
+            "weapon": 16,
+            "entry": [
+              75,
+              100,
+              75
+            ]
+          },
+          {
+            "weapon": 17,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 18,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 19,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 20,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 21,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 22,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          },
+          {
+            "weapon": 23,
+            "entry": [
+              100,
+              100,
+              100
+            ]
+          }
+        ],
+        "attacks": [
+          {
+            "mob_id": 1002,
+            "misses_or_zero": 0,
+            "first_normal_hit_parts": {
+              "status_atk": 56,
+              "weapon_atk": 14,
+              "equip_atk": 0,
+              "mastery_atk": 0,
+              "percent_atk": 0,
+              "damage": 68
+            },
+            "target": {
+              "def": 2,
+              "def2": 1,
+              "size": 1,
+              "element": 1,
+              "level": 1
+            },
+            "normal": {
+              "66": 662,
+              "67": 658,
+              "68": 626
+            },
+            "critical": {
+              "95": 54
+            }
+          },
+          {
+            "mob_id": 1007,
+            "misses_or_zero": 109,
+            "first_normal_hit_parts": {
+              "status_atk": 56,
+              "weapon_atk": 19,
+              "equip_atk": 0,
+              "mastery_atk": 0,
+              "percent_atk": 0,
+              "damage": 66
+            },
+            "target": {
+              "def": 24,
+              "def2": 5,
+              "size": 0,
+              "element": 2,
+              "level": 6
+            },
+            "normal": {
+              "64": 618,
+              "65": 620,
+              "66": 599
+            },
+            "critical": {
+              "92": 54
+            }
+          },
+          {
+            "mob_id": 1013,
+            "misses_or_zero": 1231,
+            "first_normal_hit_parts": {
+              "status_atk": 56,
+              "weapon_atk": 14,
+              "equip_atk": 0,
+              "mastery_atk": 0,
+              "percent_atk": 0,
+              "damage": 25
+            },
+            "target": {
+              "def": 55,
+              "def2": 37,
+              "size": 1,
+              "element": 2,
+              "level": 45
+            },
+            "normal": {
+              "23": 245,
+              "24": 246,
+              "25": 224
+            },
+            "critical": {
+              "35": 54
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "VF-15",
+      "evidence": "ReferenceExecuted",
+      "scope": "Mobs 1031/1013 vs a Novice wearing a Cotton Shirt (hard DEF 10) through real battle_calc_attack, 2000 seeded rolls; exercises hard DEF in the defense reduction.",
+      "input": {
+        "target": {
+          "base_level": 10,
+          "job_level": 5,
+          "str": 20,
+          "agi": 15,
+          "vit": 12,
+          "int": 5,
+          "dex": 18,
+          "luk": 7,
+          "items": [
+            2301
+          ]
+        },
+        "samples": 2000
+      },
+      "output": {
+        "target_battle_status": {
+          "str": 20,
+          "agi": 16,
+          "vit": 12,
+          "int": 5,
+          "dex": 19,
+          "luk": 8,
+          "batk": 28,
+          "watk": 0,
+          "watk2": 0,
+          "matk_min": 14,
+          "matk_max": 14,
+          "def": 10,
+          "range": 1,
+          "def2": 14,
+          "mdef": 0,
+          "mdef2": 13,
+          "hit": 206,
+          "flee": 127,
+          "flee2": 18,
+          "cri": 35,
+          "amotion": 410,
+          "adelay": 820,
+          "dmotion": 736,
+          "speed": 150,
+          "max_hp": 95,
+          "max_sp": 21,
+          "hp": 40,
+          "sp": 11
+        },
+        "attacks": [
+          {
+            "mob_id": 1031,
+            "misses_or_zero": 263,
+            "normal": {
+              "55": 115,
+              "56": 145,
+              "57": 117,
+              "58": 153,
+              "59": 158,
+              "60": 130,
+              "61": 132,
+              "62": 119,
+              "63": 129,
+              "64": 132,
+              "65": 159,
+              "66": 127,
+              "67": 121
+            },
+            "critical": {}
+          },
+          {
+            "mob_id": 1013,
+            "misses_or_zero": 40,
+            "normal": {
+              "125": 62,
+              "126": 46,
+              "127": 66,
+              "128": 57,
+              "129": 44,
+              "130": 66,
+              "131": 61,
+              "132": 59,
+              "133": 50,
+              "134": 51,
+              "135": 47,
+              "136": 65,
+              "137": 60,
+              "138": 48,
+              "139": 50,
+              "140": 57,
+              "141": 61,
+              "142": 64,
+              "143": 51,
+              "144": 50,
+              "145": 64,
+              "146": 56,
+              "147": 68,
+              "148": 46,
+              "149": 66,
+              "150": 46,
+              "151": 57,
+              "152": 71,
+              "153": 54,
+              "154": 62,
+              "155": 59,
+              "156": 62,
+              "157": 37,
+              "158": 54,
+              "159": 43
+            },
+            "critical": {}
+          }
+        ]
+      }
+    },
+    {
       "id": "VF-07",
       "evidence": "ReferenceExecuted",
       "scope": "Blessing started twice via status_change_start on a fresh Novice: retained val1/val2, resulting stats, timer deadline movement (50ms apart) and state after status_change_end. Expiry-by-timer callback and client packets not captured.",
@@ -2076,6 +2803,7 @@
           "matk_min": 1,
           "matk_max": 2,
           "def": 2,
+          "range": 1,
           "def2": 1,
           "mdef": 5,
           "mdef2": 0,
@@ -2108,6 +2836,7 @@
               "matk_min": 1,
               "matk_max": 2,
               "def": 2,
+              "range": 1,
               "def2": 1,
               "mdef": 5,
               "mdef2": 0,
@@ -2137,6 +2866,7 @@
               "matk_min": 1,
               "matk_max": 2,
               "def": 2,
+              "range": 1,
               "def2": 1,
               "mdef": 5,
               "mdef2": 0,
@@ -2173,6 +2903,7 @@
               "matk_min": 62,
               "matk_max": 74,
               "def": 36,
+              "range": 1,
               "def2": 25,
               "mdef": 17,
               "mdef2": 12,
@@ -2202,6 +2933,7 @@
               "matk_min": 62,
               "matk_max": 74,
               "def": 36,
+              "range": 1,
               "def2": 25,
               "mdef": 17,
               "mdef2": 12,
@@ -2250,6 +2982,7 @@
               "matk_min": 67,
               "matk_max": 74,
               "def": 55,
+              "range": 1,
               "def2": 37,
               "mdef": 3,
               "mdef2": 15,
@@ -2279,6 +3012,7 @@
               "matk_min": 67,
               "matk_max": 74,
               "def": 55,
+              "range": 1,
               "def2": 37,
               "mdef": 3,
               "mdef2": 15,

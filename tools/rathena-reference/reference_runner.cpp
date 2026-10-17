@@ -5,10 +5,13 @@
 #include <chrono>
 #include <cstring>
 #include <map>
+#include <vector>
 #include <memory>
 #include <thread>
 
 #include "battle.hpp"
+#include "clif.hpp"
+#include "itemdb.hpp"
 #include "map.hpp"
 #include "mob.hpp"
 #include "pc.hpp"
@@ -30,14 +33,14 @@ static void dump_status(const char* name, const struct status_data& s) {
 	num("str", s.str); num("agi", s.agi); num("vit", s.vit); num("int", s.int_); num("dex", s.dex); num("luk", s.luk);
 	num("batk", s.batk); num("watk", s.rhw.atk); num("watk2", s.rhw.atk2);
 	num("matk_min", s.matk_min); num("matk_max", s.matk_max);
-	num("def", s.def); num("def2", s.def2); num("mdef", s.mdef); num("mdef2", s.mdef2);
+	num("def", s.def); num("range", s.rhw.range); num("def2", s.def2); num("mdef", s.mdef); num("mdef2", s.mdef2);
 	num("hit", s.hit); num("flee", s.flee); num("flee2", s.flee2); num("cri", s.cri);
 	num("amotion", s.amotion); num("adelay", s.adelay); num("dmotion", s.dmotion); num("speed", s.speed);
 	num("max_hp", s.max_hp); num("max_sp", s.max_sp); num("hp", s.hp); num("sp", s.sp);
 	std::fprintf(out, "}");
 }
 
-struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; };
+struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; };
 
 static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec()) {
 	map_session_data* sd = new map_session_data();
@@ -50,6 +53,19 @@ static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec
 	sd->status.int_ = n.int_; sd->status.dex = n.dex; sd->status.luk = n.luk;
 	sd->status.max_hp = 40; sd->status.hp = 40; sd->status.max_sp = 11; sd->status.sp = 11;
 	memset(&sd->equip_index, -1, sizeof(sd->equip_index));
+	// Real item_db entries placed in the inventory and flagged equipped at their own first location, as a loaded
+	// character row would be; pc_setequipindex (the function login runs) derives equip_index, weapontype1/2 and the
+	// weapon type, then status_calc_pc runs the real equipment pass.
+	int slot = 0;
+	for (int nameid : n.items) {
+		item_data* data = itemdb_search(nameid);
+		struct item& row = sd->inventory.u.items_inventory[slot];
+		memset(&row, 0, sizeof(row));
+		row.nameid = nameid; row.amount = 1; row.identify = 1; row.equip = data->equip;
+		sd->inventory_data[slot] = data;
+		slot++;
+	}
+	pc_setequipindex(sd);
 	map_addiddb(sd); // as pc_authok does; status code looks the player up by id
 	unit_dataset(sd);
 	sd->state.active = 1;
@@ -131,6 +147,101 @@ static void vf11() {
 			first_case ? "" : ",", c.level, c.vit, c.int_, before_hp, before_sp, c.new_vit, c.new_int, before_max_hp, before_max_sp,
 			sd->battle_status.max_hp, sd->battle_status.max_sp, sd->battle_status.hp, sd->battle_status.sp, sd->status.hp, sd->status.sp);
 		first_case = false;
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-05: equipment loadouts through the real equipment pass of status_calc_pc.
+static void vf05() {
+	const std::vector<int> loadouts[] = {{}, {1201}, {2301}, {1201, 2301}};
+	NoviceSpec base; base.base_level = 10; base.job_level = 5; base.str = 20; base.agi = 15; base.vit = 12; base.int_ = 5; base.dex = 18; base.luk = 7;
+	std::fprintf(out, "{\"id\":\"VF-05\",\"input\":{\"job\":\"Novice\",\"base_level\":10,\"job_level\":5,\"str\":20,\"agi\":15,\"vit\":12,\"int\":5,\"dex\":18,\"luk\":7},\"output\":{\"loadouts\":[");
+	uint32 id = 2000300;
+	for (size_t i = 0; i < 4; i++) {
+		NoviceSpec n = base; n.items = loadouts[i];
+		map_session_data* sd = make_novice(id++, n);
+		std::fprintf(out, "%s{\"items\":[", i ? "," : "");
+		for (size_t k = 0; k < n.items.size(); k++) std::fprintf(out, "%s%d", k ? "," : "", n.items[k]);
+		std::fprintf(out, "],");
+		dump_status("base_status", sd->base_status);
+		std::fprintf(out, ",");
+		dump_status("battle_status", sd->battle_status);
+		std::fprintf(out, "}");
+	}
+	std::fprintf(out, "]}}");
+}
+
+// Spawns `mob_id` and samples real battle_calc_attack(BF_WEAPON) from `attacker` to `target` over 2000 seeded rolls.
+// Normal-hit damage and critical damage are recorded separately; misses (flee/accuracy) are only counted.
+// First non-critical hit's Renewal damage parts (intermediates of battle_calc_damage_parts), for locating divergence.
+struct FirstParts { bool set = false; long long statusAtk = 0, weaponAtk = 0, equipAtk = 0, masteryAtk = 0, percentAtk = 0, damage = 0; };
+
+static void sample_attacks(block_list* attacker, block_list* target, std::map<long long, int>& normal, std::map<long long, int>& crit, int& misses, FirstParts* parts = nullptr) {
+	for (int i = 1; i <= 2000; i++) {
+		generator.seed(i);
+		Damage d = battle_calc_attack(BF_WEAPON, attacker, target, 0, 0, 0);
+		long long total = d.damage + d.damage2;
+		if (total < 1) misses++;
+		else if (d.type == DMG_CRITICAL) crit[total]++;
+		else {
+			normal[total]++;
+			if (parts && !parts->set) { parts->set = true; parts->statusAtk = d.statusAtk; parts->weaponAtk = d.weaponAtk; parts->equipAtk = d.equipAtk; parts->masteryAtk = d.masteryAtk; parts->percentAtk = d.percentAtk; parts->damage = total; }
+		}
+	}
+}
+
+static void print_histogram(const char* name, const std::map<long long, int>& h) {
+	std::fprintf(out, "\"%s\":{", name);
+	bool f = true;
+	for (const auto& [dmg, count] : h) { std::fprintf(out, "%s\"%lld\":%d", f ? "" : ",", dmg, count); f = false; }
+	std::fprintf(out, "}");
+}
+
+// VF-06: Novice with a Knife attacking real mobs (player -> mob weapon damage incl. size fix, element and mob DEF).
+static void vf06() {
+	NoviceSpec n; n.base_level = 10; n.job_level = 5; n.str = 20; n.agi = 15; n.vit = 12; n.int_ = 5; n.dex = 18; n.luk = 7; n.items = {1201};
+	map_session_data* sd = make_novice(2000320, n);
+	int16 m = map_mapname2mapid("prontera");
+	std::fprintf(out, "{\"id\":\"VF-06\",\"input\":{\"attacker\":{\"base_level\":10,\"job_level\":5,\"str\":20,\"agi\":15,\"vit\":12,\"int\":5,\"dex\":18,\"luk\":7,\"items\":[1201]},\"samples\":2000},\"output\":{\"weapon_atkmods\":{\"small\":%d,\"medium\":%d,\"large\":%d},", sd->right_weapon.atkmods[SZ_SMALL], sd->right_weapon.atkmods[SZ_MEDIUM], sd->right_weapon.atkmods[SZ_BIG]);
+	std::fprintf(out, "\"loaded_size_fix_db\":[");
+	for (int w = 0; w <= 23; w++) {
+		std::shared_ptr<s_sizefix_db> e = size_fix_db.find(w);
+		std::fprintf(out, "%s{\"weapon\":%d,\"entry\":", w ? "," : "", w);
+		if (e) std::fprintf(out, "[%d,%d,%d]}", e->small, e->medium, e->large); else std::fprintf(out, "null}");
+	}
+	std::fprintf(out, "],\"attacks\":[");
+	const int mobs[] = {1002, 1007, 1013};
+	for (int k = 0; k < 3; k++) {
+		int32 gid = mob_once_spawn(nullptr, m, 0, 0, "--en--", mobs[k], 1, "", SZ_SMALL, AI_NONE);
+		mob_data* md = map_id2md(gid);
+		std::map<long long, int> normal, crit; int misses = 0; FirstParts parts;
+		sample_attacks(sd, md, normal, crit, misses, &parts);
+		std::fprintf(out, "%s{\"mob_id\":%d,\"misses_or_zero\":%d,\"first_normal_hit_parts\":{\"status_atk\":%lld,\"weapon_atk\":%lld,\"equip_atk\":%lld,\"mastery_atk\":%lld,\"percent_atk\":%lld,\"damage\":%lld},\"target\":{\"def\":%d,\"def2\":%d,\"size\":%d,\"element\":%d,\"level\":%d},",
+			k ? "," : "", mobs[k], misses, parts.statusAtk, parts.weaponAtk, parts.equipAtk, parts.masteryAtk, parts.percentAtk, parts.damage,
+			md->status.def, md->status.def2, md->status.size, md->status.def_ele, md->level);
+		print_histogram("normal", normal); std::fprintf(out, ","); print_histogram("critical", crit);
+		std::fprintf(out, "}");
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-15: monsters attacking a Novice wearing a Cotton Shirt (hard DEF 10) - exercises def1 in the defense reduction.
+static void vf15() {
+	NoviceSpec n; n.base_level = 10; n.job_level = 5; n.str = 20; n.agi = 15; n.vit = 12; n.int_ = 5; n.dex = 18; n.luk = 7; n.items = {2301};
+	map_session_data* sd = make_novice(2000340, n);
+	int16 m = map_mapname2mapid("prontera");
+	std::fprintf(out, "{\"id\":\"VF-15\",\"input\":{\"target\":{\"base_level\":10,\"job_level\":5,\"str\":20,\"agi\":15,\"vit\":12,\"int\":5,\"dex\":18,\"luk\":7,\"items\":[2301]},\"samples\":2000},\"output\":{");
+	dump_status("target_battle_status", sd->battle_status);
+	std::fprintf(out, ",\"attacks\":[");
+	const int mobs[] = {1031, 1013};
+	for (int k = 0; k < 2; k++) {
+		int32 gid = mob_once_spawn(nullptr, m, 0, 0, "--en--", mobs[k], 1, "", SZ_SMALL, AI_NONE);
+		mob_data* md = map_id2md(gid);
+		std::map<long long, int> normal, crit; int misses = 0;
+		sample_attacks(md, sd, normal, crit, misses);
+		std::fprintf(out, "%s{\"mob_id\":%d,\"misses_or_zero\":%d,", k ? "," : "", mobs[k], misses);
+		print_histogram("normal", normal); std::fprintf(out, ","); print_histogram("critical", crit);
+		std::fprintf(out, "}");
 	}
 	std::fprintf(out, "]}}");
 }
@@ -227,6 +338,12 @@ void ra_reference_run() {
 	vf04();
 	std::fprintf(out, ",");
 	vf11();
+	std::fprintf(out, ",");
+	vf05();
+	std::fprintf(out, ",");
+	vf06();
+	std::fprintf(out, ",");
+	vf15();
 	std::fprintf(out, ",");
 	vf07_vf08();
 	std::fprintf(out, ",");
