@@ -659,7 +659,7 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         // trusted from the command.
         var attackAction = new WorldPlayerAttackAction(
             attackerPresence.ActorId, command.AttackerCharacterId, command.AttackerPresenceId,
-            command.Damage, SourceAttackMotion: 0, TargetDamageMotion: 0, Hit: command.Damage > 0, Lethal: false);
+            command.Damage, command.SourceAttackMotion, TargetDamageMotion: (uint)instance.Spawn.Mob.DamageMotion, Hit: command.Damage > 0, Lethal: false);
         var (hpBefore, hpAfter, killed, maxHp) = simulation.ApplyDamage(instance, command.Damage, attackAction);
         // The PlayerAttackAction entry is always the FIRST of the (up to two) entries ApplyDamage
         // just appended for this call (see that method's own doc comment) - AsOfSequence minus 1 if

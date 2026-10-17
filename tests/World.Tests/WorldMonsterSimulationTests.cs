@@ -1189,6 +1189,29 @@ public sealed class WorldMonsterSimulationTests : IAsyncLifetime
         }
     }
 
+    // The attacker's authoritative attack motion travels with the logical attack into the PlayerAttackAction feed entry,
+    // verbatim on replay, next to the (mob-definition) target damage motion; the motion is not recomputed on retry.
+    [Fact]
+    public async Task ApplyMonsterDamage_CarriesAttackerAttackMotionIntoFeedAndReplaysOriginalMotion()
+    {
+        var (grain, mapId, life, _) = await SetupAttackerAsync("izlude");
+        var presenceId = (await grain.GetMapSnapshotAsync(mapId)).Players.Single(p => p.CharacterId == AttackerCharacterId).PresenceId;
+        var command = new WorldMonsterDamageCommand(life, AttackerCharacterId, presenceId, AttackSequence: 1, Damage: 0, AcquireEngagement: false, SourceAttackMotion: 440);
+
+        var bootstrap = await grain.PollMonsterFeedAsync(cursor: null, mapId);
+        var cursor = new WorldMonsterFeedCursor(life.SimulationEpoch, bootstrap.AsOfSequence);
+        var applied = await grain.ApplyMonsterDamageAsync(command);
+        var replayed = await grain.ApplyMonsterDamageAsync(command with { SourceAttackMotion = 440 });
+        var conflicting = await grain.ApplyMonsterDamageAsync(command with { SourceAttackMotion = 380 });
+
+        Assert.Equal(WorldMonsterDamageStatus.Applied, applied.Status);
+        Assert.Equal(WorldMonsterDamageStatus.ReplayedSequence, replayed.Status);
+        Assert.Equal(WorldMonsterDamageStatus.Conflict, conflicting.Status); // a retry must resend the ORIGINAL motion, never a recomputed one
+        var feed = await grain.PollMonsterFeedAsync(cursor, mapId);
+        var action = feed.Entries!.Where(e => e.Kind == WorldMonsterFeedEntryKind.PlayerAttackAction).Select(e => e.PlayerAttack!).Single();
+        Assert.Equal(440u, action.SourceAttackMotion);
+    }
+
     // Regression: a monster's Target and its authoritative range State must be tracked
     // independently - a monster can have a just-acquired target that is clearly farther away than
     // AttackRange (no chase has started/progressed yet), and the acquisition itself must correctly

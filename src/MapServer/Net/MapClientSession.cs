@@ -2584,7 +2584,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     {
         var dispatcher = DebugApplyMonsterDamageDispatcher ?? RealApplyMonsterDamageDispatcher;
 
-        var command = new WorldMonsterDamageCommand(life, CharacterId, _presenceId ?? Guid.Empty, sequence, damage, acquireEngagement);
+        var command = new WorldMonsterDamageCommand(life, CharacterId, _presenceId ?? Guid.Empty, sequence, damage, acquireEngagement, AttackDelayCalculator.AttackMotionMs(attackDelayMs));
         WorldMonsterDamageResult result;
         // DEBUG-LOG-ONLY: correlate every deeper line of this hit (gameplay mutate, CharServer update)
         // with its AttackSequence, and time the World damage RPC on its own.
@@ -2674,7 +2674,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         switch (result.Status)
         {
             case WorldMonsterDamageStatus.Applied or WorldMonsterDamageStatus.ReplayedSequence when result.KilledByThisHit:
-                await HandleLethalDamageResultAsync(life, result, isMiss, originRepeatAttackState, targetSnapshot, questStatusSnapshot, cancellationToken);
+                await HandleLethalDamageResultAsync(life, result, isMiss, originRepeatAttackState, targetSnapshot, attackDelayMs, questStatusSnapshot, cancellationToken);
                 return;
 
             case WorldMonsterDamageStatus.Applied or WorldMonsterDamageStatus.ReplayedSequence:
@@ -2694,7 +2694,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 }
 
                 var damageDealt = result.HpBefore - result.HpAfter;
-                var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: 460, DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: false);
+                var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: AttackDelayCalculator.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: false);
                 var nonLethalWritesStartedAt = CombatTiming.Now();
                 await ProjectPlayerAttackActionAsync(attackAction, result.AttackActionSequence, cancellationToken);
                 var nonLethalDamageWrittenAt = CombatTiming.Now();
@@ -2778,7 +2778,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // legacy lethal-tail try/finally safety net exactly (see the `finally` below).
     private async Task HandleLethalDamageResultAsync(
         WorldMonsterLifeReference life, WorldMonsterDamageResult result, bool isMiss, RepeatAttackState originRepeatAttackState,
-        WorldMonsterActorView targetSnapshot, Func<uint, CharacterQuestStatus> questStatusSnapshot, CancellationToken cancellationToken)
+        WorldMonsterActorView targetSnapshot, double attackDelayMs, Func<uint, CharacterQuestStatus> questStatusSnapshot, CancellationToken cancellationToken)
     {
         if (ReferenceEquals(_repeatAttack, originRepeatAttackState)) ClearRepeatAttackIfCurrent(originRepeatAttackState); // no reschedule for a lethal hit
 
@@ -2794,7 +2794,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         try
         {
             var damageDealt = result.HpBefore - result.HpAfter;
-            var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: 460, DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: true);
+            var attackAction = new PlayerAttackActionOutcome(_accountId, life.ActorId, _mapName, damageDealt, SrcSpeed: AttackDelayCalculator.AttackMotionMs(attackDelayMs), DstSpeed: (uint)targetSnapshot.StaticMob.DamageMotion, Lethal: true);
             var lethalDamageWriteStartedAt = CombatTiming.Now();
             if (DebugBeforeLethalActionFanoutAsync is { } beforeActionFanoutHook) await beforeActionFanoutHook(); // Test-only seam - see that field's own doc comment. Always null in production.
             await ProjectPlayerAttackActionAsync(attackAction, result.AttackActionSequence, cancellationToken);

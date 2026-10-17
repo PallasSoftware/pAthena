@@ -1038,7 +1038,7 @@ public sealed class MapTcpServer
         // got this exact action via FanOutPlayerAttackActionAsync's immediate echo).
         if (entry.Kind == WorldMonsterFeedEntryKind.PlayerAttackAction && entry.PlayerAttack is { } playerAttack)
         {
-            var action = new PlayerAttackActionOutcome(playerAttack.AttackerActorId, entry.ActorId, entry.Instance.MapId, playerAttack.Damage, SrcSpeed: 460, DstSpeed: playerAttack.TargetDamageMotion, playerAttack.Lethal);
+            var action = new PlayerAttackActionOutcome(playerAttack.AttackerActorId, entry.ActorId, entry.Instance.MapId, playerAttack.Damage, SrcSpeed: playerAttack.SourceAttackMotion, DstSpeed: playerAttack.TargetDamageMotion, playerAttack.Lethal);
             foreach (var session in mapSessions)
             {
                 if (session.WasPlayerAttackActionLocallyEchoed(playerAttack.AttackerActorId, entry.Sequence)) continue;

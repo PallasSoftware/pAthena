@@ -55,6 +55,11 @@ public static class AttackDelayCalculator
         _ => throw new NotSupportedException($"No pinned BaseASPD is modeled for weapon type {weaponType}."),
     };
 
+    // attack motion (status->amotion) is half the repeat delay (status->adelay = 2 * amotion for a PC); the
+    // client plays this as the swing animation length (sdelay in clif_damage). Derived from the delay already
+    // frozen in the logical attack's snapshot so retries never re-read newer stats.
+    public static uint AttackMotionMs(double attackDelayMs) => (uint)(attackDelayMs / AmotionDividerPc);
+
     // Returns the milliseconds between authoritative repeat-attack hits (pinned status->adelay).
     public static int AttackDelayMs(EffectiveCharacterStats attacker, WeaponType? weaponType)
     {

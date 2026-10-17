@@ -1389,7 +1389,9 @@ public sealed class MapClientSessionMonsterCombatTests
 
         await stream.WriteAsync(AttackPacket(actorId));
         await ReadFixposAsync(stream);
-        await ReadDamageAndHpInfoAsync(stream); // Immediate first hit.
+        var (firstHit, _) = await ReadDamageAndHpInfoAsync(stream); // Immediate first hit.
+        // srcSpeed is the attacker's calculated attack MOTION (half of the repeat delay), no longer the hardcoded 460.
+        Assert.Equal((uint)WeakNoviceKnifeDelayMs / 2, BinaryPrimitives.ReadUInt32LittleEndian(firstHit.AsSpan(14)));
         Assert.True(IsAlive(target), "WeakFreshNovice's Knife hit must not one-shot G_PORING so a repeat state remains scheduled to be cancelled.");
 
         // Move away before the next scheduled hit - must cancel the repeat attack outright.

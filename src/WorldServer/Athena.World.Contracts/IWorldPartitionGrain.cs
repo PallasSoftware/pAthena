@@ -566,7 +566,11 @@ public sealed record WorldMonsterDamageCommand(
     [property: Id(2)] Guid AttackerPresenceId,
     [property: Id(3)] long AttackSequence,
     [property: Id(4)] uint Damage,
-    [property: Id(5)] bool AcquireEngagement);
+    [property: Id(5)] bool AcquireEngagement,
+    // The attacker's authoritative attack MOTION (amotion, ms) from the immutable calculation snapshot of this logical
+    // attack - the animation length the other replicas play. Distinct from the repeat delay (adelay) and from the
+    // target's damage motion. Minted once with Damage and replayed verbatim on retry; 0 = unknown (older caller).
+    [property: Id(6)] uint SourceAttackMotion = 0);
 
 // HpBefore/HpAfter/KilledByThisHit fold directly into MapServer's existing MonsterAttackOutcome
 // shape. MaxHp rides along so the HP-info packet reads MaxHp from the same authority as HpAfter -
