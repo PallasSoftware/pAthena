@@ -135,6 +135,26 @@ public sealed class WorldGameplayProfileClusterTests
         finally { await cluster.StopAllSilosAsync(); }
     }
 
+    // The profile grain is deactivated first, so the joining silo's own startup registration could activate it afresh.
+    [Fact]
+    public async Task ADifferentlyConfiguredSiloJoiningAfterTheGrainWasDeactivated_StillFailsToStart()
+    {
+        var cluster = await DeployAsync(Iro, 1);
+        try
+        {
+            var grain = cluster.GrainFactory.GetGrain<IWorldGameplayProfileGrain>(WorldGameplayProfileGrainKey.WellKnownKey);
+            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
+            await cluster.GrainFactory.GetGrain<IManagementGrain>(0).ForceActivationCollection(TimeSpan.Zero);
+
+            s_nextSiloProfile = Kro;
+            await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
+
+            Assert.False((await grain.RegisterAsync(Kro)).Accepted);
+            Assert.True((await grain.RegisterAsync(Iro)).Accepted);
+        }
+        finally { await cluster.StopAllSilosAsync(); }
+    }
+
     [Fact]
     public async Task ASiloWithTheSameProfile_JoinsAndTheClusterKeepsOneProfile()
     {
