@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
+using MapServer.Tests.Testing;
 using Athena.Net.MapServer.World.GeneratedScripts;
 
 namespace Athena.Net.MapServer.Tests.Net;
@@ -47,79 +49,6 @@ public sealed class GeneratedSailorIntegrationTests
         public Task<CharacterGameplayState?> UpdateAsync(uint accountId, CharacterGameplayState expected, CharacterGameplayState updated, CancellationToken cancellationToken) => Task.FromResult<CharacterGameplayState?>(updated);
     }
 
-    private sealed class RecordingInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        public CharacterInventorySnapshot Current { get; private set; } = initial;
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) => Task.FromResult(CharacterInventoryReadResult.Success(Current));
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t) => Task.FromResult(true);
-    }
-
-    // Real CharServer durable-row semantics (multi-row add/consume by DurableId), matching the
-    // established RecordingInventoryPersistence shape used across this project's MapClientSession
-    // integration tests (MapClientSessionUseItemTests/MapClientSessionItemScriptHostTests).
-    private sealed class RecordingInventoryPersistence(List<CharacterInventoryItem> rows) : ICharacterInventoryPersistence
-    {
-        private uint _nextDurableId = rows.Count == 0 ? 1 : rows.Max(r => r.DurableId) + 1;
-        public List<(uint DurableId, uint Amount)> ConsumeCalls { get; } = [];
-        public List<(int ItemId, uint Amount)> AddCalls { get; } = [];
-
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-        {
-            AddCalls.Add((itemId, amount));
-            var existingIndex = rows.FindIndex(r => r.ItemId == itemId);
-            if (existingIndex >= 0)
-            {
-                var updated = rows[existingIndex].Amount + amount;
-                rows[existingIndex] = rows[existingIndex] with { Amount = updated };
-                return Task.FromResult(new InventoryAddPersistenceResult(true, updated, rows[existingIndex].DurableId, 0, true, 0, 0, 0, IsNewRow: false));
-            }
-
-            var durableId = _nextDurableId++;
-            rows.Add(new CharacterInventoryItem(durableId, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0));
-            return Task.FromResult(new InventoryAddPersistenceResult(true, amount, durableId, 0, true, 0, 0, 0, IsNewRow: true));
-        }
-
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken)
-        {
-            ConsumeCalls.Add((durableId, amount));
-            var index = rows.FindIndex(r => r.DurableId == durableId);
-            if (index < 0 || rows[index].Amount < amount) return Task.FromResult(InventoryConsumePersistenceResult.Failed());
-
-            var newAmount = rows[index].Amount - amount;
-            if (newAmount == 0)
-            {
-                rows.RemoveAt(index);
-                return Task.FromResult(new InventoryConsumePersistenceResult(true, 0, RowDeleted: true));
-            }
-
-            rows[index] = rows[index] with { Amount = newAmount };
-            return Task.FromResult(new InventoryConsumePersistenceResult(true, newAmount, RowDeleted: false));
-        }
-    }
-
-    // Wraps a real RecordingInventoryPersistence but fails ConsumeItemAsync (delitem's own
-    // CharServer call) or AddStackableItemAsync (getitem's own CharServer call) on demand,
-    // matching this task's "inject a fake/failing ICharacterInventoryPersistence for the consume
-    // call specifically" requirement. Everything else delegates to the real recording fake so
-    // existing assertions about calls/rows keep working unchanged.
-    private sealed class FailingInventoryPersistence(RecordingInventoryPersistence inner, bool failConsume, bool failAdd) : ICharacterInventoryPersistence
-    {
-        public List<(uint DurableId, uint Amount)> ConsumeCalls => inner.ConsumeCalls;
-        public List<(int ItemId, uint Amount)> AddCalls => inner.AddCalls;
-
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-        {
-            if (failAdd) { AddCalls.Add((itemId, amount)); return Task.FromResult(InventoryAddPersistenceResult.Failed()); }
-            return inner.AddStackableItemAsync(accountId, charId, itemId, amount, cancellationToken);
-        }
-
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken)
-        {
-            if (failConsume) { ConsumeCalls.Add((durableId, amount)); return Task.FromResult(InventoryConsumePersistenceResult.Failed()); }
-            return inner.ConsumeItemAsync(accountId, charId, durableId, amount, cancellationToken);
-        }
-    }
-
     private static byte[] ActorPacket(short type, uint id, int length) { var packet = new byte[length]; BinaryPrimitives.WriteInt16LittleEndian(packet, type); BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(2), id); packet[^1] = 0xaa; return packet; }
     private static async Task<byte[]> ReadExact(Stream stream, int length) { var data = new byte[length]; await stream.ReadExactlyAsync(data).AsTask().WaitAsync(TimeSpan.FromSeconds(5)); return data; }
     private static async Task<byte[]> ReadDynamic(Stream stream) { var header = await ReadExact(stream, 4); var length = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(2)); return [.. header, .. await ReadExact(stream, length - 4)]; }
@@ -135,35 +64,29 @@ public sealed class GeneratedSailorIntegrationTests
         private readonly Task _run;
 
         private SailorFixture(TcpListener listener, TcpClient client, MapClientSession session, Task run, NetworkStream stream, uint actorId,
-            RecordingQuestPersistence questPersistence, ICharacterInventoryPersistence inventoryPersistence, RecordingInventoryListPersistence inventoryListPersistence,
-            RecordingInventoryPersistence recordingInventoryPersistence)
+            RecordingQuestPersistence questPersistence, InMemoryInventoryOperations inventory)
         {
             _listener = listener; _client = client; _session = session; _run = run; Stream = stream; ActorId = actorId;
-            QuestPersistence = questPersistence; InventoryPersistence = inventoryPersistence; InventoryListPersistence = inventoryListPersistence;
-            RecordingInventoryPersistence = recordingInventoryPersistence;
+            QuestPersistence = questPersistence; Inventory = inventory;
         }
 
         public NetworkStream Stream { get; }
         public uint ActorId { get; }
         public RecordingQuestPersistence QuestPersistence { get; }
-        public ICharacterInventoryPersistence InventoryPersistence { get; }
-        public RecordingInventoryListPersistence InventoryListPersistence { get; }
-        // The underlying recording fake, always available for ConsumeCalls/AddCalls assertions
-        // even when InventoryPersistence itself is a FailingInventoryPersistence wrapper around it.
-        public RecordingInventoryPersistence RecordingInventoryPersistence { get; }
+        // The CharServer stand-in: real operation rules over in-memory rows, with failure hooks.
+        public InMemoryInventoryOperations Inventory { get; }
         public MapClientSession Session => _session;
 
         public static Task<SailorFixture> StartAsync(CharacterQuestStatus questState, CharacterInventorySnapshot initialInventory) =>
-            StartAsync(questState, initialInventory, persistenceOverride: null);
+            StartAsync(questState, initialInventory, configureInventory: null);
 
-        // persistenceOverride lets a test inject a failing ICharacterInventoryPersistence (e.g.
-        // FailingInventoryPersistence) for the delitem/getitem CharServer persistence failure
-        // scenarios, while every other fixture wiring (quest/gameplay/inventory-list persistence,
-        // real MapClientSession over a real socket pair) stays identical to the happy-path tests.
+        // configureInventory lets a test make the CharServer stand-in unreachable for selected operations (delitem removals / getitem
+        // grants), while every other fixture wiring (quest/gameplay persistence, real MapClientSession over a real socket pair) stays
+        // identical to the happy-path tests.
         public static async Task<SailorFixture> StartAsync(
             CharacterQuestStatus questState,
             CharacterInventorySnapshot initialInventory,
-            Func<RecordingInventoryPersistence, ICharacterInventoryPersistence>? persistenceOverride)
+            Action<InMemoryInventoryOperations>? configureInventory)
         {
             var entity = Assert.Single(GeneratedScriptRegistry.Entities, item => item.Id == EntityId);
             Assert.Equal(new WorldActorComponent("Sailor#intro_npc04", "int_land", 58, 69, 5, 100, 0), entity.Actor);
@@ -176,20 +99,19 @@ public sealed class GeneratedSailorIntegrationTests
             var serverClient = await listener.AcceptTcpClientAsync(); await connect;
 
             var questPersistence = new RecordingQuestPersistence(questState);
-            var recordingInventoryPersistence = new RecordingInventoryPersistence([.. initialInventory.Items]);
-            ICharacterInventoryPersistence inventoryPersistence = persistenceOverride?.Invoke(recordingInventoryPersistence) ?? recordingInventoryPersistence;
-            var inventoryListPersistence = new RecordingInventoryListPersistence(initialInventory);
+            var inventory = new InMemoryInventoryOperations(initialInventory);
+            configureInventory?.Invoke(inventory);
 
             var session = new MapClientSession(1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true, "int_land", 58, 69, registry,
                 questPersistence: questPersistence, accountId: AccountId, charId: CharId, gameplayStatePersistence: new FixedGameplayStatePersistence(),
-                inventoryPersistence: inventoryPersistence, inventoryListPersistence: inventoryListPersistence);
+                inventoryOperations: inventory);
             var run = session.RunAsync(CancellationToken.None);
             await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", 58, 69, 5, 0, 0));
             var stream = client.GetStream();
             await ReadExact(stream, 29); // authenticated iRO bootstrap
             var skillListHeader = await ReadExact(stream, 4); // 0x0B32 header
             await ReadExact(stream, BinaryPrimitives.ReadUInt16LittleEndian(skillListHeader.AsSpan(2)) - 4); // 0x0B32 body
-            return new(listener, client, session, run, stream, actor.ActorId, questPersistence, inventoryPersistence, inventoryListPersistence, recordingInventoryPersistence);
+            return new(listener, client, session, run, stream, actor.ActorId, questPersistence, inventory);
         }
 
         public async Task LoadAndAssertSpawnAsync()
@@ -262,8 +184,7 @@ public sealed class GeneratedSailorIntegrationTests
         await fixture.Stream.WriteAsync(ActorPacket(0x0146, fixture.ActorId, 7));
         await fixture.WaitForScriptCompletionAsync();
 
-        Assert.Empty(fixture.RecordingInventoryPersistence.ConsumeCalls);
-        Assert.Empty(fixture.RecordingInventoryPersistence.AddCalls);
+        Assert.Empty(fixture.Inventory.Requests);
         Assert.Empty(fixture.QuestPersistence.Mutations);
         Assert.Equal(1u, fixture.Session.Inventory!.Items.Single(i => i.ItemId == WoodItemId).Amount);
     }
@@ -358,8 +279,8 @@ public sealed class GeneratedSailorIntegrationTests
         await fixture.WaitForScriptCompletionAsync();
 
         Assert.Equal([CharacterQuestStatus.Completed], fixture.QuestPersistence.Mutations);
-        Assert.Single(fixture.RecordingInventoryPersistence.ConsumeCalls, call => call.Amount == 2);
-        Assert.Single(fixture.RecordingInventoryPersistence.AddCalls, call => call.ItemId == MagnifierItemId && call.Amount == 5);
+        Assert.Single(fixture.Inventory.Applied, request => request.Mutations.OfType<RemoveFromRowMutation>().Any(remove => remove.Amount == 2));
+        Assert.Single(fixture.Inventory.Applied, request => request.Mutations.OfType<AddNewRowMutation>().Any(add => add.Row.ItemId == MagnifierItemId && add.Row.Amount == 5));
         Assert.DoesNotContain(fixture.Session.Inventory!.Items, i => i.ItemId == WoodItemId); // Exactly 2 consumed from a 2-stack -> row deleted.
         Assert.Equal(5u, fixture.Session.Inventory!.Items.Single(i => i.ItemId == MagnifierItemId).Amount);
     }
@@ -375,7 +296,7 @@ public sealed class GeneratedSailorIntegrationTests
         await using var fixture = await SailorFixture.StartAsync(
             CharacterQuestStatus.Active,
             inventory,
-            recording => new FailingInventoryPersistence(recording, failConsume: true, failAdd: false));
+            inventory => inventory.DropWhen = request => request.Mutations.OfType<RemoveFromRowMutation>().Any());
 
         await fixture.LoadAndAssertSpawnAsync();
         await fixture.Stream.WriteAsync(ActorPacket(0x0090, fixture.ActorId, 8));
@@ -397,8 +318,9 @@ public sealed class GeneratedSailorIntegrationTests
         AssertClose(await ReadExact(fixture.Stream, 6));
         await fixture.WaitForScriptCompletionAsync();
 
-        Assert.Single(fixture.RecordingInventoryPersistence.ConsumeCalls); // attempted, but failed
-        Assert.Empty(fixture.RecordingInventoryPersistence.AddCalls); // getitem never ran
+        Assert.Single(fixture.Inventory.Requests.Select(request => request.OperationId).Distinct()); // one removal attempted (retried), never applied
+        Assert.Empty(fixture.Inventory.Applied);
+        Assert.DoesNotContain(fixture.Inventory.Requests, request => request.Mutations.Any(mutation => mutation is AddNewRowMutation)); // getitem never ran
         Assert.Empty(fixture.QuestPersistence.Mutations); // completequest never ran
         Assert.Equal(2u, fixture.Session.Inventory!.Items.Single(i => i.ItemId == WoodItemId).Amount); // unchanged
         Assert.DoesNotContain(fixture.Session.Inventory!.Items, i => i.ItemId == MagnifierItemId); // no Magnifier granted
@@ -415,7 +337,7 @@ public sealed class GeneratedSailorIntegrationTests
         await using var fixture = await SailorFixture.StartAsync(
             CharacterQuestStatus.Active,
             inventory,
-            recording => new FailingInventoryPersistence(recording, failConsume: false, failAdd: true));
+            inventory => inventory.DropWhen = request => request.Mutations.Any(mutation => mutation is AddNewRowMutation or AddToStackMutation));
 
         await fixture.LoadAndAssertSpawnAsync();
         await fixture.Stream.WriteAsync(ActorPacket(0x0090, fixture.ActorId, 8));
@@ -459,8 +381,8 @@ public sealed class GeneratedSailorIntegrationTests
         }
         await fixture.WaitForScriptCompletionAsync();
 
-        Assert.Single(fixture.RecordingInventoryPersistence.ConsumeCalls, call => call.Amount == 2); // delitem applied, not rolled back
-        Assert.Single(fixture.RecordingInventoryPersistence.AddCalls); // getitem attempted, but failed
+        Assert.Single(fixture.Inventory.Applied, request => request.Mutations.OfType<RemoveFromRowMutation>().Any(remove => remove.Amount == 2)); // delitem applied, not rolled back
+        Assert.Single(fixture.Inventory.Requests.Where(request => request.Mutations.Any(mutation => mutation is AddNewRowMutation)).Select(request => request.OperationId).Distinct()); // getitem attempted (retried), but never confirmed
         Assert.Empty(fixture.QuestPersistence.Mutations); // completequest never ran
         Assert.DoesNotContain(fixture.Session.Inventory!.Items, i => i.ItemId == WoodItemId); // delitem's removal stands (no rollback)
         Assert.DoesNotContain(fixture.Session.Inventory!.Items, i => i.ItemId == MagnifierItemId); // no fake Magnifier grant
@@ -483,8 +405,7 @@ public sealed class GeneratedSailorIntegrationTests
         await fixture.Stream.WriteAsync(ActorPacket(0x0146, fixture.ActorId, 7));
         await fixture.WaitForScriptCompletionAsync();
 
-        Assert.Empty(fixture.RecordingInventoryPersistence.ConsumeCalls);
-        Assert.Empty(fixture.RecordingInventoryPersistence.AddCalls);
+        Assert.Empty(fixture.Inventory.Requests);
         Assert.Empty(fixture.QuestPersistence.Mutations);
         Assert.Empty(fixture.Session.Inventory!.Items);
     }

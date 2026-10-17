@@ -13,14 +13,14 @@ namespace Athena.Net.Shared.Inventory;
 // Items are never merged by CharServer: the caller names the target row (AddToStack) or asks for a new row (AddNew), because
 // stackability and stack limits are item rules, not persistence.
 
-internal enum InventoryContainer : byte { Inventory = 0, Cart = 1, Storage = 2, GuildStorage = 3 }
+public enum InventoryContainer : byte { Inventory = 0, Cart = 1, Storage = 2, GuildStorage = 3 }
 
-internal enum InventoryOperationKind : byte
+public enum InventoryOperationKind : byte
 {
     Add = 1, Consume = 2, Equip = 3, Update = 4, Drop = 5, Pickup = 6, Transfer = 7, Refine = 8, Card = 9, Identify = 10, Repair = 11, Use = 12, Expire = 13,
 }
 
-internal enum InventoryOperationStatus : byte
+public enum InventoryOperationStatus : byte
 {
     Applied = 0,
     Replayed = 1,            // the same OperationId was already applied; the stored outcome is returned unchanged
@@ -29,25 +29,25 @@ internal enum InventoryOperationStatus : byte
     Unavailable = 4,         // transient database failure; nothing was applied and retrying the same OperationId is safe
 }
 
-internal readonly record struct InventoryOption(short Id, short Value, byte Param);
+public readonly record struct InventoryOption(short Id, short Value, byte Param);
 
 // A complete persisted item row. DurableId/Revision are 0 in an AddNew template.
-internal sealed record InventoryItemRow(
+public sealed record InventoryItemRow(
     uint DurableId, uint ItemId, uint Amount, uint Equip,
     byte Identify, byte Refine, byte Attribute, byte Favorite, byte Bound, byte EnchantGrade,
     uint Card0, uint Card1, uint Card2, uint Card3,
     InventoryOption Option0, InventoryOption Option1, InventoryOption Option2, InventoryOption Option3, InventoryOption Option4,
     uint ExpireTime, ulong UniqueId, uint EquipSwitch, uint Revision)
 {
-    internal const int WireLength = 83;
+    public const int WireLength = 83;
 
-    internal static InventoryItemRow New(uint itemId, uint amount, byte identify = 1) =>
+    public static InventoryItemRow New(uint itemId, uint amount, byte identify = 1) =>
         new(0, itemId, amount, 0, identify, 0, 0, 0, 0, 0, 0, 0, 0, 0, default, default, default, default, default, 0, 0, 0, 0);
 
-    internal InventoryOption[] Options => [Option0, Option1, Option2, Option3, Option4];
-    internal uint[] Cards => [Card0, Card1, Card2, Card3];
+    public InventoryOption[] Options => [Option0, Option1, Option2, Option3, Option4];
+    public uint[] Cards => [Card0, Card1, Card2, Card3];
 
-    internal void Write(Span<byte> span)
+    public void Write(Span<byte> span)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(span, DurableId);
         BinaryPrimitives.WriteUInt32LittleEndian(span[4..], ItemId);
@@ -72,7 +72,7 @@ internal sealed record InventoryItemRow(
         BinaryPrimitives.WriteUInt32LittleEndian(span[79..], Revision);
     }
 
-    internal static InventoryItemRow Read(ReadOnlySpan<byte> span)
+    public static InventoryItemRow Read(ReadOnlySpan<byte> span)
     {
         static InventoryOption Option(ReadOnlySpan<byte> s) => new(BinaryPrimitives.ReadInt16LittleEndian(s), BinaryPrimitives.ReadInt16LittleEndian(s[2..]), s[4]);
         return new(
@@ -87,45 +87,45 @@ internal sealed record InventoryItemRow(
     }
 }
 
-internal abstract record InventoryMutation(InventoryContainer Container);
+public abstract record InventoryMutation(InventoryContainer Container);
 
 /// <summary>Create a new row from the template (non-stackable items, unique items, or no stack to merge into).</summary>
-internal sealed record AddNewRowMutation(InventoryContainer Container, InventoryItemRow Row) : InventoryMutation(Container);
+public sealed record AddNewRowMutation(InventoryContainer Container, InventoryItemRow Row) : InventoryMutation(Container);
 
 /// <summary>Add Delta to a named stack. Rejected unless the row still has ExpectedItemId/ExpectedAmount/ExpectedRevision and the result stays within MaxAmount.</summary>
-internal sealed record AddToStackMutation(InventoryContainer Container, uint DurableId, uint ExpectedItemId, uint Delta, uint ExpectedAmount, uint MaxAmount, uint ExpectedRevision)
+public sealed record AddToStackMutation(InventoryContainer Container, uint DurableId, uint ExpectedItemId, uint Delta, uint ExpectedAmount, uint MaxAmount, uint ExpectedRevision)
     : InventoryMutation(Container);
 
 /// <summary>Remove Amount from a named row; the row is deleted when it reaches 0.</summary>
-internal sealed record RemoveFromRowMutation(InventoryContainer Container, uint DurableId, uint Amount, uint ExpectedAmount, uint ExpectedRevision)
+public sealed record RemoveFromRowMutation(InventoryContainer Container, uint DurableId, uint Amount, uint ExpectedAmount, uint ExpectedRevision)
     : InventoryMutation(Container);
 
 /// <summary>Replace every mutable column except item id and amount (equip, identify, refine, attribute, cards, options, expiry, bind, ...).</summary>
-internal sealed record UpdateRowMutation(InventoryContainer Container, uint DurableId, uint ExpectedRevision, InventoryItemRow NewRow)
+public sealed record UpdateRowMutation(InventoryContainer Container, uint DurableId, uint ExpectedRevision, InventoryItemRow NewRow)
     : InventoryMutation(Container);
 
-internal sealed record InventoryOperationRequest(uint AccountId, uint CharId, Guid OperationId, InventoryOperationKind Kind, IReadOnlyList<InventoryMutation> Mutations);
+public sealed record InventoryOperationRequest(uint AccountId, uint CharId, Guid OperationId, InventoryOperationKind Kind, IReadOnlyList<InventoryMutation> Mutations);
 
-internal sealed record InventoryMutationResult(uint DurableId, bool Deleted, InventoryItemRow? Row);
+public sealed record InventoryMutationResult(uint DurableId, bool Deleted, InventoryItemRow? Row);
 
-internal sealed record InventoryOperationResponse(
+public sealed record InventoryOperationResponse(
     InventoryOperationStatus Status, uint CharId, Guid OperationId, int FailedIndex, IReadOnlyList<InventoryMutationResult> Results)
 {
-    internal bool Succeeded => Status is InventoryOperationStatus.Applied or InventoryOperationStatus.Replayed;
+    public bool Succeeded => Status is InventoryOperationStatus.Applied or InventoryOperationStatus.Replayed;
 }
 
-internal static class InventoryOperationWire
+public static class InventoryOperationWire
 {
-    internal const short RequestOpcode = 0x2b3e;
-    internal const short ResponseOpcode = 0x2b3f;
-    internal const int MaxMutations = 32;
-    internal const int RequestHeaderLength = 30;
-    internal const int ResponseHeaderLength = 26;
-    internal const int ResultLength = 4 + 1 + InventoryItemRow.WireLength;
+    public const short RequestOpcode = 0x2b3e;
+    public const short ResponseOpcode = 0x2b3f;
+    public const int MaxMutations = 32;
+    public const int RequestHeaderLength = 30;
+    public const int ResponseHeaderLength = 26;
+    public const int ResultLength = 4 + 1 + InventoryItemRow.WireLength;
 
     private const byte AddNewTag = 1, AddToStackTag = 2, RemoveTag = 3, UpdateTag = 4;
 
-    internal static byte[] BuildRequest(InventoryOperationRequest request)
+    public static byte[] BuildRequest(InventoryOperationRequest request)
     {
         if (request.Mutations.Count is 0 or > MaxMutations) throw new ArgumentException($"An operation carries 1..{MaxMutations} mutations.", nameof(request));
         var length = RequestHeaderLength + request.Mutations.Sum(MutationLength);
@@ -188,7 +188,7 @@ internal static class InventoryOperationWire
         _ => throw new ArgumentException($"Unsupported mutation {mutation.GetType().Name}."),
     };
 
-    internal static bool TryParseRequest(ReadOnlySpan<byte> packet, out InventoryOperationRequest request)
+    public static bool TryParseRequest(ReadOnlySpan<byte> packet, out InventoryOperationRequest request)
     {
         request = null!;
         if (packet.Length < RequestHeaderLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != RequestOpcode) return false;
@@ -234,7 +234,7 @@ internal static class InventoryOperationWire
         return true;
     }
 
-    internal static byte[] BuildResponse(InventoryOperationResponse response)
+    public static byte[] BuildResponse(InventoryOperationResponse response)
     {
         var length = ResponseHeaderLength + response.Results.Count * ResultLength;
         var packet = new byte[length];
@@ -256,7 +256,7 @@ internal static class InventoryOperationWire
         return packet;
     }
 
-    internal static bool TryParseResponse(ReadOnlySpan<byte> packet, out InventoryOperationResponse response)
+    public static bool TryParseResponse(ReadOnlySpan<byte> packet, out InventoryOperationResponse response)
     {
         response = null!;
         if (packet.Length < ResponseHeaderLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != ResponseOpcode) return false;
@@ -276,4 +276,74 @@ internal static class InventoryOperationWire
     }
 
     private static uint U32(ReadOnlySpan<byte> span, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(span[offset..]);
+}
+
+/// <summary>Reads one container's rows. Variable-length response: opcode.W length.W result.B charId.L container.B count.W rows[count] (total length in `length`).</summary>
+public static class InventoryListWire
+{
+    public const short RequestOpcode = 0x2b33;
+    public const short ResponseOpcode = 0x2b34;
+    public const int RequestLength = 11;
+    public const int ResponseHeaderLength = 12;
+
+    public static byte[] BuildGetRequest(uint accountId, uint charId, InventoryContainer container)
+    {
+        var packet = new byte[RequestLength];
+        BinaryPrimitives.WriteInt16LittleEndian(packet, RequestOpcode);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(2), accountId);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(6), charId);
+        packet[10] = (byte)container;
+        return packet;
+    }
+
+    public static bool TryParseGet(ReadOnlySpan<byte> packet, out uint accountId, out uint charId, out InventoryContainer container)
+    {
+        accountId = charId = 0;
+        container = InventoryContainer.Inventory;
+        if (packet.Length != RequestLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != RequestOpcode || !Enum.IsDefined((InventoryContainer)packet[10])) return false;
+        accountId = BinaryPrimitives.ReadUInt32LittleEndian(packet[2..]);
+        charId = BinaryPrimitives.ReadUInt32LittleEndian(packet[6..]);
+        container = (InventoryContainer)packet[10];
+        return true;
+    }
+
+    /// <summary>result 0 = ok; any other value carries no rows.</summary>
+    public static byte[] BuildResponse(byte result, uint charId, InventoryContainer container, IReadOnlyList<InventoryItemRow>? rows)
+    {
+        var count = result == 0 ? rows?.Count ?? 0 : 0;
+        var length = ResponseHeaderLength + count * InventoryItemRow.WireLength;
+        if (length > ushort.MaxValue) throw new ArgumentException("Container list is too large for one packet.", nameof(rows));
+        var packet = new byte[length];
+        BinaryPrimitives.WriteInt16LittleEndian(packet, ResponseOpcode);
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(2), (ushort)length);
+        packet[4] = result;
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), charId);
+        packet[9] = (byte)container;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(10), (ushort)count);
+        for (var i = 0; i < count; i++) rows![i].Write(packet.AsSpan(ResponseHeaderLength + i * InventoryItemRow.WireLength));
+        return packet;
+    }
+
+    /// <summary>False for a malformed packet or a duplicated durable id (a primary key can never repeat in one read).</summary>
+    public static bool TryParseResponse(ReadOnlySpan<byte> packet, out byte result, out uint charId, out InventoryContainer container, out IReadOnlyList<InventoryItemRow> rows)
+    {
+        result = 1; charId = 0; container = InventoryContainer.Inventory; rows = [];
+        if (packet.Length < ResponseHeaderLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != ResponseOpcode) return false;
+        if (BinaryPrimitives.ReadUInt16LittleEndian(packet[2..]) != packet.Length || !Enum.IsDefined((InventoryContainer)packet[9])) return false;
+        result = packet[4];
+        charId = BinaryPrimitives.ReadUInt32LittleEndian(packet[5..]);
+        container = (InventoryContainer)packet[9];
+        var count = BinaryPrimitives.ReadUInt16LittleEndian(packet[10..]);
+        if (packet.Length != ResponseHeaderLength + count * InventoryItemRow.WireLength) return false;
+        var list = new List<InventoryItemRow>(count);
+        var seen = new HashSet<uint>();
+        for (var i = 0; i < count; i++)
+        {
+            var row = InventoryItemRow.Read(packet[(ResponseHeaderLength + i * InventoryItemRow.WireLength)..]);
+            if (!seen.Add(row.DurableId)) return false;
+            list.Add(row);
+        }
+        rows = list;
+        return true;
+    }
 }

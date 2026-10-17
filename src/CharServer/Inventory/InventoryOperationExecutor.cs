@@ -27,7 +27,7 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
 
     internal async Task<InventoryOperationResponse> ExecuteAsync(InventoryOperationRequest request, byte[] requestBytes, CancellationToken cancellationToken)
     {
-        if (!IsWellFormed(request, out var badIndex)) return Respond(InventoryOperationStatus.Invalid, request, badIndex);
+        if (!InventoryOperationEngine.IsWellFormed(request, out var badIndex)) return Respond(InventoryOperationStatus.Invalid, request, badIndex);
 
         CharDbContext? db;
         try { db = dbFactory(); }
@@ -77,54 +77,51 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
             if (guildId is null or 0) return Respond(InventoryOperationStatus.Invalid, request, request.Mutations.Select((m, i) => (m, i)).First(p => p.m.Container == InventoryContainer.GuildStorage).i);
         }
 
-        var touched = new List<(IItemRowColumns Entity, bool Deleted, uint DurableId)>();
-        for (var index = 0; index < request.Mutations.Count; index++)
+        // Load the rows the operation names (one query per container), let the shared engine decide, then persist its changes.
+        var tracked = new Dictionary<(InventoryContainer Container, uint Id), IItemRowColumns>();
+        foreach (var group in request.Mutations.Where(m => m is not AddNewRowMutation).GroupBy(m => m.Container))
         {
-            var mutation = request.Mutations[index];
-            var owner = OwnerOf(mutation.Container, request, guildId);
-            switch (mutation)
+            var ids = group.Select(DurableIdOf).ToArray();
+            var owner = OwnerOf(group.Key, request, guildId);
+            IReadOnlyList<IItemRowColumns> rows = group.Key == InventoryContainer.Inventory
+                ? await db.Inventory.Where(i => i.CharId == owner && ids.Contains(i.Id)).ToListAsync(cancellationToken)
+                : await db.ContainerItems.Where(i => i.Container == (byte)group.Key && i.OwnerId == owner && ids.Contains(i.Id)).ToListAsync(cancellationToken);
+            foreach (var row in rows) tracked[(group.Key, row.Id)] = row;
+        }
+
+        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => tracked.TryGetValue((container, id), out var entity) ? ItemRowMapper.ToRow(entity) : null);
+        if (evaluation.Status != InventoryOperationStatus.Applied) return Respond(evaluation.Status, request, evaluation.FailedIndex);
+
+        var touched = new List<(IItemRowColumns Entity, bool Deleted, uint DurableId)>();
+        foreach (var change in evaluation.Changes)
+        {
+            switch (change.Kind)
             {
-                case AddNewRowMutation add:
+                case InventoryRowChangeKind.Insert:
                 {
-                    IItemRowColumns entity = add.Container == InventoryContainer.Inventory
+                    IItemRowColumns entity = change.Container == InventoryContainer.Inventory
                         ? new CharInventory { CharId = request.CharId }
-                        : new CharContainerItem { Container = (byte)add.Container, OwnerId = owner };
-                    ItemRowMapper.ApplyNew(entity, add.Row);
-                    entity.Revision = 1;
+                        : new CharContainerItem { Container = (byte)change.Container, OwnerId = OwnerOf(change.Container, request, guildId) };
+                    ItemRowMapper.ApplyNew(entity, change.Row);
+                    entity.Revision = change.Row.Revision;
                     db.Add(entity);
                     touched.Add((entity, false, 0));
                     break;
                 }
-                case AddToStackMutation stack:
+                case InventoryRowChangeKind.Update:
                 {
-                    var entity = await FindAsync(db, stack.Container, owner, stack.DurableId, cancellationToken);
-                    if (entity is null || entity.NameId != stack.ExpectedItemId || entity.Amount != stack.ExpectedAmount || entity.Revision != stack.ExpectedRevision
-                        || stack.Delta == 0 || (ulong)entity.Amount + stack.Delta > stack.MaxAmount)
-                        return Respond(InventoryOperationStatus.PreconditionFailed, request, index);
-                    entity.Amount += stack.Delta;
-                    entity.Revision++;
+                    var entity = tracked[(change.Container, change.Row.DurableId)];
+                    ItemRowMapper.ApplyMutable(entity, change.Row);
+                    entity.Amount = change.Row.Amount;
+                    entity.Revision = change.Row.Revision;
                     touched.Add((entity, false, entity.Id));
                     break;
                 }
-                case RemoveFromRowMutation remove:
+                case InventoryRowChangeKind.Delete:
                 {
-                    var entity = await FindAsync(db, remove.Container, owner, remove.DurableId, cancellationToken);
-                    if (entity is null || entity.Amount != remove.ExpectedAmount || entity.Revision != remove.ExpectedRevision
-                        || remove.Amount == 0 || remove.Amount > entity.Amount)
-                        return Respond(InventoryOperationStatus.PreconditionFailed, request, index);
-                    entity.Amount -= remove.Amount;
-                    if (entity.Amount == 0) { db.Remove(entity); touched.Add((entity, true, entity.Id)); }
-                    else { entity.Revision++; touched.Add((entity, false, entity.Id)); }
-                    break;
-                }
-                case UpdateRowMutation update:
-                {
-                    var entity = await FindAsync(db, update.Container, owner, update.DurableId, cancellationToken);
-                    if (entity is null || entity.Revision != update.ExpectedRevision || entity.Amount != update.NewRow.Amount)
-                        return Respond(InventoryOperationStatus.PreconditionFailed, request, index);
-                    ItemRowMapper.ApplyMutable(entity, update.NewRow);
-                    entity.Revision++;
-                    touched.Add((entity, false, entity.Id));
+                    var entity = tracked[(change.Container, change.Row.DurableId)];
+                    db.Remove(entity);
+                    touched.Add((entity, true, entity.Id));
                     break;
                 }
             }
@@ -179,11 +176,6 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
         }
     }
 
-    private static async Task<IItemRowColumns?> FindAsync(CharDbContext db, InventoryContainer container, uint owner, uint durableId, CancellationToken cancellationToken) =>
-        container == InventoryContainer.Inventory
-            ? await db.Inventory.FirstOrDefaultAsync(i => i.Id == durableId && i.CharId == owner, cancellationToken)
-            : await db.ContainerItems.FirstOrDefaultAsync(i => i.Id == durableId && i.Container == (byte)container && i.OwnerId == owner, cancellationToken);
-
     private static uint OwnerOf(InventoryContainer container, InventoryOperationRequest request, uint? guildId) => container switch
     {
         InventoryContainer.Storage => request.AccountId,
@@ -191,26 +183,13 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
         _ => request.CharId,
     };
 
-    // Structural checks that need no database: no row touched twice, sane ids and amounts.
-    private static bool IsWellFormed(InventoryOperationRequest request, out int badIndex)
+    private static uint DurableIdOf(InventoryMutation mutation) => mutation switch
     {
-        badIndex = -1;
-        if (request.CharId == 0 || request.AccountId == 0 || request.OperationId == Guid.Empty) return false;
-        var seen = new HashSet<(InventoryContainer, uint)>();
-        for (var i = 0; i < request.Mutations.Count; i++)
-        {
-            var ok = request.Mutations[i] switch
-            {
-                AddNewRowMutation add => add.Row.ItemId > 0 && add.Row.Amount > 0,
-                AddToStackMutation stack => stack.DurableId > 0 && stack.Delta > 0 && stack.MaxAmount > 0 && seen.Add((stack.Container, stack.DurableId)),
-                RemoveFromRowMutation remove => remove.DurableId > 0 && remove.Amount > 0 && seen.Add((remove.Container, remove.DurableId)),
-                UpdateRowMutation update => update.DurableId > 0 && update.NewRow.ItemId > 0 && update.NewRow.Amount > 0 && seen.Add((update.Container, update.DurableId)),
-                _ => false,
-            };
-            if (!ok) { badIndex = i; return false; }
-        }
-        return true;
-    }
+        AddToStackMutation stack => stack.DurableId,
+        RemoveFromRowMutation remove => remove.DurableId,
+        UpdateRowMutation update => update.DurableId,
+        _ => 0,
+    };
 
     private static InventoryOperationResponse Respond(InventoryOperationStatus status, InventoryOperationRequest request, int failedIndex) =>
         new(status, request.CharId, request.OperationId, failedIndex, []);

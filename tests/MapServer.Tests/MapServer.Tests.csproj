@@ -24,6 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The operation rules CharServer applies, compiled into the test double so MapServer tests run against the real preconditions. -->
+    <Compile Include="../../src/Shared/Inventory/InventoryOperationEngine.cs" Link="Testing/InventoryOperationEngine.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../src/MapServer/MapServer.csproj" />
     <ProjectReference Include="../../src/WorldServer/Athena.World/Athena.World.csproj" />
     <ProjectReference Include="../../src/WorldServer/Athena.World.Contracts/Athena.World.Contracts.csproj" />

@@ -38,6 +38,19 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # A disposable SQL Server for the real-database tests (CharServer migrations and the inventory operation contract). The password
+    # is derived from the run id: it protects a container that only lives for this job and is never a stored secret.
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: Pw!${{ github.run_id }}aA1
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Pw!${{ github.run_id }}aA1 -Q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +82,8 @@ jobs:
       - name: Test the servers
         if: steps.scope.outputs.code == 'true'
         shell: pwsh
+        env:
+          ATHENA_NET_TEST_SQLSERVER: Server=localhost,1433;User Id=sa;Password=Pw!${{ github.run_id }}aA1;TrustServerCertificate=True
         run: |
           foreach ($project in 'LoginServer', 'CharServer', 'MapServer', 'World') {
             dotnet test "tests/$project.Tests/$project.Tests.csproj" --configuration Release

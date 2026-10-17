@@ -36,20 +36,8 @@ public static class PacketConstants
     public const short MapGameplayStateGetResponse = 0x2b2e;
     public const short MapGameplayStateUpdateRequest = 0x2b2f;
     public const short MapGameplayStateUpdateResponse = 0x2b30;
-    public const short MapInventoryAddRequest = 0x2b31;
-    public const short MapInventoryAddResponse = 0x2b32;
-    // Renamed from MapEquipmentGet*: this reads every persisted CharInventory row for the
-    // character, not just the right-hand slot (see CharacterInventorySnapshot).
-    public const short MapInventoryListGetRequest = 0x2b33;
-    public const short MapInventoryListGetResponse = 0x2b34;
-    public const short MapInventoryEquipUpdateRequest = 0x2b35;
-    public const short MapInventoryEquipUpdateResponse = 0x2b36;
-    // Consumes `amount` from the row at the given authoritative SlotIndex (pinned pc_delitem,
-    // pc.cpp:6103-6128) - used by item-use (First Aid Box etc.), not itemId-targeted like
-    // MapInventoryAddRequest, since consumption targets a specific already-resolved row, never
-    // "find or create a stack of this item".
-    public const short MapInventoryConsumeRequest = 0x2b37;
-    public const short MapInventoryConsumeResponse = 0x2b38;
+    // Inventory container reads (0x2b33/0x2b34) and atomic inventory operations (0x2b3e/0x2b3f) are defined once in
+    // Athena.Net.Shared.Inventory.InventoryListWire / InventoryOperationWire and shared with CharServer.
     // Reads every persisted CharSkill row for the character - same "one collection read, never
     // one-at-a-time" shape as MapInventoryListGetRequest.
     public const short MapSkillListGetRequest = 0x2b39;

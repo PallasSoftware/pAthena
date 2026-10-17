@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
+using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.Net;
 
@@ -18,85 +20,6 @@ public sealed class MapClientSessionUseItemTests
 {
     private const uint AccountId = 2_000_000;
     private const uint CharId = 9;
-
-    // Persists equip/unequip mutations against the DurableIds present at setup time, matching
-    // the established RecordingInventoryListPersistence pattern in
-    // MapClientSessionEquipmentMutationTests/MapClientSessionMonsterCombatTests. Must succeed
-    // for a DurableId that legitimately existed in the initial snapshot - returning false
-    // unconditionally (the prior state of this fake) makes CharacterEquipmentMutationService.
-    // UnequipAsync fail, so MapClientSession sends the 9-byte failure ACK instead of the 15-byte
-    // 0x01D7 appearance packet a test may be waiting on, which then hangs on ReadExactlyAsync
-    // waiting for bytes the server never sends.
-    private sealed class RecordingInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        private readonly HashSet<uint> _knownDurableIds = [.. initial.Items.Select(i => i.DurableId)];
-        private CharacterInventorySnapshot _current = initial;
-        public List<(uint DurableId, uint Equip)> EquipCalls { get; } = [];
-
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) =>
-            Task.FromResult(CharacterInventoryReadResult.Success(_current));
-
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t)
-        {
-            EquipCalls.Add((durableId, equip));
-            if (!_knownDurableIds.Contains(durableId)) return Task.FromResult(false);
-
-            var items = _current.Items.Select(i => i.DurableId == durableId ? i with { Equip = equip } : i).ToList();
-            _current = new CharacterInventorySnapshot(items);
-            return Task.FromResult(true);
-        }
-    }
-
-    // Simulates CharServer's real durable-row behavior: consuming decrements (or deletes,
-    // matching pinned pc_delitem) the row by its stable DurableId; adding appends a brand-new
-    // durable row (or increments an existing stack) - mirroring MapServerSession.
-    // HandleInventoryConsumeAsync/HandleInventoryAddRequestAsync without a real database.
-    // CharServer has no runtime-slot concept at all - it is never asked for one here either.
-    private sealed class RecordingInventoryPersistence(List<CharacterInventoryItem> rows) : ICharacterInventoryPersistence
-    {
-        private uint _nextDurableId = rows.Count == 0 ? 1 : rows.Max(r => r.DurableId) + 1;
-        public bool FailNextConsume { get; set; }
-        public bool FailNextAdd { get; set; }
-        public List<(uint DurableId, uint Amount)> ConsumeCalls { get; } = [];
-        public List<(int ItemId, uint Amount)> AddCalls { get; } = [];
-
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-        {
-            AddCalls.Add((itemId, amount));
-            if (FailNextAdd) { FailNextAdd = false; return Task.FromResult(InventoryAddPersistenceResult.Failed()); }
-
-            var existingIndex = rows.FindIndex(r => r.ItemId == itemId);
-            if (existingIndex >= 0)
-            {
-                var updated = rows[existingIndex].Amount + amount;
-                rows[existingIndex] = rows[existingIndex] with { Amount = updated };
-                return Task.FromResult(new InventoryAddPersistenceResult(true, updated, rows[existingIndex].DurableId, 0, true, 0, 0, 0, IsNewRow: false));
-            }
-
-            var durableId = _nextDurableId++;
-            rows.Add(new CharacterInventoryItem(durableId, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0));
-            return Task.FromResult(new InventoryAddPersistenceResult(true, amount, durableId, 0, true, 0, 0, 0, IsNewRow: true));
-        }
-
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken)
-        {
-            ConsumeCalls.Add((durableId, amount));
-            if (FailNextConsume) { FailNextConsume = false; return Task.FromResult(InventoryConsumePersistenceResult.Failed()); }
-
-            var index = rows.FindIndex(r => r.DurableId == durableId);
-            if (index < 0 || rows[index].Amount < amount) return Task.FromResult(InventoryConsumePersistenceResult.Failed());
-
-            var newAmount = rows[index].Amount - amount;
-            if (newAmount == 0)
-            {
-                rows.RemoveAt(index);
-                return Task.FromResult(new InventoryConsumePersistenceResult(true, 0, RowDeleted: true));
-            }
-
-            rows[index] = rows[index] with { Amount = newAmount };
-            return Task.FromResult(new InventoryConsumePersistenceResult(true, newAmount, RowDeleted: false));
-        }
-    }
 
     // Live-captured bytes: A7 00 04 00 80 84 1E 00 D2.
     private static byte[] UseItemRequestPacket(ushort clientIndex, uint accountId, byte opaqueByte = 0xd2)
@@ -141,7 +64,7 @@ public sealed class MapClientSessionUseItemTests
         new CharacterInventoryItem(DurableId: 4, SlotIndex: 3, 6008, 5, 0, true, 0, 0, 0), // Wood, unequipped - clientIndex 5
     ]);
 
-    private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, RecordingInventoryPersistence Persistence)> SetupAsync(
+    private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, InMemoryInventoryOperations Persistence)> SetupAsync(
         CharacterInventorySnapshot initialInventory)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -155,13 +78,12 @@ public sealed class MapClientSessionUseItemTests
 
         var gameplayState = new CharacterGameplayState(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
-        var inventoryListPersistence = new RecordingInventoryListPersistence(initialInventory);
-        var inventoryPersistence = new RecordingInventoryPersistence([.. initialInventory.Items]);
+        var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
         var session = new MapClientSession(
             1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryListPersistence,
-            inventoryPersistence: inventoryPersistence, accountId: AccountId, charId: CharId);
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence,
+            accountId: AccountId, charId: CharId);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0));
 
@@ -206,9 +128,12 @@ public sealed class MapClientSessionUseItemTests
             Assert.Equal((uint)itemId, BinaryPrimitives.ReadUInt32LittleEndian(pickup.AsSpan(6)));
         }
 
-        Assert.Single(persistence.ConsumeCalls);
-        Assert.Equal((3u, 1u), persistence.ConsumeCalls[0]); // First Aid Box's DurableId=3
-        Assert.Equal(5, persistence.AddCalls.Count);
+        // ONE durable operation: the box is consumed and all five contents are created together (all or nothing).
+        var operation = Assert.Single(persistence.Applied);
+        Assert.Equal(6, operation.Mutations.Count);
+        var consume = Assert.IsType<RemoveFromRowMutation>(operation.Mutations[0]);
+        Assert.Equal((3u, 1u), (consume.DurableId, consume.Amount)); // First Aid Box's DurableId=3
+        Assert.Equal(5, operation.Mutations.OfType<AddNewRowMutation>().Count());
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -403,7 +328,7 @@ public sealed class MapClientSessionUseItemTests
         var next = await ReadExact(stream, 2);
         Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
 
-        Assert.Empty(persistence.ConsumeCalls);
+        Assert.Empty(persistence.Requests);
         Assert.Equal(3, session.Inventory!.Items.Count);
 
         client.Close();
@@ -422,7 +347,7 @@ public sealed class MapClientSessionUseItemTests
         var next = await ReadExact(stream, 2);
         Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
 
-        Assert.Empty(persistence.ConsumeCalls);
+        Assert.Empty(persistence.Requests);
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -441,7 +366,7 @@ public sealed class MapClientSessionUseItemTests
         var next = await ReadExact(stream, 2);
         Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
 
-        Assert.Empty(persistence.ConsumeCalls);
+        Assert.Empty(persistence.Requests);
         Assert.Equal(1201, session.Equipment!.RightHandItemId); // Knife untouched.
 
         client.Close();
@@ -463,7 +388,7 @@ public sealed class MapClientSessionUseItemTests
         var next = await ReadExact(stream, 2);
         Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
 
-        Assert.Empty(persistence.ConsumeCalls);
+        Assert.Empty(persistence.Requests);
         Assert.Single(session.Inventory!.Items);
 
         client.Close();
@@ -475,7 +400,7 @@ public sealed class MapClientSessionUseItemTests
     {
         var (client, stream, session, run, persistence) = await SetupAsync(ThreeStarterRowsPlusFirstAidBox());
         using var _ = client;
-        persistence.FailNextConsume = true;
+        persistence.DropRequests = 100; // CharServer never confirms the operation
 
         await stream.WriteAsync(UseItemRequestPacket(4, AccountId));
 
@@ -485,7 +410,7 @@ public sealed class MapClientSessionUseItemTests
 
         Assert.Equal(3, session.Inventory!.Items.Count); // Runtime snapshot untouched.
         Assert.Contains(session.Inventory.Items, i => i.ItemId == 23484);
-        Assert.Empty(persistence.AddCalls); // Grants never executed after a failed consume.
+        Assert.Empty(persistence.Applied); // Neither the consume nor any grant was applied.
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -496,7 +421,7 @@ public sealed class MapClientSessionUseItemTests
     {
         var (client, stream, session, run, persistence) = await SetupAsync(ThreeStarterRowsPlusFirstAidBox());
         using var _ = client;
-        persistence.FailNextConsume = true; // Take the short-circuit path to isolate framing.
+        persistence.DropRequests = 100; // Take the short-circuit path to isolate framing.
 
         await stream.WriteAsync(UseItemRequestPacket(4, AccountId));
         await stream.WriteAsync(new byte[] { 0x1c, 0x0b }); // ping - must be read as an independent, correctly-framed packet.

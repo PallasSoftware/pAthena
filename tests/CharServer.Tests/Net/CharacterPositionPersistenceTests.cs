@@ -83,26 +83,20 @@ public sealed class CharacterPositionPersistenceTests
     }
 
     [Theory]
-    [InlineData(false, 10, 20, 6008, 1u, false)]
-    [InlineData(true, 11, 20, 6008, 1u, false)]
-    [InlineData(true, 10, 21, 6008, 1u, false)]
-    [InlineData(true, 10, 20, 0, 1u, false)]
-    [InlineData(true, 10, 20, 6008, 0u, false)]
-    [InlineData(true, 10, 20, 6008, 1u, true)]
-    public void InventoryAddAuthorization_RequiresAuthenticatedOwningMapServerSessionAndValidRequest(
+    [InlineData(false, 10, 20, false)]
+    [InlineData(true, 11, 20, false)]
+    [InlineData(true, 10, 21, false)]
+    [InlineData(true, 10, 0, false)]
+    [InlineData(true, 10, 20, true)]
+    public void InventoryOperationAuthorization_RequiresAuthenticatedOwningMapServerSession(
         bool authenticated,
         uint accountId,
         uint charId,
-        int itemId,
-        uint amount,
         bool expected)
     {
         IReadOnlySet<(uint AccountId, uint CharId)> owned =
             new HashSet<(uint AccountId, uint CharId)> { (10, 20) };
 
-        Assert.Equal(
-            expected,
-            MapServerSession.IsInventoryAddRequestAuthorized(
-                authenticated, owned, accountId, charId, itemId, amount));
+        Assert.Equal(expected, MapServerSession.IsGameplayStateRequestAuthorized(authenticated, owned, accountId, charId));
     }
 }
