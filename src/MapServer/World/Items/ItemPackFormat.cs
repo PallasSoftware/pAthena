@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Athena.Net.MapServer.World.Items;
@@ -221,22 +220,14 @@ public static class ItemPackFormat
 
         var bodyBytes = body.ToArray();
         using var output = new MemoryStream();
-        output.Write(Magic);
-        output.Write(BitConverter.GetBytes(Version));
-        output.Write(Encoding.ASCII.GetBytes(pack.RathenaCommit));
-        output.Write(SHA256.HashData(bodyBytes));
-        output.Write(bodyBytes);
+        GeneratedPackHeader.Write(output, Magic, Version, pack.RathenaCommit, bodyBytes);
         return output.ToArray();
     }
 
     public static ItemPack Read(ReadOnlySpan<byte> data)
     {
-        const int headerLength = 4 + 2 + 40 + 32;
-        if (data.Length < headerLength || !data[..4].SequenceEqual(Magic)) throw new InvalidDataException("Not an item data pack.");
-        if (BitConverter.ToUInt16(data[4..6]) != Version) throw new InvalidDataException("Unsupported item data pack version.");
-        var commit = Encoding.ASCII.GetString(data[6..46]);
-        var body = data[headerLength..];
-        if (!SHA256.HashData(body).AsSpan().SequenceEqual(data[46..78])) throw new InvalidDataException("Item data pack content hash mismatch.");
+        var (commit, bodySpan) = GeneratedPackHeader.ReadAndVerify(data, Magic, Version, "item data pack");
+        var body = bodySpan;
 
         using var stream = new MemoryStream(body.ToArray());
         using var r = new BinaryReader(stream, Encoding.UTF8);
