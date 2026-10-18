@@ -88,7 +88,26 @@ internal static class ItemDatabaseLoader
         public string? Script, EquipScript, UnEquipScript;
     }
 
-    internal static ItemDatabaseLoadResult Load(Func<string, string> readFile, RathenaConstantTable constants, IReadOnlyList<string>? importOrder = null)
+    // Every key ParseNode reads, for rejecting typos in custom layers (see RathenaYaml.RejectUnknownKeys).
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>?> CustomSchema = new Dictionary<string, IReadOnlySet<string>?>(StringComparer.Ordinal)
+    {
+        ["Id"] = null, ["AegisName"] = null, ["Name"] = null, ["Type"] = null, ["SubType"] = null, ["Buy"] = null, ["Sell"] = null,
+        ["Weight"] = null, ["Attack"] = null, ["MagicAttack"] = null, ["Defense"] = null, ["Range"] = null, ["Slots"] = null,
+        ["Jobs"] = null, ["Classes"] = null, ["Gender"] = null, ["Locations"] = null, ["WeaponLevel"] = null, ["ArmorLevel"] = null,
+        ["EquipLevelMin"] = null, ["EquipLevelMax"] = null, ["Refineable"] = null, ["Gradable"] = null, ["View"] = null, ["AliasName"] = null,
+        ["Flags"] = new HashSet<string>(StringComparer.Ordinal) { "BuyingStore", "DeadBranch", "Container", "UniqueId", "BindOnEquip", "DropAnnounce", "NoConsume", "DropEffect" },
+        ["Delay"] = new HashSet<string>(StringComparer.Ordinal) { "Duration", "Status" },
+        ["Stack"] = new HashSet<string>(StringComparer.Ordinal) { "Amount", "Inventory", "Cart", "Storage", "GuildStorage" },
+        ["NoUse"] = new HashSet<string>(StringComparer.Ordinal) { "Override", "Sitting" },
+        ["Trade"] = new HashSet<string>(StringComparer.Ordinal) { "Override", "NoDrop", "NoTrade", "TradePartner", "NoSell", "NoCart", "NoStorage", "NoGuildStorage", "NoMail", "NoAuction" },
+        ["Script"] = null, ["EquipScript"] = null, ["UnEquipScript"] = null,
+    };
+
+    // `customLayers` (name, YAML text) are Athena.NET-authored item_db.yml-shaped files applied after the pinned import
+    // order, mirroring rAthena's own db/import overlay: a block whose Id already exists is re-parsed onto that SAME draft
+    // (ParseNode's exists=true path - only keys present in the block change anything, an omitted key inherits the pinned
+    // value), a new Id must carry Id/AegisName/Name like any pinned item. Finish runs once per item after every layer.
+    internal static ItemDatabaseLoadResult Load(Func<string, string> readFile, RathenaConstantTable constants, IReadOnlyList<string>? importOrder = null, IReadOnlyList<(string Name, string Yaml)>? customLayers = null)
     {
         var warnings = new List<string>();
         var drafts = new List<Draft>();
@@ -97,14 +116,28 @@ internal static class ItemDatabaseLoader
 
         foreach (var path in importOrder ?? ImportOrder)
         {
-            var root = (YamlMap)RathenaYaml.Parse(readFile(path), path);
-            var body = root.Get("Body") as YamlSequence ?? throw new InvalidDataException($"{path} has no Body sequence.");
-            foreach (var node in body.Items.OfType<YamlMap>())
+            foreach (var node in Body(readFile(path), path))
             {
-                var draft = ParseNode(node, path, constants, byAegis, warnings);
-                if (!byId.TryAdd(draft.Id, draft)) throw new InvalidDataException($"{path}:{node.Line}: item id {draft.Id} is defined twice; the pinned database has no overrides, so a merge path is not implemented.");
+                var draft = ParseNode(node, null, path, constants, byAegis, warnings);
+                if (!byId.TryAdd(draft.Id, draft)) throw new InvalidDataException($"{path}:{node.Line}: item id {draft.Id} is defined twice in the pinned database.");
                 byAegis[draft.AegisName] = draft;
                 drafts.Add(draft);
+            }
+        }
+
+        // One custom id may appear once across ALL custom files, so the result never depends on custom file order.
+        var customIds = new Dictionary<uint, string>();
+        foreach (var (path, yaml) in customLayers ?? [])
+        {
+            foreach (var node in Body(yaml, path))
+            {
+                var location = $"{path}:{node.Line}";
+                var id = UInt(node, "Id", location) ?? throw new InvalidDataException($"{location}: item has no Id.");
+                RathenaYaml.RejectUnknownKeys(node, CustomSchema, path, $"item {id}");
+                if (!customIds.TryAdd(id, location)) throw new InvalidDataException($"{location}: item id {id} is defined twice in the custom layers (first at {customIds[id]}).");
+                var draft = ParseNode(node, byId.GetValueOrDefault(id), path, constants, byAegis, warnings);
+                byAegis[draft.AegisName] = draft;
+                if (byId.TryAdd(id, draft)) drafts.Add(draft);
             }
         }
 
@@ -124,23 +157,37 @@ internal static class ItemDatabaseLoader
         return new(items, warnings);
     }
 
-    private static Draft ParseNode(YamlMap node, string path, RathenaConstantTable constants, Dictionary<string, Draft> byAegis, List<string> warnings)
+    private static IEnumerable<YamlMap> Body(string yaml, string path) =>
+        ((RathenaYaml.Parse(yaml, path) as YamlMap)?.Get("Body") as YamlSequence ?? throw new InvalidDataException($"{path} has no Body sequence.")).Items.OfType<YamlMap>();
+
+    // `existing` null parses a new item onto a default Draft (whose initializers are the pinned `!exists` defaults); non-null
+    // is the pinned `exists` path: every field below is written only when its key is present, so an omitted key keeps the
+    // existing value. Map-shaped fields (Jobs, Classes, Locations, Flags, Delay, Stack, NoUse, Trade) and the three scripts
+    // REPLACE wholesale when present - the map's state is reset to the new-item default before its keys apply, a present
+    // Script replaces the old text (never merged/appended) - and are left untouched when absent.
+    private static Draft ParseNode(YamlMap node, Draft? existing, string path, RathenaConstantTable constants, Dictionary<string, Draft> byAegis, List<string> warnings)
     {
-        var draft = new Draft();
+        var exists = existing is not null;
+        var draft = existing ?? new Draft();
         void Warn(string message) => warnings.Add($"{path}:{node.Line}: item {draft.Id}: {message}");
         var location = $"{path}:{node.Line}";
 
         draft.Id = UInt(node, "Id", location) ?? throw new InvalidDataException($"{location}: item has no Id.");
-        draft.AegisName = node.Scalar("AegisName") ?? throw new InvalidDataException($"{location}: item {draft.Id} has no AegisName.");
-        draft.Name = node.Scalar("Name") ?? throw new InvalidDataException($"{location}: item {draft.Id} has no Name.");
-        if (byAegis.TryGetValue(draft.AegisName, out var duplicate) && duplicate.Id != draft.Id)
-            throw new InvalidDataException($"{location}: AegisName '{draft.AegisName}' of item {draft.Id} is already used by item {duplicate.Id}.");
+        if (node.Scalar("AegisName") is { } aegisName)
+        {
+            if (byAegis.TryGetValue(aegisName, out var duplicate) && duplicate.Id != draft.Id)
+                throw new InvalidDataException($"{location}: AegisName '{aegisName}' of item {draft.Id} is already used by item {duplicate.Id}.");
+            if (exists && byAegis.TryGetValue(draft.AegisName, out var previous) && previous == draft) byAegis.Remove(draft.AegisName);
+            draft.AegisName = aegisName;
+        }
+        else if (!exists) throw new InvalidDataException($"{location}: item {draft.Id} has no AegisName.");
+        if (node.Scalar("Name") is { } name) draft.Name = name;
+        else if (!exists) throw new InvalidDataException($"{location}: item {draft.Id} has no Name.");
 
-        draft.Type = PackItemTypes.Etc;
         if (node.Scalar("Type") is { } type)
         {
             if (constants.TryGetConstant("IT_" + type, out var typeValue) && typeValue is >= 0 and < ItMax) draft.Type = (byte)typeValue;
-            else Warn($"invalid item type {type}, defaulting to IT_ETC");
+            else { Warn($"invalid item type {type}, defaulting to IT_ETC"); draft.Type = PackItemTypes.Etc; }
         }
 
         if (node.Scalar("SubType") is { } subType)
@@ -153,12 +200,12 @@ internal static class ItemDatabaseLoader
 
         if (UInt(node, "Buy", location) is { } buy) { draft.Buy = Math.Min(buy, MaxZeny); draft.HasBuy = true; }
         if (UInt(node, "Sell", location) is { } sell) { draft.Sell = Math.Min(sell, MaxZeny); draft.HasSell = true; }
-        draft.Weight = UInt(node, "Weight", location) ?? 0;
-        draft.Attack = UInt(node, "Attack", location) ?? 0;
-        draft.MagicAttack = UInt(node, "MagicAttack", location) ?? 0;
-        draft.Defense = Math.Min(UInt(node, "Defense", location) ?? 0, DefTypeMax);
-        draft.Range = Math.Min(UInt(node, "Range", location) ?? 0, AreaSize);
-        draft.Slots = Math.Min(UInt(node, "Slots", location) ?? 0, MaxSlots);
+        if (UInt(node, "Weight", location) is { } weight) draft.Weight = weight;
+        if (UInt(node, "Attack", location) is { } attack) draft.Attack = attack;
+        if (UInt(node, "MagicAttack", location) is { } magicAttack) draft.MagicAttack = magicAttack;
+        if (UInt(node, "Defense", location) is { } defense) draft.Defense = Math.Min(defense, DefTypeMax);
+        if (UInt(node, "Range", location) is { } range) draft.Range = Math.Min(range, AreaSize);
+        if (UInt(node, "Slots", location) is { } slots) draft.Slots = Math.Min(slots, MaxSlots);
 
         if (node.Get("Jobs") is YamlMap jobs)
         {
@@ -195,16 +242,17 @@ internal static class ItemDatabaseLoader
             }
         }
 
-        draft.Sex = 2;
         if (node.Scalar("Gender") is { } gender)
         {
             if (constants.TryGetConstant("SEX_" + gender, out var sexValue) && sexValue is >= 0 and <= 2) draft.Sex = (byte)sexValue;
-            else Warn($"invalid item gender {gender}, defaulting to SEX_BOTH");
+            else { Warn($"invalid item gender {gender}, defaulting to SEX_BOTH"); draft.Sex = 2; }
+            draft.Sex = DefaultGender(draft, constants);
         }
-        draft.Sex = DefaultGender(draft, constants);
+        else if (!exists) draft.Sex = DefaultGender(draft, constants);
 
         if (node.Get("Locations") is YamlMap locations)
         {
+            draft.Equip = 0;
             var shadowGear = ShadowGearMask(constants);
             foreach (var entry in locations.Entries)
             {
@@ -226,7 +274,7 @@ internal static class ItemDatabaseLoader
                 else draft.Equip &= ~(uint)equipConstant;
             }
         }
-        else if (IsEquip(draft.Type))
+        else if (!exists && IsEquip(draft.Type))
         {
             Warn("equippable item has no equip location, defaulting to IT_ETC");
             draft.Type = PackItemTypes.Etc;
@@ -252,11 +300,10 @@ internal static class ItemDatabaseLoader
             draft.EquipLevelMax = Math.Min(elvMax, MaxLevel);
         }
 
-        var refineable = node.Scalar("Refineable") is { } refine && ParseBool(refine, location);
-        draft.Flags = refineable ? PackItemFlags.Refineable : PackItemFlags.None;
-        if (node.Scalar("Gradable") is { } gradable && ParseBool(gradable, location)) draft.Flags |= PackItemFlags.Gradable;
+        if (node.Scalar("Refineable") is { } refine) SetFlag(draft, PackItemFlags.Refineable, ParseBool(refine, location));
+        if (node.Scalar("Gradable") is { } gradable) SetFlag(draft, PackItemFlags.Gradable, ParseBool(gradable, location));
 
-        draft.Look = UInt(node, "View", location) ?? 0;
+        if (UInt(node, "View", location) is { } look) draft.Look = look;
         if (node.Scalar("AliasName") is { } alias)
         {
             if (!byAegis.TryGetValue(alias, out var view)) throw new InvalidDataException($"{location}: item {draft.Id} aliases unknown item '{alias}' (the pinned loader skips the whole item).");
@@ -265,6 +312,9 @@ internal static class ItemDatabaseLoader
 
         if (node.Get("Flags") is YamlMap flags)
         {
+            SetFlag(draft, PackItemFlags.BuyingStore | PackItemFlags.DeadBranch | PackItemFlags.Container | PackItemFlags.UniqueId |
+                PackItemFlags.BindOnEquip | PackItemFlags.DropAnnounce | PackItemFlags.NoConsume, false);
+            draft.DropEffect = 0;
             var stackable = IsStackable(draft.Type);
             void Flag(string key, PackItemFlags flag, bool requiresStackable = false)
             {
@@ -289,6 +339,7 @@ internal static class ItemDatabaseLoader
 
         if (node.Get("Delay") is YamlMap delay)
         {
+            draft.DelayStatus = ScNone;
             draft.DelayDuration = UInt(delay, "Duration", location) ?? 0;
             if (delay.Scalar("Status") is { } status)
             {
@@ -299,6 +350,8 @@ internal static class ItemDatabaseLoader
 
         if (node.Get("Stack") is YamlMap stack)
         {
+            draft.StackAmount = 0;
+            SetFlag(draft, PackItemFlags.StackInventory | PackItemFlags.StackCart | PackItemFlags.StackStorage | PackItemFlags.StackGuildStorage, false);
             if (UInt(stack, "Amount", location) is { } amount)
             {
                 if (!IsStackable(draft.Type)) { Warn("non-stackable item cannot be enabled for stacking"); amount = 0; }
@@ -312,12 +365,17 @@ internal static class ItemDatabaseLoader
 
         if (node.Get("NoUse") is YamlMap noUse)
         {
+            draft.NoUseOverride = 100;
+            SetFlag(draft, PackItemFlags.NoUseSitting, false);
             if (UInt(noUse, "Override", location) is { } noUseOverride) draft.NoUseOverride = (int)Math.Min(noUseOverride, 100);
             if (noUse.Scalar("Sitting") is { } sitting && ParseBool(sitting, location)) draft.Flags |= PackItemFlags.NoUseSitting;
         }
 
         if (node.Get("Trade") is YamlMap trade)
         {
+            draft.TradeOverride = 100;
+            SetFlag(draft, PackItemFlags.NoDrop | PackItemFlags.NoTrade | PackItemFlags.TradePartner | PackItemFlags.NoSell | PackItemFlags.NoCart |
+                PackItemFlags.NoStorage | PackItemFlags.NoGuildStorage | PackItemFlags.NoMail | PackItemFlags.NoAuction, false);
             if (UInt(trade, "Override", location) is { } tradeOverride) draft.TradeOverride = (int)Math.Min(tradeOverride, 100);
             void Trade(string key, PackItemFlags flag)
             {
@@ -329,15 +387,19 @@ internal static class ItemDatabaseLoader
         }
 
         // parse_script returns no code for a block that holds only comments (e.g. "/* TODO */"), so such a slot has no script.
-        draft.Script = WithCode(node.Scalar("Script"), path);
-        draft.EquipScript = WithCode(node.Scalar("EquipScript"), path);
-        draft.UnEquipScript = WithCode(node.Scalar("UnEquipScript"), path);
+        // A present script key replaces the previous text outright (pinned frees the old code first); absent keeps it.
+        if (node.Has("Script")) draft.Script = WithCode(node.Scalar("Script"), path);
+        if (node.Has("EquipScript")) draft.EquipScript = WithCode(node.Scalar("EquipScript"), path);
+        if (node.Has("UnEquipScript")) draft.UnEquipScript = WithCode(node.Scalar("UnEquipScript"), path);
 
         // The pinned loader remembers DELAYCONSUME_TEMP separately from the final type: Type: DelayConsume is rewritten to
         // IT_USABLE in loadingFinished, so the marker must be set from the parsed type here and survive that rewrite.
         if (draft.Type == PackItemTypes.DelayConsume) draft.Flags |= PackItemFlags.DelayConsumeTemp;
         return draft;
     }
+
+    private static void SetFlag(Draft draft, PackItemFlags flag, bool active) =>
+        draft.Flags = active ? draft.Flags | flag : draft.Flags & ~flag;
 
     private static string? WithCode(string? script, string path) =>
         script is not null && new Athena.WorldCompiler.Rathena.RathenaLexer(script, path).Lex().Any(token => token.Kind != Athena.WorldCompiler.Rathena.Syntax.TokenKind.EndOfFile) ? script : null;

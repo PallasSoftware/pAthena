@@ -28,6 +28,26 @@ internal static class RathenaYaml
         internal bool IsBlank => Text.Length == 0 || Text[0] == '#';
     }
 
+    // Custom-content layers are hand-authored, so a key the loader does not read is a typo to fail on, not data to skip
+    // (the pinned databases are trusted and never checked). `schema` maps each accepted top-level key to the accepted keys
+    // of its nested map / sequence-of-maps, or null when the value is a scalar or an open map whose keys are constants the
+    // loader validates itself (Jobs, Classes, Locations, RaceGroups).
+    internal static void RejectUnknownKeys(YamlMap node, IReadOnlyDictionary<string, IReadOnlySet<string>?> schema, string sourceName, string what)
+    {
+        foreach (var (key, value) in node.Entries)
+        {
+            if (!schema.TryGetValue(key, out var nested))
+                throw new InvalidDataException($"{sourceName}:{value.Line}: {what} has unknown field '{key}'.");
+            if (nested is null) continue;
+            var maps = value switch { YamlMap map => [map], YamlSequence sequence => sequence.Items.OfType<YamlMap>(), _ => Enumerable.Empty<YamlMap>() };
+            foreach (var (nestedKey, nestedValue) in maps.SelectMany(map => map.Entries))
+            {
+                if (!nested.Contains(nestedKey))
+                    throw new InvalidDataException($"{sourceName}:{nestedValue.Line}: {what} has unknown field '{key}.{nestedKey}'.");
+            }
+        }
+    }
+
     internal static YamlNode Parse(string source, string sourceName)
     {
         var lines = source.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n').Select((text, index) => new Line(index + 1, text)).ToList();

@@ -9,9 +9,9 @@ internal static class ItemPackBuilder
 {
     internal sealed record BuildResult(ItemPack Pack, string Report);
 
-    internal static BuildResult Build(Func<string, string> readFile, RathenaConstantTable constants, string commit)
+    internal static BuildResult Build(Func<string, string> readFile, RathenaConstantTable constants, string commit, IReadOnlyList<(string Name, string Yaml)>? customItems = null)
     {
-        var loaded = ItemDatabaseLoader.Load(readFile, constants);
+        var loaded = ItemDatabaseLoader.Load(readFile, constants, customLayers: customItems);
         var lowerer = new ItemScriptLowerer(constants, RathenaBuiltins.Names(readFile("src/map/script.cpp")));
 
         var scripts = new List<PackScript>();

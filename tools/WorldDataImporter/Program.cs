@@ -989,7 +989,7 @@ internal static partial class WorldDataImporterCli
         var options = CliOptions.Parse(args);
         var root = Path.GetFullPath(options.Required("rathena-root"));
         var constants = RathenaConstantTable.Load(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "rathena-constants.tsv")));
-        var result = ItemPackBuilder.Build(relative => File.ReadAllText(Path.Combine(root, relative)), constants, options.Required("rathena-commit"));
+        var result = ItemPackBuilder.Build(relative => File.ReadAllText(Path.Combine(root, relative)), constants, options.Required("rathena-commit"), ReadCustomLayers(options.Optional("custom-items")));
         var output = Path.GetFullPath(options.Required("output"));
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllBytesAsync(output, Athena.Net.MapServer.World.Items.ItemPackFormat.Write(result.Pack));
@@ -998,6 +998,13 @@ internal static partial class WorldDataImporterCli
         Console.Write(result.Report);
         return 0;
     }
+
+    // Athena.NET-authored custom definitions (data/custom/items, data/custom/mobs): every *.yml directly in the folder, in
+    // ordinal file-name order, named by its path relative to the working directory for diagnostics. No folder, no layer.
+    private static IReadOnlyList<(string Name, string Yaml)> ReadCustomLayers(string? directory) => directory is null
+        ? []
+        : Directory.EnumerateFiles(Path.GetFullPath(directory), "*.yml").Order(StringComparer.Ordinal)
+            .Select(path => (Path.GetRelativePath(Environment.CurrentDirectory, path).Replace('\\', '/'), File.ReadAllText(path))).ToArray();
 
     private static int SurveyItemScripts(string[] args)
     {
@@ -1106,6 +1113,7 @@ internal static partial class WorldDataImporterCli
         Console.Error.WriteLine("WorldDataImporter generate-canonical-maps --rathena-root <folder> [--rathena-commit <sha>] --families <canonical-map-families.json> --output <src/Shared/MapIdentity/Generated directory>");
         Console.Error.WriteLine("WorldDataImporter compile-quest-drop --rathena-root <folder> --rathena-commit <sha> --quest-id <id> --output <QuestDrops.cs>");
         Console.Error.WriteLine("WorldDataImporter compile-item --rathena-root <folder> --rathena-commit <sha> --item-id <id> [--item-db-file <path>] --class-name <n> --constant-name <n> --output <Item.cs>");
+        Console.Error.WriteLine("WorldDataImporter compile-item-pack --rathena-root <folder> --rathena-commit <sha> --output <AthenaItems.bin> [--facade <GeneratedItems.cs>] [--report <report.txt>] [--custom-items <data/custom/items>]");
         Console.Error.WriteLine("WorldDataImporter compile-map-collision --input <local.gat> --map <name> --output <local.athmap>");
     }
 }
