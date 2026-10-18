@@ -35,7 +35,10 @@ internal static class MobDataCompiler
         // line, computed from the block's string offset - real provenance rather than a shared/
         // caller-supplied placeholder. 0 only for synthetic in-memory fixtures that never came from
         // a real file offset (e.g. unit-test YAML snippets built directly as MobDefinitionData).
-        int SourceLine = 0);
+        int SourceLine = 0,
+        // Null for a pinned db/re/mob_db.yml definition (the generator's shared source file applies). A definition
+        // added or overridden by a custom layer carries that custom file, and SourceLine is the custom block's line.
+        string? SourceFile = null);
 
     // Mirrors Athena.Net.MapServer.World.MobRaceGroupEntry exactly - see that record's own doc
     // comment for why RaceGroups is a pinned-name list rather than a fixed C# enum.
@@ -192,38 +195,72 @@ internal static class MobDataCompiler
     // by the pre-existing manually-curated compile-mob-definitions command. One RathenaYaml parse of
     // the whole file (the same reader ItemDatabaseLoader uses for item_db*.yml); each Body map's own
     // line is its "  - Id:" declaration line, i.e. the mob's real provenance line.
-    internal static IReadOnlyList<MobDefinitionData> ReadAllMobDefinitions(string mobDbYaml)
+    //
+    // `customLayers` (name, YAML text) are Athena.NET-authored mob_db.yml-shaped files (data/custom/mobs)
+    // applied after the pinned file, with the same structure as ItemDatabaseLoader's custom layers: an
+    // existing Id is re-parsed by the SAME ParseMobNode with the pinned block as its base (only keys present
+    // in the custom block change anything), a new Id is parsed exactly like a pinned block and appended.
+    // An Id may appear once across all custom files; unknown keys fail. Each custom definition carries its
+    // custom file/line as provenance.
+    internal static IReadOnlyList<MobDefinitionData> ReadAllMobDefinitions(string mobDbYaml, IReadOnlyList<(string Name, string Yaml)>? customLayers = null)
     {
         var root = RathenaYaml.Parse(mobDbYaml, "mob_db.yml") as YamlMap;
-        if (root?.Get("Body") is not YamlSequence body) return [];
-        return body.Items.OfType<YamlMap>().Select(node => ParseMobNode(node, node.Line)).ToArray();
+        var mobs = (root?.Get("Body") as YamlSequence)?.Items.OfType<YamlMap>().Select(node => (Node: node, Mob: ParseMobNode(node, node.Line))).ToList() ?? [];
+
+        var indexById = new Dictionary<int, int>();
+        for (var i = 0; i < mobs.Count; i++) indexById.TryAdd(mobs[i].Mob.Id, i);
+        var customIds = new Dictionary<int, string>();
+        foreach (var (path, yaml) in customLayers ?? [])
+        {
+            var body = (RathenaYaml.Parse(yaml, path) as YamlMap)?.Get("Body") as YamlSequence ?? throw new InvalidDataException($"{path} has no Body sequence.");
+            foreach (var node in body.Items.OfType<YamlMap>())
+            {
+                var location = $"{path}:{node.Line}";
+                var id = (int)(Long(node, "Id") ?? throw new InvalidDataException($"{location}: mob has no Id."));
+                RathenaYaml.RejectUnknownKeys(node, CustomSchema, path, $"mob {id}");
+                if (!customIds.TryAdd(id, location)) throw new InvalidDataException($"{location}: mob id {id} is defined twice in the custom layers (first at {customIds[id]}).");
+                if (indexById.TryGetValue(id, out var index)) mobs[index] = (mobs[index].Node, ParseMobNode(node, node.Line, path, mobs[index].Node));
+                else mobs.Add((node, ParseMobNode(node, node.Line, path)));
+            }
+        }
+        return mobs.Select(mob => mob.Mob).ToArray();
     }
 
-    private static MobDefinitionData ParseMobNode(YamlMap node, int sourceLine)
+    // `baseNode` is the pinned block a custom override applies to (null for a pinned or new mob): every field
+    // reads its key from `node` when present there and from `baseNode` otherwise, so an omitted key inherits the
+    // pinned value through the same conversion. Map/list fields (Modes, RaceGroups, Drops, MvpDrops) therefore
+    // replace wholesale when present - a present Drops: list is parsed on its own (its Index: entries address
+    // the custom list), never merged into the pinned drops the way rAthena's own db/import overlay merges them.
+    // Mode is derived from two keys: Ai and Modes are each taken from wherever they are present.
+    private static MobDefinitionData ParseMobNode(YamlMap node, int sourceLine, string? sourceFile = null, YamlMap? baseNode = null)
     {
-        var mobId = (int)(Long(node, "Id") ?? throw new ArgumentException($"mob_db.yml:{sourceLine}: mob block has no 'Id' field."));
-        var name = Required(node, "Name");
-        var attackMotion = Long(node, "AttackMotion") ?? 0;
+        YamlMap Src(string key) => baseNode is not null && !node.Has(key) ? baseNode : node;
+        long? Field(string key) => Long(Src(key), key);
+        var location = $"{sourceFile ?? "mob_db.yml"}:{sourceLine}";
+        var mobId = (int)(Long(node, "Id") ?? throw new ArgumentException($"{location}: mob block has no 'Id' field."));
+        string Required(string key) => Src(key).Scalar(key) ?? throw new ArgumentException($"{location}: mob {mobId} has no '{key}' field.");
+        var name = Required("Name");
+        var attackMotion = Field("AttackMotion") ?? 0;
 
         return new MobDefinitionData(
             mobId,
-            Required(node, "AegisName"),
+            Required("AegisName"),
             name,
-            (int)(Long(node, "Level") ?? 1),
-            (uint)(Long(node, "Hp") ?? 0),
-            (int)(Long(node, "Attack") ?? 0),
-            (int)(Long(node, "Attack2") ?? 0),
-            (int)(Long(node, "Defense") ?? 0),
-            (int)(Long(node, "MagicDefense") ?? 0),
-            (int)(Long(node, "Str") ?? 1),
-            (int)(Long(node, "Agi") ?? 1),
-            (int)(Long(node, "Vit") ?? 1),
-            (int)(Long(node, "Int") ?? 1),
-            (int)(Long(node, "Dex") ?? 1),
-            (int)(Long(node, "Luk") ?? 1),
-            (int)(Long(node, "AttackRange") ?? 0),
-            (int)(Long(node, "WalkSpeed") ?? 150),
-            (int)(Long(node, "AttackDelay") ?? 0),
+            (int)(Field("Level") ?? 1),
+            (uint)(Field("Hp") ?? 0),
+            (int)(Field("Attack") ?? 0),
+            (int)(Field("Attack2") ?? 0),
+            (int)(Field("Defense") ?? 0),
+            (int)(Field("MagicDefense") ?? 0),
+            (int)(Field("Str") ?? 1),
+            (int)(Field("Agi") ?? 1),
+            (int)(Field("Vit") ?? 1),
+            (int)(Field("Int") ?? 1),
+            (int)(Field("Dex") ?? 1),
+            (int)(Field("Luk") ?? 1),
+            (int)(Field("AttackRange") ?? 0),
+            (int)(Field("WalkSpeed") ?? 150),
+            (int)(Field("AttackDelay") ?? 0),
             // AttackMotion (amotion) and DamageMotion (dmotion) are pinned mob_db.yml scalars
             // distinct from AttackDelay (adelay) - amotion is the attacker's attack-animation
             // timing (clif_damage's own srcSpeed for a mob attacker), dmotion is this mob's OWN
@@ -234,39 +271,40 @@ internal static class MobDataCompiler
             // mob.cpp:4946-4963 default-constructor rationale as AttackDelay's own comment: both
             // genuinely default to 0/unset when the pinned block omits them.
             (int)attackMotion,
-            (int)(Long(node, "DamageMotion") ?? 0),
-            Long(node, "BaseExp") ?? 0,
-            Long(node, "JobExp") ?? 0,
-            ReadMode(node),
+            (int)(Field("DamageMotion") ?? 0),
+            Field("BaseExp") ?? 0,
+            Field("JobExp") ?? 0,
+            ReadMode(Src("Ai"), Src("Modes")),
             // Pinned MobDatabase::parseBodyNode (mob.cpp:5028-5040): JapaneseName present -> use it;
             // absent on a mob_id seen for the first time (`!exists`) -> falls back to this SAME
             // block's own resolved Name (mob->jname = mob->name), never left null/blank. This
-            // project reads only the base db/re/mob_db.yml with no db/import overlay layering, so
-            // every parsed mob is effectively "seen for the first time" - the `exists`-true branch
-            // (which would instead leave a PRIOR jname untouched) never applies here.
-            node.Scalar("JapaneseName") ?? name,
-            (uint)(Long(node, "Sp") ?? 1),
-            Long(node, "MvpExp") ?? 0,
-            (int)(Long(node, "Resistance") ?? 0),
-            (int)(Long(node, "MagicResistance") ?? 0),
-            (int)(Long(node, "SkillRange") ?? 0),
-            (int)(Long(node, "ChaseRange") ?? 0),
-            ReadSize(node),
-            ReadRace(node),
-            ReadElement(node),
-            (int)(Long(node, "ElementLevel") ?? 1),
+            // fallback applies to pinned and new custom mobs. A custom override that omits it keeps the
+            // pinned mob's resolved jname (the `exists`-true branch): the base JapaneseName, else the base Name.
+            Src("JapaneseName").Scalar("JapaneseName") ?? (baseNode ?? node).Scalar("Name") ?? name,
+            (uint)(Field("Sp") ?? 1),
+            Field("MvpExp") ?? 0,
+            (int)(Field("Resistance") ?? 0),
+            (int)(Field("MagicResistance") ?? 0),
+            (int)(Field("SkillRange") ?? 0),
+            (int)(Field("ChaseRange") ?? 0),
+            ReadSize(Src("Size")),
+            ReadRace(Src("Race")),
+            ReadElement(Src("Element")),
+            (int)(Field("ElementLevel") ?? 1),
             // ClientAttackMotion has no fixed default: pinned MobDatabase::parseBodyNode resolves an
             // absent field to THIS SAME mob's own resolved AttackMotion value the first time a mob_id
-            // is seen (mob.cpp:5391-5397) - see MobDefinition.ClientAttackMotion's own doc comment.
-            (int)(Long(node, "ClientAttackMotion") ?? attackMotion),
-            (int)(Long(node, "DamageTaken") ?? 100),
-            (int)(Long(node, "GroupId") ?? 0),
-            node.Scalar("Title"),
-            ReadClass(node),
-            ReadRaceGroups(node),
-            ReadDrops(node, "Drops"),
-            ReadDrops(node, "MvpDrops"),
-            sourceLine);
+            // is seen (mob.cpp:5391-5397) - see MobDefinition.ClientAttackMotion's own doc comment. An
+            // override that omits it keeps the pinned mob's resolved value (the base block's AttackMotion).
+            (int)(Field("ClientAttackMotion") ?? (baseNode is null ? attackMotion : Long(baseNode, "AttackMotion") ?? 0)),
+            (int)(Field("DamageTaken") ?? 100),
+            (int)(Field("GroupId") ?? 0),
+            Src("Title").Scalar("Title"),
+            ReadClass(Src("Class")),
+            ReadRaceGroups(Src("RaceGroups")),
+            ReadDrops(Src("Drops"), "Drops"),
+            ReadDrops(Src("MvpDrops"), "MvpDrops"),
+            sourceLine,
+            sourceFile);
     }
 
     // Presence primitive for every scalar field: null means the key is absent from the block (the
@@ -274,9 +312,6 @@ internal static class MobDataCompiler
     // previous scanner, a malformed integer is a hard FormatException, never a silent default.
     private static long? Long(YamlMap node, string key) =>
         node.Scalar(key) is { } text ? long.Parse(text, CultureInfo.InvariantCulture) : null;
-
-    private static string Required(YamlMap node, string key) =>
-        node.Scalar(key) ?? throw new ArgumentException($"Pinned mob_db.yml block has no '{key}' field.");
 
     // Modes:/RaceGroups: entries are "<Name>: <bool>" pairs, in source order. Only the exact
     // lowercase "true"/"false" literals are recognized - the previous scanner's entry pattern
@@ -470,17 +505,17 @@ internal static class MobDataCompiler
     // mode NAME (never a valid pinned MD_* name, only a genuinely unknown/future one) is skipped
     // exactly like pinned source's own "Unknown monster mode %s, skipping" invalidWarning path, not
     // silently normalized into an unrelated bit.
-    private static MobModeData ReadMode(YamlMap node)
+    private static MobModeData ReadMode(YamlMap aiNode, YamlMap modesNode)
     {
         var mode = MobModeData.None;
 
-        if (node.Scalar("Ai") is { } ai)
+        if (aiNode.Scalar("Ai") is { } ai)
         {
             // Unknown Ai defaults to MONSTER_TYPE_06=0, matching pinned invalidWarning fallback.
             mode = AiPresets.TryGetValue(ai.Trim(), out var preset) ? (MobModeData)preset : MobModeData.None;
         }
 
-        foreach (var (name, active) in BooleanEntries(node, "Modes"))
+        foreach (var (name, active) in BooleanEntries(modesNode, "Modes"))
         {
             if (!ModeBitsByName.TryGetValue(name, out var bit)) continue; // Genuinely unrecognized mode name - pinned source's own "skip" fallback.
             mode = active ? mode | bit : mode & ~bit;
@@ -522,6 +557,24 @@ internal static class MobDataCompiler
         ["StatusImmune"] = MobModeData.StatusImmune,
         ["SkillImmune"] = MobModeData.SkillImmune,
     };
+
+    // Every key ParseMobNode reads, for rejecting typos in custom layers (see RathenaYaml.RejectUnknownKeys). Declared
+    // after ModeBitsByName because static fields initialize in textual order. Modes: names must be real MD_* names
+    // (the pinned path skips unknown ones); RaceGroups: names are open, like the pinned path.
+    private static readonly IReadOnlySet<string> DropKeys = new HashSet<string>(StringComparer.Ordinal) { "Item", "Rate", "StealProtected", "RandomOptionGroup", "Index" };
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>?> CustomSchema =
+        new[]
+        {
+            "Id", "AegisName", "Name", "JapaneseName", "Level", "Hp", "Sp", "BaseExp", "JobExp", "MvpExp", "Attack", "Attack2", "Defense",
+            "MagicDefense", "Resistance", "MagicResistance", "Str", "Agi", "Vit", "Int", "Dex", "Luk", "AttackRange", "SkillRange", "ChaseRange",
+            "Size", "Race", "RaceGroups", "Element", "ElementLevel", "WalkSpeed", "AttackDelay", "AttackMotion", "ClientAttackMotion",
+            "DamageMotion", "DamageTaken", "GroupId", "Title", "Ai", "Class",
+        }.ToDictionary(key => key, _ => (IReadOnlySet<string>?)null, StringComparer.Ordinal)
+        .Concat(new Dictionary<string, IReadOnlySet<string>?>
+        {
+            ["Modes"] = ModeBitsByName.Keys.ToHashSet(StringComparer.Ordinal), ["Drops"] = DropKeys, ["MvpDrops"] = DropKeys,
+        })
+        .ToDictionary(StringComparer.Ordinal);
 
     // Parses the fixed rAthena spawn-declaration format:
     //   <map>,<x>,<y>[,<xs>,<ys>]\tmonster\t<Name>\t<MobId>,<Count>[,<Delay1>[,<Delay2>]]
@@ -808,7 +861,9 @@ internal static class MobDataCompiler
                 .Append(", AttackDelay: ").Append(mob.AttackDelay).Append(", AttackMotion: ").Append(mob.AttackMotion)
                 .Append(", DamageMotion: ").Append(mob.DamageMotion).Append(", BaseExp: ").Append(mob.BaseExp)
                 .Append(", JobExp: ").Append(mob.JobExp).Append(", Mode: ").Append(FormatMode(mob.Mode))
-                .Append(", Source: new WorldSourceInfo(\"rAthena\", \"").Append(commit).Append("\", \"").Append(sourceFile).Append("\", ").Append(mob.SourceLine == 0 ? sourceLine : mob.SourceLine).Append(')')
+                // A custom-layer definition names its own data/custom file; it has no rAthena commit (empty Commit).
+                .Append(", Source: new WorldSourceInfo(\"").Append(mob.SourceFile is null ? "rAthena" : "Athena.NET").Append("\", \"").Append(mob.SourceFile is null ? commit : "")
+                .Append("\", \"").Append(mob.SourceFile ?? sourceFile).Append("\", ").Append(mob.SourceLine == 0 ? sourceLine : mob.SourceLine).Append(')')
                 .Append(", JapaneseName: ").Append(FormatNullableString(mob.JapaneseName))
                 .Append(", MaxSp: ").Append(mob.Sp).Append(", MvpExp: ").Append(mob.MvpExp)
                 .Append(", Resistance: ").Append(mob.Resistance).Append(", MagicResistance: ").Append(mob.MagicResistance)
