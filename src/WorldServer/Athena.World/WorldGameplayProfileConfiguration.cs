@@ -71,13 +71,32 @@ public static class WorldGameplayProfilePeers
         while (true)
         {
             var result = Check(options.Profile, self, oracle.GetApproximateSiloStatuses(onlyActive: true).Keys, cache);
-            if (result.Mismatch is not null) throw new InvalidOperationException($"World gameplay profile mismatch: {result.Mismatch}.");
+            if (result.Mismatch is not null)
+            {
+                // Join race: two differently configured silos can become mutually visible to each other while both are still
+                // starting, each seeing the other as the mismatch. Only the newer of the pair (SiloAddress.Generation, the same
+                // tie-break the running monitor uses) fails here; the older/established one retries so a misconfigured newcomer
+                // can never take an established silo down, and exactly one side of a concurrent pair fails, not both.
+                if (!IsNewerThan(self, result.MismatchPeer!))
+                {
+                    if (DateTime.UtcNow >= deadline)
+                        throw new InvalidOperationException($"World gameplay profile could not be verified: peer {result.MismatchPeer} still mismatched after {options.PeerMetadataTimeout}.");
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+                    continue;
+                }
+                throw new InvalidOperationException($"World gameplay profile mismatch: {result.Mismatch}.");
+            }
             if (result.Pending.Count == 0) return;
             if (DateTime.UtcNow >= deadline)
                 throw new InvalidOperationException($"World gameplay profile could not be verified: no profile metadata from {string.Join(", ", result.Pending)} within {options.PeerMetadataTimeout}.");
             await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
         }
     }
+
+    // Generation (start time) decides, ties broken ordinally so both sides of a pair agree which one is "newer". Shared by the
+    // startup-time verify above and the running monitor below so a join race resolves identically in both places.
+    internal static bool IsNewerThan(SiloAddress self, SiloAddress peer) =>
+        self.Generation != peer.Generation ? self.Generation > peer.Generation : string.CompareOrdinal(self.ToString(), peer.ToString()) > 0;
 }
 
 // Re-checks the peers while the silo runs, which closes the join race (two differently configured silos starting at the same
@@ -111,18 +130,15 @@ internal sealed class WorldGameplayProfileMonitor(
     {
         var peers = oracle.GetApproximateSiloStatuses(onlyActive: true).Keys;
         var result = WorldGameplayProfilePeers.Check(options.Profile, local.SiloAddress, peers, cache);
-        if (result.Mismatch is not null) return IAmNewerThan(result.MismatchPeer!) ? result.Mismatch : null;
+        if (result.Mismatch is not null) return WorldGameplayProfilePeers.IsNewerThan(local.SiloAddress, result.MismatchPeer!) ? result.Mismatch : null;
         foreach (var gone in _pendingSince.Keys.Except(result.Pending).ToList()) _pendingSince.Remove(gone);
         foreach (var peer in result.Pending)
         {
-            if (!_pendingSince.TryAdd(peer, now) || now - _pendingSince[peer] < options.PeerMetadataTimeout || !IAmNewerThan(peer)) continue;
+            if (!_pendingSince.TryAdd(peer, now) || now - _pendingSince[peer] < options.PeerMetadataTimeout || !WorldGameplayProfilePeers.IsNewerThan(local.SiloAddress, peer)) continue;
             return $"silo {peer} did not publish gameplay-profile metadata within {options.PeerMetadataTimeout}";
         }
         return null;
     }
-
-    private bool IAmNewerThan(SiloAddress peer) =>
-        local.SiloAddress.Generation != peer.Generation ? local.SiloAddress.Generation > peer.Generation : string.CompareOrdinal(local.SiloAddress.ToString(), peer.ToString()) > 0;
 }
 
 public static class WorldGameplayProfileSiloExtensions
