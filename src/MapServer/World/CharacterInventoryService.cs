@@ -133,6 +133,8 @@ public sealed class CharacterInventoryService
         {
             var row = inventory.Items.FirstOrDefault(item => item.DurableId == durableId);
             if (row is null || row.Amount < consume) return null;
+            // A plain consumption (an item whose effect is its script, not a grant) - PlanGrants treats "nothing to add" as invalid.
+            if (grants.Count == 0) return [InventoryPlanner.RemoveFromRow(row, consume)];
 
             var remaining = row.Amount - consume;
             var afterConsumption = remaining == 0

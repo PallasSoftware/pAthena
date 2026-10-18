@@ -67,7 +67,7 @@ public sealed class MapClientSessionUseItemTests
     ]);
 
     private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, InMemoryInventoryOperations Persistence)> SetupAsync(
-        CharacterInventorySnapshot initialInventory)
+        CharacterInventorySnapshot initialInventory, CharacterGameplayState? initialState = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -78,7 +78,7 @@ public sealed class MapClientSessionUseItemTests
         listener.Stop();
         var stream = client.GetStream();
 
-        var gameplayState = new CharacterGameplayState(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
+        var gameplayState = initialState ?? FullHealthNovice;
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
         var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
@@ -96,6 +96,12 @@ public sealed class MapClientSessionUseItemTests
 
         return (client, stream, session, run, inventoryPersistence);
     }
+
+    // CurrentHp 40/40, CurrentSp 11/11, every base stat 1.
+    private static readonly CharacterGameplayState FullHealthNovice = new(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
+
+    private static CharacterInventorySnapshot Holding(int itemId, uint amount = 2) =>
+        new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0)]); // clientIndex 2
 
     private sealed class StubGameplayStatePersistence(CharacterGameplayState state) : ICharacterGameplayStatePersistence
     {
@@ -378,9 +384,9 @@ public sealed class MapClientSessionUseItemTests
     [Fact]
     public async Task UseItem_ItemWithNoModeledUseEffect_RejectsWithoutMutation()
     {
-        // A Usable item with no Grants (no source-backed effect implemented) must be rejected,
-        // not silently treated as a no-op success.
-        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 22542, 1, 0, true, 0, 0, 0)]); // Concentration Potion
+        // A Usable item whose script the evaluator cannot run (pinned 12887 `itemskill "AL_TELEPORT",1;` - skill execution,
+        // Feature 18) must be rejected, not consumed for a silently missing effect.
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 12887, 1, 0, true, 0, 0, 0)]);
         var (client, stream, session, run, persistence) = await SetupAsync(inventory);
         using var _ = client;
 
@@ -418,6 +424,8 @@ public sealed class MapClientSessionUseItemTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // Script items now also reach the gate and it is socket-tested with a real restricted potion
+    // (UseHealItemRestrictedOnNormalMaps_RejectsWithoutMutation below); this guard stays for containers.
     // Documents a real, honestly-reported scope gap rather than hiding it: the nouse_mapflag gate
     // (HandleIroUseItemRequestAsync, ItemMetadata.RestrictedOnNormalMaps) can only be socket-tested end to end against a
     // REAL pinned item that is BOTH a container with fully-resolvable Grants (the only ItemDefinition shape that reaches
@@ -454,6 +462,134 @@ public sealed class MapClientSessionUseItemTests
         var next = await ReadExact(stream, 2);
 
         Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private static async Task<byte[]> ReadParameter(Stream stream, ushort expectedType)
+    {
+        var packet = await ReadExact(stream, 8);
+        Assert.Equal(PacketConstants.ZcParameterChange, BinaryPrimitives.ReadInt16LittleEndian(packet));
+        Assert.Equal(expectedType, BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(2)));
+        return packet;
+    }
+
+    private static async Task AssertNothingElseSentAsync(Stream stream)
+    {
+        await stream.WriteAsync(new byte[] { 0x1c, 0x0b }); // ping probe: its reply must be the very next packet
+        var next = await ReadExact(stream, 2);
+        Assert.Equal((short)PacketConstants.ZcPingLive, BinaryPrimitives.ReadInt16LittleEndian(next));
+    }
+
+    // Pinned 11518 `itemheal 0,5;` at INT 30: pc_itemheal bonus = 100 + 2*30 = 160, 5 * 160 / 100 = 8 SP (pc.cpp:10727-10745).
+    // The item is consumed in one durable operation, acked, and the heal goes through the gameplay-state mutation and the
+    // 0x00B0 SP_SP update - the same path every other HP/SP change of this session takes.
+    [Fact]
+    public async Task UseItemHealPotion_ConsumesOne_AppliesPinnedItemHealFormula_SendsSpUpdate()
+    {
+        var state = FullHealthNovice with { CurrentSp = 2, Intelligence = 30 };
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(11518), state);
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+
+        var ack = await ReadExact(stream, 15);
+        Assert.Equal((short)0x01c8, BinaryPrimitives.ReadInt16LittleEndian(ack));
+        Assert.Equal((ushort)1, BinaryPrimitives.ReadUInt16LittleEndian(ack.AsSpan(12))); // one of two left
+        Assert.Equal((byte)1, ack[14]);
+        var sp = await ReadParameter(stream, 7);
+        Assert.Equal(10u, BinaryPrimitives.ReadUInt32LittleEndian(sp.AsSpan(4)));
+        await AssertNothingElseSentAsync(stream);
+
+        Assert.Equal(10u, session.GameplayState!.State.CurrentSp);
+        Assert.Equal(40u, session.GameplayState.State.CurrentHp);
+        var operation = Assert.Single(persistence.Applied);
+        var consume = Assert.IsType<RemoveFromRowMutation>(Assert.Single(operation.Mutations));
+        Assert.Equal((1u, 1u), (consume.DurableId, consume.Amount));
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Pinned 607 Yggdrasilberry `percentheal 100,100;` restores the full maximum of both; its Delay (5000 ms, Reuse_Limit_F)
+    // then rejects an immediate second use with no consume (pc_itemcd_check), proving the cooldown gate still runs first.
+    [Fact]
+    public async Task UsePercentHealItem_RestoresMaximum_ThenDelayGroupRejectsImmediateReuse()
+    {
+        var state = FullHealthNovice with { CurrentHp = 3, CurrentSp = 1 };
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(607), state);
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+        await ReadExact(stream, 15);
+        Assert.Equal(40u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 5)).AsSpan(4)));
+        Assert.Equal(11u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 7)).AsSpan(4)));
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+        await AssertNothingElseSentAsync(stream);
+        Assert.Single(persistence.Applied);
+        Assert.Equal(1u, session.Inventory!.Items.Single().Amount);
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Pinned 23259 `percentheal 0,5; specialeffect2 EF_HEAL3; sc_start SC_BLESSING,240000,5;`: SP heals by apply_rate(11, 5) = 0,
+    // which status_percent_change raises to 1; Blessing starts through the session's status system and sends the same
+    // capture-proven icon and STR/INT/DEX resync an NPC-started Blessing sends. specialeffect2 projects nothing (no capture).
+    [Fact]
+    public async Task UseStatusItem_StartsTheStatusThroughTheSharedStatusPath()
+    {
+        var state = FullHealthNovice with { CurrentSp = 4 };
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(23259), state);
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+        await ReadExact(stream, 15);
+        Assert.Equal(5u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 7)).AsSpan(4)));
+        var icon = await ReadExact(stream, 29);
+        Assert.Equal(PacketConstants.ZcMsgStateChange3, BinaryPrimitives.ReadInt16LittleEndian(icon));
+        for (var i = 0; i < 3; i++) await ReadExact(stream, 14); // 0x0141 STR/INT/DEX
+        await AssertNothingElseSentAsync(stream);
+
+        Assert.True(session.StatusEffects.TryGet(CharacterStatusEffectState.StatusIds.Blessing, out var blessing));
+        Assert.Equal((5, 5), (blessing.Val1, blessing.Val2));
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Pinned clif_parse_UseItem: a dead character's use request changes nothing.
+    [Fact]
+    public async Task UseHealItem_WhileDead_RejectsWithoutMutation()
+    {
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(501), FullHealthNovice with { CurrentHp = 0 });
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+        await AssertNothingElseSentAsync(stream);
+
+        Assert.Empty(persistence.Requests);
+        Assert.Equal(0u, session.GameplayState!.State.CurrentHp);
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Pinned 11557 (`itemheal 325,0;`, item_noequip.txt bit 1): the nouse_mapflag gate rejects it on a normal map before any
+    // consume or heal - now socket-testable because script items reach the gate.
+    [Fact]
+    public async Task UseHealItemRestrictedOnNormalMaps_RejectsWithoutMutation()
+    {
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(11557), FullHealthNovice with { CurrentHp = 1 });
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
+        await AssertNothingElseSentAsync(stream);
+
+        Assert.Empty(persistence.Requests);
+        Assert.Equal(1u, session.GameplayState!.State.CurrentHp);
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));

@@ -15,7 +15,7 @@ using Athena.Net.World.Contracts;
 
 namespace Athena.Net.MapServer.Net;
 
-public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayerPresenceObserver
+public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayerPresenceObserver, Athena.Net.MapServer.World.Items.IItemEffectHost
 {
     private static readonly Dictionary<short, int> PacketLengths = new()
     {
@@ -3569,13 +3569,16 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // itself never re-validates the field - the request is scoped to sd via fd - but Athena's
     // packet still carries it, so it is checked defensively rather than ignored).
     //
-    // This slice supports exactly one traced source-backed effect: a Type: Usable item whose
-    // pinned item_db Script is a getitem-only container (ItemDataCompiler.TryParseGetItemScript,
-    // e.g. First Aid Box 23484) - GeneratedItems.UsableItemDefinition.Grants is non-empty only
-    // for that narrow case. Any other resolved item (a different Usable with no Grants, a
-    // Healing/DelayConsume item, an unknown/non-usable slot) is rejected without mutation -
-    // implementing their real effects (itemheal, itemskill, status, etc.) is explicitly out of
-    // scope; this handler must never guess or fake a result for them.
+    // Two source-backed effect shapes are executed:
+    //   1. A Type: Usable item whose pinned item_db Script is a getitem-only container (e.g. First Aid
+    //      Box 23484) - UsableItemDefinition.Grants - consumed and granted in ONE durable operation.
+    //   2. Any other Healing/Usable/Cash item (pc_isUseitem's consumable types, pc.cpp:6288-6289)
+    //      whose lowered script the generic ItemScriptEvaluator can run in full (itemheal,
+    //      percentheal, sc_start, ...). The script is planned BEFORE anything is consumed, so an
+    //      item it cannot run completely (itemskill -> F18, callfunc -> F20, an uncataloged
+    //      command, ...) is rejected without mutation and logged with the blocking construct -
+    //      never consumed for a partial or faked effect. DelayConsume items stay rejected (their
+    //      ack/consume order differs and their scripts are itemskill, Feature 18).
     //
     // Ordering follows this project's own validate -> persist -> update runtime state -> notify
     // rule (AGENTS.md), which is ALSO consistent with pinned pc_useitem's own real ordering for
@@ -3598,29 +3601,48 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             return;
         }
 
-        if (itemDefinition is not UsableItemDefinition { Grants.Count: > 0 } usable)
+        Athena.Net.MapServer.World.Items.ItemScriptPlan? scriptPlan = null;
+        if (itemDefinition is UsableItemDefinition { Grants.Count: > 0 } usable)
+        {
+            // Fail closed on an incomplete container implementation: FirstaidBox10 (23485), for
+            // example, has a pinned getitem grant for 23486 ("Firstaid_Box_15"), which is
+            // intentionally not yet generated. Consuming the container and granting only the
+            // resolvable subset would silently destroy the source item and leave the character
+            // short the ungrantable one - never acceptable. Every grant must resolve BEFORE any
+            // consume/persist/notify happens, so an unimplemented container is rejected outright
+            // (no consume, no ack, no partial grants) while a fully-generated container (e.g.
+            // FirstAidBox/23484) remains fully executable.
+            foreach (var grant in usable.Grants)
+            {
+                if (!GeneratedItems.ById.ContainsKey(grant.ItemId))
+                {
+                    MapLogger.Warning(
+                        $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has an unimplemented grant itemId={grant.ItemId}; container use is out of scope until all grants are generated.");
+                    return;
+                }
+            }
+        }
+        else if (itemDefinition is HealingItemDefinition or UsableItemDefinition or CashItemDefinition)
+        {
+            scriptPlan = Athena.Net.MapServer.World.Items.ItemScriptEvaluator.Plan(itemDefinition.Meta?.Script, (min, max) => Random.Shared.NextInt64(min, max + 1));
+            if (!scriptPlan.Executable)
+            {
+                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} script is not executable yet ({scriptPlan.Unsupported}).");
+                return;
+            }
+
+            // Pinned clif_parse_UseItem (clif.cpp:12084-12087): a dead character cannot use items.
+            if (_gameplayState is not { State.CurrentHp: > 0 })
+            {
+                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} character is dead or has no gameplay state.");
+                return;
+            }
+        }
+        else
         {
             MapLogger.Warning(
                 $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has no source-backed use effect implemented in this slice.");
             return;
-        }
-
-        // Fail closed on an incomplete container implementation: FirstaidBox10 (23485), for
-        // example, has a pinned getitem grant for 23486 ("Firstaid_Box_15"), which is
-        // intentionally not yet generated. Consuming the container and granting only the
-        // resolvable subset would silently destroy the source item and leave the character
-        // short the ungrantable one - never acceptable. Every grant must resolve BEFORE any
-        // consume/persist/notify happens, so an unimplemented container is rejected outright
-        // (no consume, no ack, no partial grants) while a fully-generated container (e.g.
-        // FirstAidBox/23484) remains fully executable.
-        foreach (var grant in usable.Grants)
-        {
-            if (!GeneratedItems.ById.ContainsKey(grant.ItemId))
-            {
-                MapLogger.Warning(
-                    $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has an unimplemented grant itemId={grant.ItemId}; container use is out of scope until all grants are generated.");
-                return;
-            }
         }
 
         // Pinned pc_itemcd_check (pc.cpp:14766-14785), reached from pc_useitem before any consume/script/ack (pc.cpp:6506):
@@ -3656,7 +3678,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
         // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
         // destroyed the box and delivered only some of the contents.)
-        var grants = usable.Grants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
+        var grants = itemDefinition is UsableItemDefinition { Grants: { Count: > 0 } containerGrants }
+            ? containerGrants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray()
+            : [];
         var use = _inventoryService is null ? null : await _inventoryService.ConsumeAndGrantAsync(row.DurableId, 1, grants, InventoryOperationKind.Use, cancellationToken);
         if (use is not { Succeeded: true })
         {
@@ -3683,6 +3707,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for item-use grant itemId={placedRow.ItemId} count={added} clientIndex={grantClientIndex}");
             await WriteAsync(grantPickupPacket, cancellationToken);
         }
+
+        // pc_useitem runs the item script after the ack and pc_delitem (pc.cpp:6535-6536 then 6558). The item is already durably
+        // consumed here; a later effect persistence failure is logged by the effect itself, never rolled back into the inventory
+        // (consume-first matches the reference and can never duplicate an effect without its cost).
+        if (scriptPlan is not null) await Athena.Net.MapServer.World.Items.ItemScriptEvaluator.ExecuteAsync(scriptPlan, this, cancellationToken);
     }
 
     // Thin parse-and-call handler (task section 16) for the verified stock-iRO skill-up request
@@ -4365,16 +4394,71 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // matches the heal amount, not any skilleffect argument in Captain's script.
     async Task INpcScriptHost.HealAsync(int hp, int sp, CancellationToken cancellationToken)
     {
+        var result = await HealAndSyncAsync(hp, sp, cancellationToken) ?? throw new InvalidOperationException("Heal persistence failed.");
+        if (result.HpChanged && hp > 0) await WriteAsync(IroStatusEffectPackets.BuildUseSkillVisual(IroStatusEffectPackets.AlHeal, hp, _accountId, _generatedScriptActorId), cancellationToken);
+    }
+
+    // The one HP/SP heal path of this session (NPC `heal`, item itemheal/percentheal/heal): CharacterHealService's per-character
+    // mutation - the same CharacterGameplayStateSession lock and CharServer compare-and-swap a monster hit goes through - then
+    // the self SP_HP/SP_SP update (0x00B0 params 5/7, clif_updatestatus, which pc_heal sends for a non-effect heal, pc.cpp:10677-10680).
+    // No parameter packet is sent when the mutation left HP/SP unchanged (e.g. an already-full heal) - there is nothing to
+    // synchronize. Null when persistence rejected the mutation.
+    private async Task<CharacterHealResult?> HealAndSyncAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
         var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
-        var result = await new CharacterHealService(state).HealAsync(hp, sp, cancellationToken)
-            ?? throw new InvalidOperationException("Heal persistence failed.");
-        // No parameter packet is sent when the mutation left HP/SP unchanged (e.g. an
-        // already-full heal) - there is nothing to synchronize. This mirrors the existing
-        // GrantExperienceAsync policy of only emitting packets for fields that actually
-        // changed; it is not Captain-specific behavior.
+        if (await new CharacterHealService(state).HealAsync(hp, sp, cancellationToken) is not { } result) return null;
         if (result.HpChanged) await WriteAsync(IroCharacterProgressionPackets.Parameter(5, result.After.CurrentHp), cancellationToken);
         if (result.SpChanged) await WriteAsync(IroCharacterProgressionPackets.Parameter(7, result.After.CurrentSp), cancellationToken);
-        if (result.HpChanged && hp > 0) await WriteAsync(IroStatusEffectPackets.BuildUseSkillVisual(IroStatusEffectPackets.AlHeal, hp, _accountId, _generatedScriptActorId), cancellationToken);
+        return result;
+    }
+
+    private static readonly ushort SmRecovery = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("SM_RECOVERY").SkillId;
+    private static readonly ushort MgSpRecovery = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("MG_SRECOVERY").SkillId;
+    private static readonly ushort AmLearningPotion = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("AM_LEARNINGPOTION").SkillId;
+
+    // pc_itemheal's inputs from this character's authoritative state: battle_status VIT/INT (base + active statuses, one
+    // coherent snapshot), learned recovery skills, and an active SC_INCHEALRATE.
+    async Task Athena.Net.MapServer.World.Items.IItemEffectHost.ItemHealAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
+        var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
+        var effective = _statusEffects.Capture(() => state.State).Effective;
+        var incHealRate = _statusEffects.TryGet(ItemHealFormula.IncHealRateStatusId, out var incHeal) ? incHeal.Val1 : 0;
+        var (healHp, healSp) = ItemHealFormula.ItemHeal(hp, sp, effective.Vitality, effective.Intelligence,
+            state.Skills.CurrentLevel(SmRecovery), state.Skills.CurrentLevel(MgSpRecovery), state.Skills.CurrentLevel(AmLearningPotion), incHealRate);
+        await ItemEffectHealAsync(healHp, healSp, cancellationToken);
+    }
+
+    async Task Athena.Net.MapServer.World.Items.IItemEffectHost.PercentHealAsync(int hpRate, int spRate, CancellationToken cancellationToken)
+    {
+        var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
+        var (healHp, healSp) = ItemHealFormula.PercentHeal(state.State.MaxHp, state.State.MaxSp, hpRate, spRate);
+        await ItemEffectHealAsync(healHp, healSp, cancellationToken);
+    }
+
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.HealAsync(int hp, int sp, CancellationToken cancellationToken) => ItemEffectHealAsync(hp, sp, cancellationToken);
+
+    // The item is already consumed when its effects run, so a rejected heal is reported, not thrown into the packet loop.
+    private async Task ItemEffectHealAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
+        if (await HealAndSyncAsync(hp, sp, cancellationToken) is null)
+            MapLogger.Warning($"[iRO MAP DEBUG] Item heal hp={hp} sp={sp} was not persisted (gameplay-state compare-and-swap rejected) for charId={_charId}.");
+    }
+
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.StartStatusAsync(ushort statusId, int durationMilliseconds, int val1, int val2, int val3, CancellationToken cancellationToken) =>
+        StartStatusAndSyncAsync(statusId, durationMilliseconds, val1, val2, val3, cancellationToken);
+
+    // sc_end: CharacterStatusEffectState.End makes the status due now and the expiration driver ends it (0x0196 + stat resync).
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.EndStatusAsync(ushort statusId, CancellationToken cancellationToken)
+    {
+        if (_statusEffects.End(statusId)) WakeStatusExpiration();
+        return Task.CompletedTask;
+    }
+
+    // Best-effort wake of the expiration loop: SemaphoreFullException means a wake is already pending (the loop will re-read
+    // NextExpiration when it consumes it); the signal may also already be disposed if the session is tearing down concurrently.
+    private void WakeStatusExpiration()
+    {
+        try { _statusExpirationSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
     }
 
     // Pinned legacy/rathena/src/map/script.cpp BUILDIN_FUNC(specialeffect2) calls
@@ -4403,17 +4487,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // ai/iro-2026-wire.md and CharacterStatusEffectState's remarks for the exact val1/val2
     // derivation). Other statusIds apply only server-side state, matching the generic,
     // non-Captain-specific policy used throughout this host.
-    async Task INpcScriptHost.StartStatusAsync(int statusId, int durationMilliseconds, int val1, CancellationToken cancellationToken)
+    Task INpcScriptHost.StartStatusAsync(int statusId, int durationMilliseconds, int val1, CancellationToken cancellationToken) =>
+        StartStatusAndSyncAsync((ushort)statusId, durationMilliseconds, val1, 0, 0, cancellationToken);
+
+    // The one status-start path of this session (NPC and item sc_start alike).
+    private async Task StartStatusAndSyncAsync(ushort id, int durationMilliseconds, int val1, int val2, int val3, CancellationToken cancellationToken)
     {
-        var id = (ushort)statusId;
         // A weaker start over a stronger active status is a reference no-op (status_change_start returns
         // before any icon/stat side effect), so nothing is re-sent to the client.
-        if (_statusEffects.Start(id, durationMilliseconds, val1) == StatusStartOutcome.Retained) return;
-        // Wake the expiration loop: this may have moved the next deadline earlier. Best-effort -
-        // SemaphoreFullException means a wake is already pending (the loop hasn't consumed it
-        // yet), which is fine, it will re-read NextExpiration fresh when it does; the signal may
-        // also already be disposed if the session is tearing down concurrently.
-        try { _statusExpirationSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
+        if (_statusEffects.Start(id, durationMilliseconds, val1, val2, val3) == StatusStartOutcome.Retained) return;
+        // Wake the expiration loop: this may have moved the next deadline earlier.
+        WakeStatusExpiration();
         if (!_statusEffects.TryGet(id, out var status)) return;
         var actorId = _accountId;
 

@@ -98,6 +98,20 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
         }
     }
 
+    // status_change_end for an active status (script sc_end): the entry becomes due NOW, so the session's expiration driver
+    // removes it through ExpireDue and sends exactly the end packet / stat resync a natural expiry sends - one end path, not two.
+    // False when the status is not active (sc_end on an absent status is a no-op, script.cpp:12495-12496).
+    public bool End(ushort statusId)
+    {
+        var now = _timeProvider.GetUtcNow();
+        lock (_gate)
+        {
+            if (!_statuses.TryGetValue(statusId, out var status) || status.ExpiresAt <= now) return false;
+            _statuses[statusId] = status with { ExpiresAt = now };
+            return true;
+        }
+    }
+
     // Treats an already-expired status as inactive without removing it. Reads (TryGet,
     // Recalculate, effective-stat sync) must reflect expiration immediately, but must not
     // themselves destroy the ActiveStatus record - the expiration DRIVER (MapClientSession's
