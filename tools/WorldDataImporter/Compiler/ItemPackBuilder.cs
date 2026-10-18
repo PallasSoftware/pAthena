@@ -28,18 +28,25 @@ internal static class ItemPackBuilder
             return index;
         }
 
+        // itemdb_isNoEquip's bitmask (itemdb.cpp:4442-4457) is loaded from this separate flat file, never from item_db.yml's
+        // own NoUse block (that only carries Override/Sitting - see ItemDatabaseLoader's "NoUse" handling above).
+        var noEquipById = loaded.Items.ToDictionary(item => item.Item.Id, _ => 0u);
+        var noEquipWarnings = new List<string>();
+        ItemNoEquipLoader.Apply(readFile(ItemNoEquipLoader.Path), noEquipById, noEquipWarnings);
+
         var items = loaded.Items
             .Select(item => item.Item with
             {
                 ScriptIndex = Index(item.Script, "db/re/item_db.yml"),
                 EquipScriptIndex = Index(item.EquipScript, "db/re/item_db.yml"),
                 UnEquipScriptIndex = Index(item.UnEquipScript, "db/re/item_db.yml"),
+                NoEquip = noEquipById[item.Item.Id],
             })
             .ToArray();
 
         var itemsByAegisName = items.ToDictionary(item => item.AegisName.ToLowerInvariant());
         var groups = ItemGroupLoader.Load(readFile, constants, itemsByAegisName);
-        return new(new ItemPack(commit, items, scripts, groups), Report(items, scripts, groups, loaded.Warnings.Count));
+        return new(new ItemPack(commit, items, scripts, groups), Report(items, scripts, groups, loaded.Warnings.Count + noEquipWarnings.Count));
     }
 
     // Named accessors used by hand-written code and tests. The items themselves live in the data pack; this file only gives a

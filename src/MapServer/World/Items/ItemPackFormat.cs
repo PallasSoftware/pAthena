@@ -85,7 +85,8 @@ public sealed record PackItem(
     PackItemFlags Flags,
     int ScriptIndex,
     int EquipScriptIndex,
-    int UnEquipScriptIndex)
+    int UnEquipScriptIndex,
+    uint NoEquip)
 {
     // One line per item in the same field order and number format the reference runner (reference_runner.cpp
     // dump_items) prints from the real pinned loader, so the committed loader evidence can be compared byte for byte.
@@ -148,7 +149,7 @@ public sealed record ItemPack(string RathenaCommit, IReadOnlyList<PackItem> Item
 
 public static class ItemPackFormat
 {
-    public const ushort Version = 2;
+    public const ushort Version = 3;
     private static readonly byte[] Magic = "AIP1"u8.ToArray();
 
     public static byte[] Write(ItemPack pack)
@@ -179,7 +180,7 @@ public static class ItemPackFormat
                 w.Write(item.Equip); w.Write(item.WeaponLevel); w.Write(item.ArmorLevel); w.Write(item.EquipLevelMin); w.Write(item.EquipLevelMax);
                 w.Write(item.Look); w.Write(item.ViewId); w.Write(item.DropEffect); w.Write(item.DelayDuration); w.Write(item.DelayStatus);
                 w.Write(item.StackAmount); w.Write(item.NoUseOverride); w.Write(item.TradeOverride); w.Write((uint)item.Flags);
-                w.Write(item.ScriptIndex); w.Write(item.EquipScriptIndex); w.Write(item.UnEquipScriptIndex);
+                w.Write(item.ScriptIndex); w.Write(item.EquipScriptIndex); w.Write(item.UnEquipScriptIndex); w.Write(item.NoEquip);
             }
 
             w.Write(pack.Scripts.Count);
@@ -253,7 +254,7 @@ public static class ItemPackFormat
                 r.ReadUInt32(), r.ReadUInt32(), r.ReadUInt32(), r.ReadUInt32(), r.ReadUInt32(),
                 r.ReadUInt32(), r.ReadUInt32(), r.ReadByte(), r.ReadUInt32(), r.ReadInt32(),
                 r.ReadUInt32(), r.ReadInt32(), r.ReadInt32(), (PackItemFlags)r.ReadUInt32(),
-                r.ReadInt32(), r.ReadInt32(), r.ReadInt32());
+                r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadUInt32());
         }
 
         var scripts = new PackScript[r.ReadInt32()];

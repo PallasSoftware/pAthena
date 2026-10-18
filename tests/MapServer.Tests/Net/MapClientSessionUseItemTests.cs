@@ -2,8 +2,10 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
+using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
 using MapServer.Tests.Testing;
 
@@ -414,6 +416,30 @@ public sealed class MapClientSessionUseItemTests
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Documents a real, honestly-reported scope gap rather than hiding it: the nouse_mapflag gate
+    // (HandleIroUseItemRequestAsync, ItemMetadata.RestrictedOnNormalMaps) can only be socket-tested end to end against a
+    // REAL pinned item that is BOTH a container with fully-resolvable Grants (the only ItemDefinition shape that reaches
+    // the gate today - see the earlier "no source-backed use effect" rejection above it) AND restricted on normal maps
+    // (db/re/item_noequip.txt bit 1). No such item exists in the pinned Renewal dataset as of commit
+    // e985006171d2eb320ee512a653f4c83aea3d81b6 (every bit-1 row is equipment, a Healing-script potion, or a DelayConsume
+    // scroll). This test locks in that fact as a regression guard: if a future data regeneration ever produces such an
+    // item, this assertion fails loudly instead of the gate silently going untested. The gate's correctness is instead
+    // proven at the data layer (ItemCatalogTests.Catalog_ExposesNoEquipBitOneThroughMeta, against real item 2483) and the
+    // full converter pipeline (WorldDataImporter.Tests.ItemPipelineDataDrivenFixtureTests, a synthetic fixture id built
+    // only from already-supported mechanics) - MapClientSession has no DI seam to substitute a synthetic ItemCatalog
+    // into a live socket test (GeneratedItems.ById reads the process-wide ItemCatalog.Current singleton directly).
+    [Fact]
+    public void NoRealPinnedContainerItemCurrentlyReachesTheNoUseMapflagGate()
+    {
+        var reachesGate = GeneratedItems.ById.Values
+            .OfType<UsableItemDefinition>()
+            .Where(item => item.Grants is { Count: > 0 } grants && grants.All(g => GeneratedItems.ById.ContainsKey(g.ItemId)))
+            .Where(item => item.Meta!.RestrictedOnNormalMaps)
+            .ToArray();
+
+        Assert.Empty(reachesGate);
     }
 
     [Fact]

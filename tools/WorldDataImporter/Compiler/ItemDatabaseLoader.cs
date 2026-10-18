@@ -393,7 +393,7 @@ internal static class ItemDatabaseLoader
     private static PackItem ToItem(Draft d) => new(
         d.Id, d.AegisName, d.Name, d.Type, d.Subtype, (int)d.Buy, (int)d.Sell, d.Weight, d.Attack, d.MagicAttack, d.Defense, d.Range, d.Slots,
         d.ClassBase0, d.ClassBase1, d.ClassBase2, d.ClassUpper, d.Sex, d.Equip, d.WeaponLevel, d.ArmorLevel, d.EquipLevelMin, d.EquipLevelMax,
-        d.Look, d.ViewId, d.DropEffect, d.DelayDuration, d.DelayStatus, d.StackAmount, d.NoUseOverride, d.TradeOverride, d.Flags, -1, -1, -1);
+        d.Look, d.ViewId, d.DropEffect, d.DelayDuration, d.DelayStatus, d.StackAmount, d.NoUseOverride, d.TradeOverride, d.Flags, -1, -1, -1, 0);
 
     private static bool IsEquip(byte type) => type is PackItemTypes.Weapon or PackItemTypes.Armor or PackItemTypes.Ammo or PackItemTypes.ShadowGear;
     private static bool IsStackable(byte type) => type is not (PackItemTypes.Weapon or PackItemTypes.Armor or PackItemTypes.PetEgg or PackItemTypes.PetArmor or PackItemTypes.ShadowGear);

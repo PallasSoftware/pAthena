@@ -89,6 +89,30 @@ public sealed class ItemCatalogTests
         Assert.True(script.Uses.HasFlag(PackScriptUses.Bonus));
     }
 
+    // Pinned db/re/item_noequip.txt row "2483,1" (Siege_Greave) sets bit 1 ("restricted in normal maps"), the only
+    // nouse_mapflag bit this project currently enforces (see ItemMetadata.RestrictedOnNormalMaps). Knife (1201) has
+    // no item_noequip.txt row at all, proving the negative case through the real catalog, not a synthetic PackItem.
+    [Fact]
+    public void Catalog_ExposesNoEquipBitOneThroughMeta()
+    {
+        var restricted = Catalog.ById[2483];
+        Assert.True(restricted.Meta!.RestrictedOnNormalMaps);
+
+        var unrestricted = Catalog.ById[1201];
+        Assert.False(unrestricted.Meta!.RestrictedOnNormalMaps);
+    }
+
+    // The pack must carry the COMPLETE source item_noequip.txt bitmask, not a pre-filtered "bit 1 only" value - 2483
+    // (Siege_Greave) has separate rows "2483,1" (normal maps) AND "2483,16" (WOE:TE), so both bits must survive the
+    // loader/pack pipeline into Data.NoEquip verbatim even though only bit 1 is currently runtime-enforced (see
+    // ItemMetadata.RestrictedOnNormalMaps's documented scope gap). This guards against silently truncating source data.
+    [Fact]
+    public void Catalog_PreservesTheFullNoEquipBitmaskNotJustTheEnforcedBit()
+    {
+        var item = Catalog.ById[2483];
+        Assert.Equal(1u | 16u, item.Meta!.Data.NoEquip & (1u | 16u));
+    }
+
     [Fact]
     public void Catalog_ClientViewIdFollowsAliasName()
     {

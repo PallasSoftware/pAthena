@@ -3640,6 +3640,19 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             _itemUseCooldowns.Start(meta.DelayGroupKey, TimeSpan.FromMilliseconds(meta.DelayDurationMilliseconds));
         }
 
+        // Pinned nouse_mapflag gate (itemdb_isNoEquip, pc.cpp:6510-6517): an item whose item_db no_equip bitmask
+        // restricts "normal maps" (bit 1) is rejected outright - no consume, no grant, no script run - on every map
+        // this project can currently place a character on (no PVP/GvG/Battleground/WOE:TE/zone map-flag state exists
+        // yet, so every reachable map is "normal" in rAthena's own sense; see ItemMetadata.RestrictedOnNormalMaps).
+        // shortcut: the client-visible clif_msg(MSI_IMPOSSIBLE_USEITEM_AREA) rejection reply is not sent - no verified
+        // stock-iRO capture of that packet exists yet (ai/iro-2026-wire.md has no evidence for it). The server-side
+        // rejection itself (no consume, no grant) is enforced regardless; upgrade once a real capture exists.
+        if (itemDefinition.Meta is { RestrictedOnNormalMaps: true })
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} is restricted on normal maps (nouse_mapflag).");
+            return;
+        }
+
         // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
         // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
         // destroyed the box and delivered only some of the contents.)
