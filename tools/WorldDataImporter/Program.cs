@@ -429,6 +429,8 @@ internal static partial class WorldDataImporterCli
         return 0;
     }
 
+    private const string ReadableFolder = "Readable";
+
     private static async Task<int> GenerateMobsAsync(string[] args)
     {
         const int BucketSize = 1000;
@@ -447,18 +449,27 @@ internal static partial class WorldDataImporterCli
         Directory.CreateDirectory(Path.GetDirectoryName(packPath)!);
         await File.WriteAllBytesAsync(packPath, Athena.Net.MapServer.World.MobPackFormat.Write(pack));
 
-        Directory.CreateDirectory(outputDir);
-        foreach (var path in Directory.EnumerateFiles(outputDir, "*.cs").Where(path => MobDataCompiler.IsOwnedGeneratedMobFile(path, ClassName, Category)))
-            File.Delete(path);
+        // Two outputs per range from the one effective dataset: the compiled facade shard (GeneratedMobs.<Name> over
+        // MobCatalog) and the complete readable definition shard under Readable/, which MapServer.csproj excludes from
+        // compilation (inspection only - the pack is the runtime data).
+        var readableDir = Path.Combine(outputDir, ReadableFolder);
+        foreach (var directory in new[] { outputDir, readableDir })
+        {
+            Directory.CreateDirectory(directory);
+            foreach (var path in Directory.EnumerateFiles(directory, "*.cs").Where(path => MobDataCompiler.IsOwnedGeneratedMobFile(path, ClassName, Category)))
+                File.Delete(path);
+        }
 
         var encoding = new System.Text.UTF8Encoding(false);
         var fileCount = 0;
         foreach (var bucket in symbols.GroupBy(item => item.Mob.Id / BucketSize).OrderBy(group => group.Key))
         {
             var lo = bucket.Key * BucketSize;
-            var path = Path.Combine(outputDir, $"{ClassName}.{Category}.{lo}-{lo + BucketSize - 1}.cs");
-            await File.WriteAllTextAsync(path,
-                MobDataCompiler.GenerateMobDefinitions(bucket.Select(item => (item.Mob, item.Symbol)).ToArray(), commit, ClassName, sourceFile, 0), encoding);
+            var fileName = $"{ClassName}.{Category}.{lo}-{lo + BucketSize - 1}.cs";
+            await File.WriteAllTextAsync(Path.Combine(outputDir, fileName),
+                MobDataCompiler.GenerateMobFacades(bucket.ToArray(), pack, commit, ClassName, sourceFile), encoding);
+            await File.WriteAllTextAsync(Path.Combine(readableDir, fileName),
+                MobDataCompiler.GenerateMobDefinitions(bucket.Select(item => (item.Mob, item.Symbol)).ToArray(), commit, ClassName, sourceFile, 0, MobDataCompiler.ReadableViewNote), encoding);
             fileCount++;
         }
         await File.WriteAllTextAsync(Path.Combine(outputDir, $"{ClassName}.Registry.cs"),

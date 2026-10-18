@@ -39,6 +39,14 @@ public sealed class MobCatalogTests
     }
 
     [Fact]
+    public void Facades_ReturnTheCatalogInstances()
+    {
+        Assert.Same(MobCatalog.Current.ById[1001], GeneratedMobs.Scorpion);
+        Assert.NotNull(GeneratedMobs.ArcherSkeleton.RaceGroups);
+        Assert.NotNull(GeneratedMobs.GoldenBug.MvpDrops);
+    }
+
+    [Fact]
     public void CorruptedBody_FailsContentHashVerification()
     {
         var bytes = MobPackFormat.Write(new MobPack(MobCatalog.Current.RathenaCommit, [MobCatalog.Current.ById[1002]]));

@@ -20,6 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Readable full mob definitions written by generate-mobs next to the compiled facades: inspection only. -->
+    <Compile Remove="Generated/GameData/Mobs/Readable/**" />
     <Compile Remove="World/MapCollision.cs;World/MovementPathProvider.cs;World/RathenaCompatibleMovementPathProvider.cs;World/GridLineTraversal.cs;World/RathenaMapCacheFormat.cs;World/RathenaMapCacheLayers.cs" />
   </ItemGroup>
 

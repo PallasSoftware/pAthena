@@ -1490,8 +1490,15 @@ files are never deleted:
 ```bash
 dotnet run --project tools/WorldDataImporter/WorldDataImporter.csproj -- generate-mobs \
   --rathena-root legacy/rathena --rathena-commit e985006171d2eb320ee512a653f4c83aea3d81b6 \
-  --output src/MapServer/Generated/GameData/Mobs
+  --output src/MapServer/Generated/GameData/Mobs \
+  --pack src/MapServer/Generated/Assets/Mobs/AthenaMobs.bin
 ```
+
+The mob data lives in `AthenaMobs.bin` (loaded by `MobCatalog`). Each `GeneratedMobs.Monsters.<range>.cs` is a compiled
+facade of one-line `GeneratedMobs.<Name> => MobCatalog.Current.ById[<id>]` properties, so a removed mob still breaks
+every generated reference at compile time. The same pass writes the complete readable definitions to
+`Readable/GeneratedMobs.Monsters.<range>.cs`, which `MapServer.csproj` excludes from compilation. Add
+`--custom-mobs data/custom/mobs` to include custom definitions (see `data/custom/README.md`).
 
 Keep three independent claims explicit: (1) source representation is 2,675/2,675, (2) generated
 production data is 2,675/2,675 with exact ID-set equality, and (3) runtime capability remains

@@ -42,4 +42,33 @@ public sealed class MobPackTests
         Assert.Equal(77u, reread.Single(mob => mob.Id == 1002).MaxHp);
         Assert.Equal(new Athena.Net.MapServer.World.WorldSourceInfo("Athena.NET", "", "custom/mobs/a.yml", 4), reread.Single(mob => mob.Id == 900300).Source);
     }
+
+    // Facade shards: one single-line catalog-backed property per mob, and a mob missing from the pack is never emitted.
+    [Fact]
+    public void Facades_AreSingleLineCatalogProperties_AndRequireEveryMobInThePack()
+    {
+        var (symbols, pack) = Build();
+        var shard = symbols.Where(item => item.Mob.Id / 1000 == 1).ToArray();
+        var source = MobDataCompiler.GenerateMobFacades(shard, pack, Commit, "GeneratedMobs", SourceFile);
+
+        Assert.Contains("\n    internal static MobDefinition Scorpion => MobCatalog.Current.ById[1001];\n", source);
+        Assert.Equal(shard.Length, source.Split('\n').Count(line => line.StartsWith("    internal static MobDefinition ", StringComparison.Ordinal) && line.EndsWith("];", StringComparison.Ordinal)));
+
+        var withoutScorpion = pack with { Mobs = pack.Mobs.Where(mob => mob.Id != 1001).ToArray() };
+        var error = Assert.Throws<ArgumentException>(() => MobDataCompiler.GenerateMobFacades(shard, withoutScorpion, Commit, "GeneratedMobs", SourceFile));
+        Assert.Contains("Mob 1001 (SCORPION) is not in the mob data pack", error.Message);
+    }
+
+    [Fact]
+    public void FacadeAndReadableShards_RegenerationIsIdenticalToTheCommittedShards()
+    {
+        var (symbols, pack) = Build();
+        foreach (var bucket in symbols.GroupBy(item => item.Mob.Id / 1000))
+        {
+            var path = Path.Combine(Root(), $"src/MapServer/Generated/GameData/Mobs/GeneratedMobs.Monsters.{bucket.Key * 1000}-{bucket.Key * 1000 + 999}.cs");
+            Assert.Equal(File.ReadAllText(path), MobDataCompiler.GenerateMobFacades(bucket.ToArray(), pack, Commit, "GeneratedMobs", SourceFile));
+            var readable = Path.Combine(Path.GetDirectoryName(path)!, "Readable", Path.GetFileName(path));
+            Assert.Equal(File.ReadAllText(readable), MobDataCompiler.GenerateMobDefinitions(bucket.Select(item => (item.Mob, item.Symbol)).ToArray(), Commit, "GeneratedMobs", SourceFile, 0, MobDataCompiler.ReadableViewNote));
+        }
+    }
 }

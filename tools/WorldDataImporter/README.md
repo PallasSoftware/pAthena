@@ -418,8 +418,15 @@ Generate the current complete set with:
 dotnet run --project tools/WorldDataImporter/WorldDataImporter.csproj -- generate-mobs \
   --rathena-root legacy/rathena \
   --rathena-commit e985006171d2eb320ee512a653f4c83aea3d81b6 \
-  --output src/MapServer/Generated/GameData/Mobs
+  --output src/MapServer/Generated/GameData/Mobs \
+  --pack src/MapServer/Generated/Assets/Mobs/AthenaMobs.bin
 ```
+
+The mob data lives in `AthenaMobs.bin` (loaded by `MobCatalog`). Each `GeneratedMobs.Monsters.<range>.cs` is a compiled
+facade of one-line `GeneratedMobs.<Name> => MobCatalog.Current.ById[<id>]` properties, so a removed mob still breaks
+every generated reference at compile time. The same pass writes the complete readable definitions to
+`Readable/GeneratedMobs.Monsters.<range>.cs`, which `MapServer.csproj` excludes from compilation. Add
+`--custom-mobs data/custom/mobs` to include custom definitions (see `data/custom/README.md`).
 
 The current pin generates 2,675 definitions, six non-empty fixed 1,000-ID shards, and a generated
 dictionary registry. Duplicate IDs fail closed. Symbol normalization and collision resolution are
