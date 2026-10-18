@@ -57,6 +57,22 @@ public sealed class ItemCatalogTests
         Assert.Equal(8_954, Catalog.ById.Values.Count(definition => definition is ArmorItemDefinition));
     }
 
+    // Pinned item_db_usable.yml Id 607 (AegisName Reagent_Boost_Wind or similar percentheal-script
+    // item) carries Delay: { Duration: 5000, Status: Reuse_Limit_F } - a real pinned Delay group,
+    // proving ItemMetadata.HasDelayGroup/DelayGroupKey/DelayDurationMilliseconds reach the catalog's
+    // actual loaded data, not just a synthetic PackItem. Id 1201 (Knife, no Delay block) proves the
+    // negative case through the same real catalog.
+    [Fact]
+    public void Catalog_ExposesDelayGroupThroughMeta()
+    {
+        var withDelay = Catalog.ById[607];
+        Assert.True(withDelay.Meta!.HasDelayGroup);
+        Assert.Equal(5000u, withDelay.Meta.DelayDurationMilliseconds);
+
+        var withoutDelay = Catalog.ById[1201];
+        Assert.False(withoutDelay.Meta!.HasDelayGroup);
+    }
+
     [Fact]
     public void Catalog_ExposesLoaderFieldsThroughMeta()
     {

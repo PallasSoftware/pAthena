@@ -424,6 +424,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private CharacterInventorySnapshot? _inventory => _inventoryService?.Snapshot;
     private CharacterEquipmentSnapshot? _equipment;
     private readonly CharacterStatusEffectState _statusEffects;
+    private readonly Athena.Net.MapServer.World.Items.ItemUseCooldowns _itemUseCooldowns;
     // The deployment's regional gameplay rules (composed once at startup); this session only ever sees the abstractions.
     private readonly GameplayRuleServices _rules;
     private readonly TimeProvider _timeProvider;
@@ -510,6 +511,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _onAuthenticated = onAuthenticated;
         _rules = gameplayRules ?? throw new ArgumentNullException(nameof(gameplayRules), "A MapClientSession requires the deployment's gameplay rules.");
         _statusEffects = new CharacterStatusEffectState(_timeProvider, _rules.StatusEffects, _rules.Stats);
+        _itemUseCooldowns = new Athena.Net.MapServer.World.Items.ItemUseCooldowns(_timeProvider);
     }
 
     // Test-facing constructor. Still defaults to WorldMapRegistry.Tutorial when no registry is
@@ -3619,6 +3621,23 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                     $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has an unimplemented grant itemId={grant.ItemId}; container use is out of scope until all grants are generated.");
                 return;
             }
+        }
+
+        // Pinned pc_itemcd_check (pc.cpp:14766-14785), reached from pc_useitem before any consume/script/ack (pc.cpp:6506):
+        // an item whose item_db Delay.Status names a shared SC_ group rejects use outright while that group's cooldown is
+        // still running - checked and (on success) armed BEFORE the atomic consume/grant below, matching pc_useitem's own
+        // ordering (the real cd check happens ahead of clif_useitemack/run_script, not after).
+        // shortcut: no clif_msg_value(MSI_ITEM_REUSE_LIMIT_SECOND) reply is sent on rejection yet (this project does not
+        // model that packet); upgrade once a verified stock-iRO capture of the reply exists.
+        if (itemDefinition.Meta is { HasDelayGroup: true } meta)
+        {
+            if (_itemUseCooldowns.Remaining(meta.DelayGroupKey) is { } remaining)
+            {
+                MapLogger.Warning(
+                    $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} delayGroup={meta.DelayGroupKey} still on cooldown for {remaining.TotalMilliseconds}ms.");
+                return;
+            }
+            _itemUseCooldowns.Start(meta.DelayGroupKey, TimeSpan.FromMilliseconds(meta.DelayDurationMilliseconds));
         }
 
         // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
