@@ -1,6 +1,7 @@
 using Athena.Net.World.Contracts;
 using Orleans.Hosting;
 using Orleans.Runtime;
+using Orleans.Runtime.MembershipService.SiloMetadata;
 using Orleans.TestingHost;
 
 namespace Athena.Net.World.Tests;
@@ -280,5 +281,132 @@ public sealed class WorldGameplayProfileClusterTests
             Assert.Empty(olderReports);
         }
         finally { await cluster.StopAllSilosAsync(); }
+    }
+
+    // Pins the exact problematic interleaving by construction instead of by timing luck: an established iRO silo (oldest
+    // Generation), plus a matching iRO newcomer and a mismatched Kro newcomer starting concurrently, where the Kro newcomer's
+    // Generation is made OLDER than the iRO newcomer's. Check() enumeration therefore surfaces the Kro newcomer - not the
+    // established silo - as the iRO newcomer's "oldest mismatch", and a naive self-vs-mismatch Generation tie-break would make
+    // the iRO newcomer fault even though it fully agrees with the established cluster.
+    [Fact]
+    public void MatchingNewcomer_IsNotAFaultingConflict_WhenOnlyAFellowNewcomerLooksOlderInEnumeration()
+    {
+        var endpoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1);
+        var established = SiloAddress.New(endpoint, 100); // oldest: already active before anyone else started
+        var kroNewcomer = SiloAddress.New(endpoint, 150); // starts concurrently, but got a lower Generation than the iRO newcomer
+        var iroNewcomer = SiloAddress.New(endpoint, 200); // the matching silo under test - self
+
+        var cache = new FakeSiloMetadataCache(new Dictionary<SiloAddress, string>
+        {
+            [established] = WorldGameplayProfilePeers.Encode(Iro),
+            [kroNewcomer] = WorldGameplayProfilePeers.Encode(Kro),
+        });
+
+        var result = WorldGameplayProfilePeers.Check(Iro, iroNewcomer, [established, kroNewcomer, iroNewcomer], cache);
+
+        // Confirms Check() does surface the Kro newcomer, not the established silo, as the "oldest mismatch" for this case -
+        // i.e. this test exercises the actual enumeration-order hazard, not a scenario the old code handled by accident.
+        Assert.Equal(kroNewcomer, result.MismatchPeer);
+        Assert.Equal(established, result.OldestAgreeingPeer);
+
+        // The pre-fix logic (a plain self-vs-MismatchPeer Generation tie-break) would see iroNewcomer (200) newer than
+        // kroNewcomer (150) and incorrectly fault. The fix must recognise self already agrees with the established silo
+        // (100), which predates the mismatch, so this is not a real conflict.
+        Assert.False(WorldGameplayProfilePeers.IsFaultingConflict(iroNewcomer, result));
+    }
+
+    // The same interleaving from the Kro newcomer's own perspective: it has no older agreeing peer, so its mismatch against
+    // the established silo (which predates it) is a real conflict and it must fault.
+    [Fact]
+    public void MismatchedNewcomer_IsAFaultingConflict_AgainstTheEstablishedSilo()
+    {
+        var endpoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1);
+        var established = SiloAddress.New(endpoint, 100);
+        var kroNewcomer = SiloAddress.New(endpoint, 150);
+        var iroNewcomer = SiloAddress.New(endpoint, 200);
+
+        var cache = new FakeSiloMetadataCache(new Dictionary<SiloAddress, string>
+        {
+            [established] = WorldGameplayProfilePeers.Encode(Iro),
+            [iroNewcomer] = WorldGameplayProfilePeers.Encode(Iro),
+        });
+
+        var result = WorldGameplayProfilePeers.Check(Kro, kroNewcomer, [established, kroNewcomer, iroNewcomer], cache);
+
+        Assert.Equal(established, result.MismatchPeer);
+        Assert.Null(result.OldestAgreeingPeer);
+        Assert.True(WorldGameplayProfilePeers.IsFaultingConflict(kroNewcomer, result));
+    }
+
+    // End-to-end: the matching iRO newcomer's VerifyAsync must complete (never throw) once the conflicting Kro newcomer has
+    // left the picture - simulating the Kro newcomer having faulted on its own check - confirming the fix holds through the
+    // full polling loop, not just the pure Check/IsFaultingConflict helpers.
+    [Fact]
+    public async Task MatchingNewcomer_VerifyAsyncSucceeds_OnceTheMismatchedFellowNewcomerIsGone()
+    {
+        var endpoint = new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1);
+        var established = SiloAddress.New(endpoint, 100);
+        var kroNewcomer = SiloAddress.New(endpoint, 150);
+        var iroNewcomer = SiloAddress.New(endpoint, 200);
+
+        var cache = new FakeSiloMetadataCache(new Dictionary<SiloAddress, string>
+        {
+            [established] = WorldGameplayProfilePeers.Encode(Iro),
+            [kroNewcomer] = WorldGameplayProfilePeers.Encode(Kro),
+        });
+        // The first poll still sees the Kro newcomer active (the race); it is gone from the second poll onward, as if it had
+        // just faulted on its own VerifyAsync and stopped - this is what lets our silo's retry loop converge deterministically.
+        var oracle = new FakeSiloStatusOracle([[established, kroNewcomer, iroNewcomer], [established, iroNewcomer]]);
+        var options = new WorldGameplayProfileOptions(Iro) { PeerMetadataTimeout = TimeSpan.FromSeconds(3) };
+
+        // Must return (agree with the established cluster) rather than throw, which the pre-fix tie-break could do on the
+        // very first poll before the Kro newcomer ever had a chance to disappear.
+        await WorldGameplayProfilePeers.VerifyAsync(options, cache, oracle, iroNewcomer, CancellationToken.None);
+    }
+
+    private sealed class FakeSiloMetadataCache(Dictionary<SiloAddress, string> profiles) : ISiloMetadataCache
+    {
+        // SiloMetadata exposes Metadata as get-only with no public way to populate an instance outside Orleans' own
+        // UseSiloMetadata pipeline; the backing field is set via reflection purely to build this test double.
+        public SiloMetadata GetSiloMetadata(SiloAddress silo)
+        {
+            var metadata = new SiloMetadata();
+            var backingField = typeof(SiloMetadata).GetField("<Metadata>k__BackingField", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            backingField.SetValue(metadata, profiles.TryGetValue(silo, out var value)
+                ? System.Collections.Immutable.ImmutableDictionary<string, string>.Empty.Add(WorldGameplayProfilePeers.MetadataKey, value)
+                : System.Collections.Immutable.ImmutableDictionary<string, string>.Empty);
+            return metadata;
+        }
+    }
+
+    private sealed class FakeSiloStatusOracle : ISiloStatusOracle
+    {
+        private readonly IReadOnlyList<IReadOnlyList<SiloAddress>> _snapshots;
+        private int _poll;
+
+        public FakeSiloStatusOracle(IReadOnlyList<SiloAddress> active) : this([active]) { }
+
+        // A sequence of active-peer snapshots, advancing one step per GetApproximateSiloStatuses call and staying on the
+        // last snapshot once exhausted - lets a test simulate a peer disappearing between polls deterministically (by call
+        // count, not timing).
+        public FakeSiloStatusOracle(IReadOnlyList<IReadOnlyList<SiloAddress>> snapshots) => _snapshots = snapshots;
+
+        private IReadOnlyList<SiloAddress> Active => _snapshots[Math.Min(_poll, _snapshots.Count - 1)];
+        public SiloAddress SiloAddress => Active[0];
+        public SiloStatus CurrentStatus => SiloStatus.Active;
+        public string SiloName => "fake";
+        public Dictionary<SiloAddress, SiloStatus> GetApproximateSiloStatuses(bool onlyActive = false)
+        {
+            var snapshot = Active.ToDictionary(s => s, _ => SiloStatus.Active);
+            _poll++;
+            return snapshot;
+        }
+        public SiloAddress[] GetActiveSilos() => [.. Active];
+        public SiloStatus GetApproximateSiloStatus(SiloAddress siloAddress) => SiloStatus.Active;
+        public bool TryGetSiloName(SiloAddress siloAddress, out string siloName) { siloName = "fake"; return true; }
+        public bool SubscribeToSiloStatusEvents(ISiloStatusListener observer) => true;
+        public bool UnSubscribeFromSiloStatusEvents(ISiloStatusListener observer) => true;
+        public bool IsDeadSilo(SiloAddress silo) => false;
+        public bool IsFunctionalDirectory(SiloAddress siloAddress) => true;
     }
 }
