@@ -22,6 +22,8 @@ public sealed class ItemPipelineDataDrivenFixtureTests
 {
     // Clearly outside the real pinned id space (29,356 rows top out far below this) so it can never collide with a real item.
     private const uint FixtureItemId = 900_001;
+    private const uint HealFixtureItemId = 900_004;
+    private const uint UnsupportedFixtureItemId = 900_005;
     private const uint GrantItemId = 501; // Red_Potion - a real pinned item, so a grant-resolution check downstream (as
                                            // MapClientSession.HandleIroUseItemRequestAsync performs) could resolve it.
 
@@ -58,6 +60,21 @@ public sealed class ItemPipelineDataDrivenFixtureTests
                   Status: Reuse_Limit_A
                 Script: |
                   getitem {GrantItemId},5;
+              - Id: {HealFixtureItemId}
+                AegisName: Test_Fixture_Healing_Draught
+                Name: Test Fixture Healing Draught
+                Type: Healing
+                Script: |
+                  itemheal rand(10,20),5;
+                  percentheal 3,0;
+                  sc_start SC_BLESSING,1000,2;
+              - Id: {UnsupportedFixtureItemId}
+                AegisName: Test_Fixture_Unsupported_Scroll
+                Name: Test Fixture Unsupported Scroll
+                Type: Usable
+                Script: |
+                  itemheal 10,0;
+                  warp "prontera",150,150;
             """);
         // The block-only YAML subset this importer parses has no "Body: []" empty-sequence form, so each otherwise-empty
         // database gets one harmless placeholder Etc item (outside the fixture's own id and every real pinned id range).
@@ -137,6 +154,39 @@ public sealed class ItemPipelineDataDrivenFixtureTests
 
             // Mechanic 3 (this increment): the no_equip bitmask from item_noequip.txt, loaded generically by id, not identity.
             Assert.Equal(1u, item.NoEquip);
+        }
+        finally
+        {
+            Directory.Delete(syntheticRoot, recursive: true);
+        }
+    }
+
+    // The binding data-driven acceptance requirement for item-script EXECUTION: a never-before-seen Healing item declaring
+    // itemheal/percentheal/sc_start, converted by the real importer and round-tripped through the real pack format, plans to the
+    // exact effects the MapServer evaluator (the same source file, linked into this project) dispatches - with no code naming it.
+    // A second unseen item using a command the evaluator does not run gets an actionable diagnostic instead of a partial effect.
+    [Fact]
+    public void FixtureScripts_ExecuteThroughTheGenericEvaluator_OrNameWhatBlocksThem()
+    {
+        var syntheticRoot = BuildSyntheticRoot();
+        try
+        {
+            string ReadFile(string relative) => File.ReadAllText(Path.Combine(syntheticRoot, relative));
+            var reloaded = ItemPackFormat.Read(ItemPackFormat.Write(ItemPackBuilder.Build(ReadFile, Constants(), new string('a', 40)).Pack));
+            PackScript ScriptOf(uint id) => reloaded.Scripts[reloaded.Items.Single(item => item.Id == id).ScriptIndex];
+
+            var rolls = new List<(long, long)>();
+            var plan = ItemScriptEvaluator.Plan(ScriptOf(HealFixtureItemId), (min, max) => { rolls.Add((min, max)); return 17; });
+            Assert.True(plan.Executable, plan.Unsupported);
+            Assert.Equal([(10L, 20L)], rolls);
+            Assert.Equal(
+                [("itemheal", new long[] { 17, 5 }), ("percentheal", [3, 0]), ("sc_start", [30, 1000, 2])],
+                plan.Effects.Select(effect => (effect.Command, effect.Arguments.ToArray())).ToArray());
+
+            var unsupported = ItemScriptEvaluator.Plan(ScriptOf(UnsupportedFixtureItemId), (min, _) => min);
+            Assert.False(unsupported.Executable);
+            Assert.Equal("command:warp owner:OtherSystem", unsupported.Unsupported);
+            Assert.Empty(unsupported.Effects);
         }
         finally
         {
