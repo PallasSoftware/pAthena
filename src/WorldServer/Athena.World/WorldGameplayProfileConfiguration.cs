@@ -82,7 +82,7 @@ public static class WorldGameplayProfilePeers
                 mismatch = $"silo {peer} runs gameplay profile '{value}' but this silo is configured for '{expected}'";
             }
         }
-        return mismatchPeer is null ? new Result(null, pending) : new Result(mismatch, pending, mismatchPeer, oldestAgreeing);
+        return new Result(mismatch, pending, mismatchPeer, oldestAgreeing);
     }
 
     public static async Task VerifyAsync(WorldGameplayProfileOptions options, ISiloMetadataCache cache, ISiloStatusOracle oracle, SiloAddress self, CancellationToken cancellationToken)
@@ -99,18 +99,40 @@ public static class WorldGameplayProfilePeers
                 // the other. "Established" here means: the mismatched peer is older than self, AND self has no other peer it
                 // agrees with that is at least as old as that mismatch (an agreeing peer that old proves self is already in step
                 // with the real, established cluster, so the mismatch is just a concurrently-racing sibling, not a real conflict).
-                if (!IsFaultingConflict(self, result))
+                //
+                // A Pending peer older than the mismatch can still resolve into exactly that missing agreement once its metadata
+                // propagates into the cache (ISiloMetadataCache is itself eventually consistent, not instant) - the established
+                // peer may already be Active in the oracle but not yet cached. While that ambiguity stands, self genuinely does
+                // not yet know whether it is innocent or guilty, so it retries bounded by the deadline like the Pending-timeout
+                // path below.
+                var unresolvedPendingCouldStillAgree = result.Pending.Any(p => p.Generation < result.MismatchPeer!.Generation);
+                if (unresolvedPendingCouldStillAgree)
                 {
                     if (DateTime.UtcNow >= deadline)
                         throw new InvalidOperationException($"World gameplay profile could not be verified: peer {result.MismatchPeer} still mismatched after {options.PeerMetadataTimeout}.");
                     await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
                     continue;
                 }
-                throw new InvalidOperationException($"World gameplay profile mismatch: {result.Mismatch}.");
+                // Self has CURRENT, complete information about this mismatch (no unresolved Pending peer could still flip the
+                // verdict) and IsFaultingConflict has already decided who, if anyone, must fault on it:
+                //  - Self is the offender: throw now: regardless of the Pending-metadata deadline, which is self's OWN grace
+                //    period for ITS OWN unresolved information, not a budget for waiting out somebody else's teardown.
+                //  - Self is confirmed innocent: this specific mismatch is the OTHER silo's problem to resolve (by faulting and
+                //    leaving, or by the membership view catching up) - self must never fault or block on it, and must never
+                //    have its own PeerMetadataTimeout consumed waiting for a peer it has already proven is not its concern.
+                //    Fall through: this mismatch does not stop self; any other peer still goes through the Pending check below.
+                if (IsFaultingConflict(self, result))
+                    throw new InvalidOperationException($"World gameplay profile mismatch: {result.Mismatch}.");
             }
-            if (result.Pending.Count == 0) return;
+            // A peer that never publishes metadata within the timeout is only SELF's problem to fault on when self is the
+            // newer of the two (IsNewerThan - the same yield rule the running monitor already applies below). This is
+            // per-peer: an OldestAgreeingPeer proves self agrees with THAT peer, nothing about any OTHER, unrelated peer still
+            // sitting in Pending - every active peer's metadata must eventually be confirmed, agreement with one peer never
+            // exempts a different one from that requirement.
+            var blockingPending = result.Pending.Where(peer => IsNewerThan(self, peer)).ToList();
+            if (blockingPending.Count == 0) return;
             if (DateTime.UtcNow >= deadline)
-                throw new InvalidOperationException($"World gameplay profile could not be verified: no profile metadata from {string.Join(", ", result.Pending)} within {options.PeerMetadataTimeout}.");
+                throw new InvalidOperationException($"World gameplay profile could not be verified: no profile metadata from {string.Join(", ", blockingPending)} within {options.PeerMetadataTimeout}.");
             await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
         }
     }
@@ -176,7 +198,14 @@ internal sealed class WorldGameplayProfileMonitor(
     {
         var peers = oracle.GetApproximateSiloStatuses(onlyActive: true).Keys;
         var result = WorldGameplayProfilePeers.Check(options.Profile, local.SiloAddress, peers, cache);
-        if (result.Mismatch is not null) return WorldGameplayProfilePeers.IsFaultingConflict(local.SiloAddress, result) ? result.Mismatch : null;
+        if (result.Mismatch is not null)
+        {
+            // Same transient gap as VerifyAsync: a Pending peer older than the mismatch may still resolve into the missing
+            // agreement once its metadata reaches the cache. Treat this tick as inconclusive rather than faulting on it; the
+            // next tick re-checks with (presumably) fresher cache state.
+            if (result.Pending.Any(p => p.Generation < result.MismatchPeer!.Generation)) return null;
+            return WorldGameplayProfilePeers.IsFaultingConflict(local.SiloAddress, result) ? result.Mismatch : null;
+        }
         foreach (var gone in _pendingSince.Keys.Except(result.Pending).ToList()) _pendingSince.Remove(gone);
         foreach (var peer in result.Pending)
         {
