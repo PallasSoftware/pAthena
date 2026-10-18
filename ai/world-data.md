@@ -1451,6 +1451,12 @@ first COLUMN-0 `#`-commented-out line interrupting it — real pinned data has b
 column-0 `#...`-or-blank line without ending the block (the comment/blank lines are still captured,
 but harmless — the entry-matching regexes only match genuine `Name: value`/`- Item:` lines).
 
+The regex scanner described above has since been replaced: `MobDataCompiler` now reads
+`mob_db.yml` with `RathenaYaml` into `YamlMap` blocks (the reader `ItemDatabaseLoader` uses), which
+strips ` #` trailing comments and treats `#` lines as blank structurally. The port is pinned to the
+old scanner's complete 2,675-mob output by `MobDatabaseParserRegressionTests`
+(`tests/WorldDataImporter.Tests/Reference/mob-db-parsed.jsonl.gz`).
+
 Mob definitions are generated once, stateless/deterministic, into the shared global
 `GeneratedMobs` (`internal static partial class`). `generate-mobs` enumerates every effective block
 in pinned `db/re/mob_db.yml`; runtime compatibility never filters source-data generation. Output is

@@ -6,11 +6,12 @@ namespace Athena.WorldCompiler.Generation;
 
 // Compiles pinned rAthena mob_db.yml Id blocks plus the fixed-column
 // "map,x,y monster Name MobId,Count,Delay" declaration format used by
-// npc/re/mobs/*.txt. Neither is a general rAthena mob-DB/script parser: both
-// use a narrow, purpose-built line/block scanner (ScalarRegex and friends)
-// rather than a general YAML library, the same approach ProgressionDataCompiler
-// uses for job_exp.yml/job_basepoints.yml. Despite that narrow PARSING
-// technique, ReadMobDefinition's actual FIELD COVERAGE is intentionally
+// npc/re/mobs/*.txt. mob_db.yml is read with RathenaYaml (the same block-YAML
+// reader ItemDatabaseLoader uses for item_db*.yml) into YamlMap blocks, so a
+// field's presence is explicit (YamlMap.Has/Scalar) rather than inferred from
+// regex matches; the spawn-line format stays a fixed-column regex scanner.
+// The YamlMap port is pinned to the previous scanner's complete output by
+// MobDatabaseParserRegressionTests. ReadMobDefinition's FIELD COVERAGE is intentionally
 // lossless/near-complete for mob_db.yml's documented schema (every meaningful
 // top-level scalar plus the Modes:/RaceGroups:/Drops:/MvpDrops: list-shaped
 // blocks - see ai/world-data.md's "Mob static-data schema coverage" section
@@ -169,6 +170,11 @@ internal static class MobDataCompiler
     // Level=1, Str/Agi/Vit/Int/Dex/Luk=1, WalkSpeed=DEFAULT_WALK_SPEED(150).
     // Hp/BaseExp/JobExp/Attack/Attack2/Defense/MagicDefense/AttackRange/
     // AttackDelay all genuinely default to 0/unset in that same constructor.
+    //
+    // The single-mob lookup only SLICES the requested block out of the text (first exact
+    // "  - Id: <n>" line up to the next one) and parses that slice with RathenaYaml; it does not
+    // re-parse the whole ~3 MB file per call, because RepositoryDomainAnalyzers.AnalyzeMobs calls it
+    // once per pinned mob.
     internal static MobDefinitionData ReadMobDefinition(string mobDbYaml, int mobId)
     {
         var marker = $"  - Id: {mobId.ToString(CultureInfo.InvariantCulture)}\n";
@@ -176,62 +182,48 @@ internal static class MobDataCompiler
         if (start < 0) throw new ArgumentException($"Mob Id {mobId} was not found in the pinned mob_db.yml.");
         var next = mobDbYaml.IndexOf("\n  - Id: ", start + marker.Length, StringComparison.Ordinal);
         var block = next >= 0 ? mobDbYaml[start..(next + 1)] : mobDbYaml[start..];
-        return ParseMobBlock(block, mobId, CountLines(mobDbYaml, start));
+        var node = (RathenaYaml.Parse(block, "mob_db.yml") as YamlSequence)?.Items.FirstOrDefault() as YamlMap
+            ?? throw new ArgumentException($"Mob Id {mobId} block in the pinned mob_db.yml is not a map.");
+        return ParseMobNode(node, CountLines(mobDbYaml, start));
     }
 
-    // Enumerates EVERY "  - Id: <n>" block in the pinned mob_db.yml, in source (file) order - the
-    // source of truth for "generate all pinned mobs" (this task's primary objective), as opposed to
-    // ReadMobDefinition's single-mob lookup used by the pre-existing manually-curated
-    // compile-mob-definitions command. A single forward scan (no repeated IndexOf-from-start per
-    // mob) so this stays linear in file size for 2,675+ real entries.
+    // Enumerates EVERY Body entry of the pinned mob_db.yml, in source (file) order - the source of
+    // truth for "generate all pinned mobs", as opposed to ReadMobDefinition's single-mob lookup used
+    // by the pre-existing manually-curated compile-mob-definitions command. One RathenaYaml parse of
+    // the whole file (the same reader ItemDatabaseLoader uses for item_db*.yml); each Body map's own
+    // line is its "  - Id:" declaration line, i.e. the mob's real provenance line.
     internal static IReadOnlyList<MobDefinitionData> ReadAllMobDefinitions(string mobDbYaml)
     {
-        var results = new List<MobDefinitionData>();
-        const string marker = "\n  - Id: ";
-        var searchFrom = 0;
-        var line = 1; // 1-based line number at `searchFrom`.
-        while (true)
-        {
-            var start = mobDbYaml.IndexOf(marker, searchFrom, StringComparison.Ordinal);
-            if (start < 0) break;
-            for (var i = searchFrom; i < start; i++) if (mobDbYaml[i] == '\n') line++;
-            start += 1; // Skip the leading '\n' shared with the previous block's terminator.
-            line++; // The line the '- Id:' declaration itself starts on.
-            var idStart = start + "  - Id: ".Length;
-            var idEnd = mobDbYaml.IndexOf('\n', idStart);
-            if (idEnd < 0) throw new ArgumentException("Pinned mob_db.yml has a truncated '- Id:' block at the end of the file.");
-            var id = int.Parse(mobDbYaml[idStart..idEnd].Trim(), CultureInfo.InvariantCulture);
-            var next = mobDbYaml.IndexOf(marker, idEnd, StringComparison.Ordinal);
-            var block = next >= 0 ? mobDbYaml[start..(next + 1)] : mobDbYaml[start..];
-            results.Add(ParseMobBlock(block, id, line));
-            searchFrom = idEnd;
-        }
-        return results;
+        var root = RathenaYaml.Parse(mobDbYaml, "mob_db.yml") as YamlMap;
+        if (root?.Get("Body") is not YamlSequence body) return [];
+        return body.Items.OfType<YamlMap>().Select(node => ParseMobNode(node, node.Line)).ToArray();
     }
 
-    private static MobDefinitionData ParseMobBlock(string block, int mobId, int sourceLine)
+    private static MobDefinitionData ParseMobNode(YamlMap node, int sourceLine)
     {
-        var name = RequiredScalar(block, "Name");
+        var mobId = (int)(Long(node, "Id") ?? throw new ArgumentException($"mob_db.yml:{sourceLine}: mob block has no 'Id' field."));
+        var name = Required(node, "Name");
+        var attackMotion = Long(node, "AttackMotion") ?? 0;
 
         return new MobDefinitionData(
             mobId,
-            RequiredScalar(block, "AegisName"),
+            Required(node, "AegisName"),
             name,
-            (int)OptionalInt(block, "Level", 1),
-            (uint)OptionalInt(block, "Hp", 0),
-            (int)OptionalInt(block, "Attack", 0),
-            (int)OptionalInt(block, "Attack2", 0),
-            (int)OptionalInt(block, "Defense", 0),
-            (int)OptionalInt(block, "MagicDefense", 0),
-            (int)OptionalInt(block, "Str", 1),
-            (int)OptionalInt(block, "Agi", 1),
-            (int)OptionalInt(block, "Vit", 1),
-            (int)OptionalInt(block, "Int", 1),
-            (int)OptionalInt(block, "Dex", 1),
-            (int)OptionalInt(block, "Luk", 1),
-            (int)OptionalInt(block, "AttackRange", 0),
-            (int)OptionalInt(block, "WalkSpeed", 150),
-            (int)OptionalInt(block, "AttackDelay", 0),
+            (int)(Long(node, "Level") ?? 1),
+            (uint)(Long(node, "Hp") ?? 0),
+            (int)(Long(node, "Attack") ?? 0),
+            (int)(Long(node, "Attack2") ?? 0),
+            (int)(Long(node, "Defense") ?? 0),
+            (int)(Long(node, "MagicDefense") ?? 0),
+            (int)(Long(node, "Str") ?? 1),
+            (int)(Long(node, "Agi") ?? 1),
+            (int)(Long(node, "Vit") ?? 1),
+            (int)(Long(node, "Int") ?? 1),
+            (int)(Long(node, "Dex") ?? 1),
+            (int)(Long(node, "Luk") ?? 1),
+            (int)(Long(node, "AttackRange") ?? 0),
+            (int)(Long(node, "WalkSpeed") ?? 150),
+            (int)(Long(node, "AttackDelay") ?? 0),
             // AttackMotion (amotion) and DamageMotion (dmotion) are pinned mob_db.yml scalars
             // distinct from AttackDelay (adelay) - amotion is the attacker's attack-animation
             // timing (clif_damage's own srcSpeed for a mob attacker), dmotion is this mob's OWN
@@ -241,41 +233,60 @@ internal static class MobDataCompiler
             // controls attack CADENCE (NextAttackAt), not animation/hit-reaction timing. Same
             // mob.cpp:4946-4963 default-constructor rationale as AttackDelay's own comment: both
             // genuinely default to 0/unset when the pinned block omits them.
-            (int)OptionalInt(block, "AttackMotion", 0),
-            (int)OptionalInt(block, "DamageMotion", 0),
-            OptionalInt(block, "BaseExp", 0),
-            OptionalInt(block, "JobExp", 0),
-            ReadMode(block),
+            (int)attackMotion,
+            (int)(Long(node, "DamageMotion") ?? 0),
+            Long(node, "BaseExp") ?? 0,
+            Long(node, "JobExp") ?? 0,
+            ReadMode(node),
             // Pinned MobDatabase::parseBodyNode (mob.cpp:5028-5040): JapaneseName present -> use it;
             // absent on a mob_id seen for the first time (`!exists`) -> falls back to this SAME
             // block's own resolved Name (mob->jname = mob->name), never left null/blank. This
             // project reads only the base db/re/mob_db.yml with no db/import overlay layering, so
             // every parsed mob is effectively "seen for the first time" - the `exists`-true branch
             // (which would instead leave a PRIOR jname untouched) never applies here.
-            OptionalScalar(block, "JapaneseName") ?? name,
-            (uint)OptionalInt(block, "Sp", 1),
-            OptionalInt(block, "MvpExp", 0),
-            (int)OptionalInt(block, "Resistance", 0),
-            (int)OptionalInt(block, "MagicResistance", 0),
-            (int)OptionalInt(block, "SkillRange", 0),
-            (int)OptionalInt(block, "ChaseRange", 0),
-            ReadSize(block),
-            ReadRace(block),
-            ReadElement(block),
-            (int)OptionalInt(block, "ElementLevel", 1),
+            node.Scalar("JapaneseName") ?? name,
+            (uint)(Long(node, "Sp") ?? 1),
+            Long(node, "MvpExp") ?? 0,
+            (int)(Long(node, "Resistance") ?? 0),
+            (int)(Long(node, "MagicResistance") ?? 0),
+            (int)(Long(node, "SkillRange") ?? 0),
+            (int)(Long(node, "ChaseRange") ?? 0),
+            ReadSize(node),
+            ReadRace(node),
+            ReadElement(node),
+            (int)(Long(node, "ElementLevel") ?? 1),
             // ClientAttackMotion has no fixed default: pinned MobDatabase::parseBodyNode resolves an
             // absent field to THIS SAME mob's own resolved AttackMotion value the first time a mob_id
             // is seen (mob.cpp:5391-5397) - see MobDefinition.ClientAttackMotion's own doc comment.
-            (int)OptionalInt(block, "ClientAttackMotion", OptionalInt(block, "AttackMotion", 0)),
-            (int)OptionalInt(block, "DamageTaken", 100),
-            (int)OptionalInt(block, "GroupId", 0),
-            OptionalScalar(block, "Title"),
-            ReadClass(block),
-            ReadRaceGroups(block),
-            ReadDrops(block, "Drops"),
-            ReadDrops(block, "MvpDrops"),
+            (int)(Long(node, "ClientAttackMotion") ?? attackMotion),
+            (int)(Long(node, "DamageTaken") ?? 100),
+            (int)(Long(node, "GroupId") ?? 0),
+            node.Scalar("Title"),
+            ReadClass(node),
+            ReadRaceGroups(node),
+            ReadDrops(node, "Drops"),
+            ReadDrops(node, "MvpDrops"),
             sourceLine);
     }
+
+    // Presence primitive for every scalar field: null means the key is absent from the block (the
+    // caller applies the documented mob.cpp default), a present value must be an integer. Like the
+    // previous scanner, a malformed integer is a hard FormatException, never a silent default.
+    private static long? Long(YamlMap node, string key) =>
+        node.Scalar(key) is { } text ? long.Parse(text, CultureInfo.InvariantCulture) : null;
+
+    private static string Required(YamlMap node, string key) =>
+        node.Scalar(key) ?? throw new ArgumentException($"Pinned mob_db.yml block has no '{key}' field.");
+
+    // Modes:/RaceGroups: entries are "<Name>: <bool>" pairs, in source order. Only the exact
+    // lowercase "true"/"false" literals are recognized - the previous scanner's entry pattern
+    // matched nothing else, so any other value (none exist in the pinned data) is skipped rather
+    // than reinterpreted.
+    private static IEnumerable<(string Name, bool Value)> BooleanEntries(YamlMap node, string key) =>
+        node.Get(key) is YamlMap map
+            ? map.Entries.Where(entry => (entry.Value as YamlScalar)?.Value is "true" or "false")
+                .Select(entry => (entry.Key, ((YamlScalar)entry.Value).Value == "true"))
+            : [];
 
     internal sealed record GeneratedMobSymbol(MobDefinitionData Mob, string Symbol);
 
@@ -332,18 +343,8 @@ internal static class MobDataCompiler
     // each entry is a bare pinned key name (never re-prefixed/validated against a fixed bound here -
     // see MobRaceGroupEntry's own doc comment for why this project does not hardcode the pinned
     // RC2_* table) paired with its own explicit true/false toggle value, in pinned source order.
-    private static IReadOnlyList<MobRaceGroupEntryData> ReadRaceGroups(string block)
-    {
-        var match = RaceGroupsBlockRegex().Match(block);
-        if (!match.Success) return [];
-        var entries = new List<MobRaceGroupEntryData>();
-        foreach (Match entry in ModeEntryRegex().Matches(match.Groups[1].Value))
-        {
-            var active = string.Equals(entry.Groups["value"].Value, "true", StringComparison.OrdinalIgnoreCase);
-            entries.Add(new MobRaceGroupEntryData(entry.Groups["name"].Value, active));
-        }
-        return entries;
-    }
+    private static IReadOnlyList<MobRaceGroupEntryData> ReadRaceGroups(YamlMap node) =>
+        BooleanEntries(node, "RaceGroups").Select(entry => new MobRaceGroupEntryData(entry.Name, entry.Value)).ToArray();
 
     // Pinned MAX_MOB_DROP/MAX_MVP_DROP (mob.hpp:27/31) - the exact bound MobDatabase::parseDropNode
     // enforces per section (an Index >= max, or an append once the effective list already holds
@@ -366,23 +367,20 @@ internal static class MobDataCompiler
     //   - `Index < count`       -> OVERWRITE the entry already at that slot in place (does not move it)
     //   - `Index > count`       -> skip (a "gap" - pinned source's own explicit `// TODO: warning` case)
     //   - `Index >= max`        -> skip (invalid, out of the section's own bound)
-    private static IReadOnlyList<MobDropEntryData> ReadDrops(string block, string sectionName)
+    private static IReadOnlyList<MobDropEntryData> ReadDrops(YamlMap node, string sectionName)
     {
         var max = sectionName == "MvpDrops" ? MaxMvpDrop : MaxMobDrop;
-        var blockMatch = DropsBlockRegex(sectionName).Match(block);
-        if (!blockMatch.Success) return [];
+        if (node.Get(sectionName) is not YamlSequence section) return [];
         var entries = new List<MobDropEntryData>();
-        foreach (Match entry in DropEntryRegex().Matches(blockMatch.Groups[1].Value))
+        foreach (var entry in section.Items.OfType<YamlMap>().Where(entry => entry.Has("Item")))
         {
-            var item = entry.Groups["item"].Value;
-            var rest = entry.Groups["rest"].Value;
-            var rate = int.Parse(RequiredScalarIn(rest, "Rate"), CultureInfo.InvariantCulture);
-            var stealValue = OptionalScalarIn(rest, "StealProtected");
-            var steal = stealValue is not null && string.Equals(stealValue, "true", StringComparison.OrdinalIgnoreCase);
-            var group = OptionalScalarIn(rest, "RandomOptionGroup");
+            var item = entry.Scalar("Item") ?? throw new ArgumentException($"mob_db.yml:{entry.Line}: drop entry 'Item' is not a scalar.");
+            var rate = int.Parse(entry.Scalar("Rate") ?? throw new ArgumentException("Pinned mob_db.yml drop entry has no 'Rate' field."), CultureInfo.InvariantCulture);
+            var steal = string.Equals(entry.Scalar("StealProtected"), "true", StringComparison.OrdinalIgnoreCase);
+            var group = entry.Scalar("RandomOptionGroup");
             var drop = new MobDropEntryData(item, rate, steal, group);
 
-            var indexValue = OptionalScalarIn(rest, "Index");
+            var indexValue = entry.Scalar("Index");
             if (indexValue is null)
             {
                 if (entries.Count < max) entries.Add(drop); // else: skipped, matching pinned "Maximum of %d monster %s met, skipping.".
@@ -398,30 +396,6 @@ internal static class MobDataCompiler
         return entries;
     }
 
-    // Field lookups scoped to one already-extracted drop-entry's own continuation text (`rest`
-    // above), distinct from block-scoped ScalarRegex (which anchors on 4-space top-level
-    // indentation) - a drop entry's own fields are indented deeper (8 spaces: 6 for the list item
-    // plus 2 more for its own sub-fields).
-    private static readonly Regex DropEntryField = new(@"^\s*(?<field>\w+):\s*(?<value>.+?)\s*$", RegexOptions.Multiline);
-
-    private static string RequiredScalarIn(string text, string field)
-    {
-        foreach (Match match in DropEntryField.Matches(text))
-        {
-            if (string.Equals(match.Groups["field"].Value, field, StringComparison.Ordinal)) return match.Groups["value"].Value;
-        }
-        throw new ArgumentException($"Pinned mob_db.yml drop entry has no '{field}' field.");
-    }
-
-    private static string? OptionalScalarIn(string text, string field)
-    {
-        foreach (Match match in DropEntryField.Matches(text))
-        {
-            if (string.Equals(match.Groups["field"].Value, field, StringComparison.Ordinal)) return match.Groups["value"].Value;
-        }
-        return null;
-    }
-
     // Pinned MobDatabase::parseBodyNode's Size:/Race:/Element:/Class: resolution (mob.cpp:5244-5487):
     // build "<Prefix>_" + the pinned string value, case-insensitively look it up against the fixed
     // pinned constant table (script_get_constant -> search_str uses strcasecmp, matching real data
@@ -429,9 +403,9 @@ internal static class MobDataCompiler
     // unrecognized, or out of the type's valid range - exactly like every other unrecognized-Ai/
     // unrecognized-mode fallback already in this file, never a thrown error for a single bad
     // enum-shaped field.
-    private static MobSizeData ReadSize(string block)
+    private static MobSizeData ReadSize(YamlMap node)
     {
-        var value = OptionalScalar(block, "Size");
+        var value = node.Scalar("Size");
         if (value is null) return MobSizeData.Small;
         return value.Trim() switch
         {
@@ -450,9 +424,9 @@ internal static class MobDataCompiler
         ["Dragon"] = MobRaceData.Dragon, ["Player_Human"] = MobRaceData.PlayerHuman, ["Player_Doram"] = MobRaceData.PlayerDoram,
     };
 
-    private static MobRaceData ReadRace(string block)
+    private static MobRaceData ReadRace(YamlMap node)
     {
-        var value = OptionalScalar(block, "Race");
+        var value = node.Scalar("Race");
         if (value is null) return MobRaceData.Formless;
         return RaceNames.TryGetValue(value.Trim(), out var race) ? race : MobRaceData.Formless;
     }
@@ -465,9 +439,9 @@ internal static class MobDataCompiler
         ["Undead"] = MobElementData.Undead,
     };
 
-    private static MobElementData ReadElement(string block)
+    private static MobElementData ReadElement(YamlMap node)
     {
-        var value = OptionalScalar(block, "Element");
+        var value = node.Scalar("Element");
         if (value is null) return MobElementData.Neutral;
         return ElementNames.TryGetValue(value.Trim(), out var element) ? element : MobElementData.Neutral;
     }
@@ -478,9 +452,9 @@ internal static class MobDataCompiler
         ["Battlefield"] = MobClassData.Battlefield, ["Event"] = MobClassData.Event,
     };
 
-    private static MobClassData ReadClass(string block)
+    private static MobClassData ReadClass(YamlMap node)
     {
-        var value = OptionalScalar(block, "Class");
+        var value = node.Scalar("Class");
         if (value is null) return MobClassData.Normal;
         return ClassNames.TryGetValue(value.Trim(), out var mobClass) ? mobClass : MobClassData.Normal;
     }
@@ -496,28 +470,20 @@ internal static class MobDataCompiler
     // mode NAME (never a valid pinned MD_* name, only a genuinely unknown/future one) is skipped
     // exactly like pinned source's own "Unknown monster mode %s, skipping" invalidWarning path, not
     // silently normalized into an unrelated bit.
-    private static MobModeData ReadMode(string block)
+    private static MobModeData ReadMode(YamlMap node)
     {
         var mode = MobModeData.None;
 
-        var aiMatch = ScalarRegex("Ai").Match(block);
-        if (aiMatch.Success)
+        if (node.Scalar("Ai") is { } ai)
         {
-            var ai = aiMatch.Groups[1].Value.Trim();
             // Unknown Ai defaults to MONSTER_TYPE_06=0, matching pinned invalidWarning fallback.
-            mode = AiPresets.TryGetValue(ai, out var preset) ? (MobModeData)preset : MobModeData.None;
+            mode = AiPresets.TryGetValue(ai.Trim(), out var preset) ? (MobModeData)preset : MobModeData.None;
         }
 
-        var modesMatch = ModesBlockRegex().Match(block);
-        if (modesMatch.Success)
+        foreach (var (name, active) in BooleanEntries(node, "Modes"))
         {
-            foreach (Match entry in ModeEntryRegex().Matches(modesMatch.Groups[1].Value))
-            {
-                var name = entry.Groups["name"].Value;
-                var active = string.Equals(entry.Groups["value"].Value, "true", StringComparison.OrdinalIgnoreCase);
-                if (!ModeBitsByName.TryGetValue(name, out var bit)) continue; // Genuinely unrecognized mode name - pinned source's own "skip" fallback.
-                mode = active ? mode | bit : mode & ~bit;
-            }
+            if (!ModeBitsByName.TryGetValue(name, out var bit)) continue; // Genuinely unrecognized mode name - pinned source's own "skip" fallback.
+            mode = active ? mode | bit : mode & ~bit;
         }
 
         return mode;
@@ -1128,52 +1094,6 @@ internal static class MobDataCompiler
         return line;
     }
 
-    private static string RequiredScalar(string block, string field)
-    {
-        var match = ScalarRegex(field).Match(block);
-        if (!match.Success) throw new ArgumentException($"Pinned mob_db.yml block has no '{field}' field.");
-        return StripTrailingComment(match.Groups[1].Value);
-    }
-
-    // Unlike RequiredScalar, an absent field is a legitimate "use the documented default" case, not
-    // an error - mirrors OptionalInt's own absent-field semantics for string-shaped fields
-    // (JapaneseName, Title, and the Size/Race/Element/Class enum-shaped scalars).
-    private static string? OptionalScalar(string block, string field)
-    {
-        var match = ScalarRegex(field).Match(block);
-        if (!match.Success) return null;
-        var raw = StripTrailingComment(match.Groups[1].Value);
-        // Real pinned Title: values are YAML-double-quoted whenever the string contains characters
-        // the YAML scanner would otherwise treat specially (e.g. "<Red Pepper>" - the angle brackets
-        // require quoting). Size/Race/Element/Class/JapaneseName are always bare unquoted words in
-        // every real pinned occurrence, so this only ever fires for a genuinely quoted scalar - a
-        // one-layer strip of a matching leading/trailing '"' pair, mirroring how a real YAML parser
-        // would unwrap this exact simple case (no embedded-quote escape handling is needed since
-        // rAthena's own values never contain an embedded '"').
-        return raw.Length >= 2 && raw[0] == '"' && raw[^1] == '"' ? raw[1..^1] : raw;
-    }
-
-    // A field entirely absent from the block takes the constructor default
-    // documented at each call site above, not a blanket zero.
-    private static long OptionalInt(string block, string field, long defaultValue)
-    {
-        var match = ScalarRegex(field).Match(block);
-        return match.Success ? long.Parse(StripTrailingComment(match.Groups[1].Value), CultureInfo.InvariantCulture) : defaultValue;
-    }
-
-    // Strips a trailing unquoted YAML end-of-line comment (a '#' preceded by whitespace, per
-    // standard YAML comment syntax) from an already-captured scalar value. Real pinned data:
-    // every `DamageMotion: 1000    # (unknown)` occurrence across db/re/mob_db.yml (48 real mobs,
-    // Ids 22192-22239) - ScalarRegex's own `(.+)$` previously captured the comment text verbatim,
-    // so `long.Parse("1000    # (unknown)")` threw a FormatException and those 48 mobs were
-    // misreported as genuinely unparseable ("mob-definition:format") rather than fully
-    // representable. No real pinned scalar value anywhere in this file contains a quoted '#'
-    // (verified: only these 48 DamageMotion lines have '#' in their raw captured text at all), so
-    // this unconditional strip is safe - it does not special-case DamageMotion, since a future
-    // pinned revision could add the same inline-comment convention to any other field.
-    private static readonly Regex TrailingComment = new(@"\s+#.*$", RegexOptions.None);
-    private static string StripTrailingComment(string raw) => TrailingComment.Replace(raw, string.Empty);
-
     // `event` mirrors pinned sscanf's `%77[^,]` - it stops at the next comma (never containing one
     // itself), so `[^,\t\r\n]+` is a faithful capture whether or not the source line wraps it in
     // literal quotes (the pinned tree's own convention for real death-event labels, verified: every
@@ -1227,44 +1147,4 @@ internal static class MobDataCompiler
     // pinned coverage.
     private static readonly Regex SpawnLine = new(@"^(?<map>[A-Za-z0-9_]+)(?:,(?<x>-?\d+),(?<y>-?\d+)(?:,(?<xs>\d+),(?<ys>\d+))?)?\t+monster\t+(?<spawnname>[^,\t]+)(?:,(?<level>-?\d+))?\t+(?<mobtoken>[^,\t]+),(?<count>\d+)(?:,(?<delay1>\d+)(?:,(?<delay2>\d+)(?:,(?<event>[^,\t\r\n]+)(?:,(?<size>\d+)(?:,(?<ai>\d+))?)?)?)?)?", RegexOptions.None);
     private static Regex SpawnLineRegex() => SpawnLine;
-
-    private static Regex ScalarRegex(string field) => new($@"^    {Regex.Escape(field)}: (.+)$", RegexOptions.Multiline);
-
-    // Captures the raw text of a `    Modes:\n      Name: value\n      ...` block: every
-    // subsequent 6-space-indented line, OR a column-0 `#`-commented-out line, OR a blank line,
-    // stopping at the first line that is none of those (the next top-level `    Field:` entry or
-    // the next `  - Id:` block). The `#`/blank tolerance matters for real pinned data: e.g.
-    // `db/re/mob_db.yml` has 14 real mobs whose `Modes:` block is interrupted by a column-0 `#...`
-    // comment line partway through - an earlier version of this regex (6-space-indent-only) treated
-    // that comment as ending the block, silently truncating every mode entry AFTER it. The comment/
-    // blank lines are captured but harmless - ModeEntryRegex below only matches genuine
-    // `Name: true/false` lines, so a captured `#...` line is simply never matched as an entry.
-    private static readonly Regex ModesBlock = new(@"^    Modes:\n((?:(?:      .+|#.*|)\n?)*)", RegexOptions.Multiline);
-    private static Regex ModesBlockRegex() => ModesBlock;
-
-    private static readonly Regex ModeEntry = new(@"^\s*(?<name>\w+):\s*(?<value>true|false)\s*$", RegexOptions.Multiline);
-    private static Regex ModeEntryRegex() => ModeEntry;
-
-    // Same shape/tolerance as ModesBlock (see that field's own doc comment for the real-data
-    // rationale) - pinned RaceGroups: entries use the identical `<Name>: <bool>` shape as Modes:
-    // entries, so ModeEntryRegex is reused directly rather than duplicating an identical pattern.
-    private static readonly Regex RaceGroupsBlock = new(@"^    RaceGroups:\n((?:(?:      .+|#.*|)\n?)*)", RegexOptions.Multiline);
-    private static Regex RaceGroupsBlockRegex() => RaceGroupsBlock;
-
-    // Captures the raw text of a `    <sectionName>:\n      - Item: ...\n        Rate: ...\n      - ...`
-    // list block: every subsequent 6-space-indented line (each entry's `- Item:` line and its own
-    // further-indented `Rate:`/`StealProtected:`/`RandomOptionGroup:`/`Index:` continuation lines
-    // all satisfy this depth), OR a column-0 `#`-commented-out line, OR a blank line - same
-    // real-data rationale as ModesBlock above (e.g. the REAL pinned Poring/1002 `Drops:` block has
-    // a column-0 `#       RandomOptionGroup: 30L` comment between its `Knife_` and `Sticky_Mucus`
-    // entries at db/re/mob_db.yml:171 - an earlier indent-only version of this regex silently
-    // truncated Poring's drop table down to 2 of its real 8 entries).
-    private static Regex DropsBlockRegex(string sectionName) => new($@"^    {Regex.Escape(sectionName)}:\n((?:(?:      .+|#.*|)\n?)*)", RegexOptions.Multiline);
-
-    // One `- Item: <name>` entry followed by its own optional indented Rate:/StealProtected:/
-    // RandomOptionGroup: fields, up to the next `- Item:` entry or the end of the captured block.
-    private static readonly Regex DropEntry = new(
-        @"^\s*-\s*Item:\s*(?<item>\S+)\s*\n(?<rest>(?:(?!\s*-\s*Item:).*\n?)*)",
-        RegexOptions.Multiline);
-    private static Regex DropEntryRegex() => DropEntry;
 }
