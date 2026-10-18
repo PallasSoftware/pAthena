@@ -12,6 +12,8 @@
     <Compile Include="../../src/MapServer/World/AthenaMapPackFormat.cs" Link="Compiler/AthenaMapPackFormat.cs" />
     <Compile Include="../../src/MapServer/World/GeneratedPackHeader.cs" Link="Compiler/GeneratedPackHeader.cs" />
     <Compile Include="../../src/MapServer/World/Items/ItemPackFormat.cs" Link="Compiler/ItemPackFormat.cs" />
+    <Compile Include="../../src/MapServer/World/MobData.cs" Link="Compiler/MobData.cs" />
+    <Compile Include="../../src/MapServer/World/MobPackFormat.cs" Link="Compiler/MobPackFormat.cs" />
     <Compile Include="../../src/MapServer/World/Items/ItemScriptIr.cs" Link="Compiler/ItemScriptIr.cs" />
   </ItemGroup>
   <ItemGroup>

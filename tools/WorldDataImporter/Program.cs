@@ -442,6 +442,10 @@ internal static partial class WorldDataImporterCli
         var sourceFile = CanonicalSourceFile(sourcePath);
         var definitions = MobDataCompiler.ReadAllMobDefinitions(await File.ReadAllTextAsync(sourcePath), ReadCustomLayers(options.Optional("custom-mobs")));
         var symbols = MobDataCompiler.CreateGeneratedSymbols(definitions);
+        var pack = new Athena.Net.MapServer.World.MobPack(commit, symbols.Select(item => MobDataCompiler.ToMobDefinition(item.Mob, commit, sourceFile)).ToArray());
+        var packPath = Path.GetFullPath(options.Required("pack"));
+        Directory.CreateDirectory(Path.GetDirectoryName(packPath)!);
+        await File.WriteAllBytesAsync(packPath, Athena.Net.MapServer.World.MobPackFormat.Write(pack));
 
         Directory.CreateDirectory(outputDir);
         foreach (var path in Directory.EnumerateFiles(outputDir, "*.cs").Where(path => MobDataCompiler.IsOwnedGeneratedMobFile(path, ClassName, Category)))
@@ -1104,7 +1108,7 @@ internal static partial class WorldDataImporterCli
         Console.Error.WriteLine("WorldDataImporter compile-actors --source-root <folder> --rathena-commit <sha> --output <Actors.cs> --source-file <path> --map <map> --name <name> [--name <name>]");
         Console.Error.WriteLine("WorldDataImporter compile-navigation --source-root <folder> --output <Navigation.cs> --name <name> [--name <name>] [--namespace <ns>]");
         Console.Error.WriteLine("WorldDataImporter compile-character-data --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated directory>");
-        Console.Error.WriteLine("WorldDataImporter generate-mobs --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/GameData/Mobs directory> [--custom-mobs <data/custom/mobs>]");
+        Console.Error.WriteLine("WorldDataImporter generate-mobs --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/GameData/Mobs directory> --pack <MapServer/Generated/Assets/Mobs/AthenaMobs.bin> [--custom-mobs <data/custom/mobs>]");
         Console.Error.WriteLine("WorldDataImporter compile-progression --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated/Progression directory> (compatibility alias)");
         Console.Error.WriteLine("WorldDataImporter compile-mob-spawn --rathena-root <folder> --rathena-commit <sha> --mob-id <id> --name <spawn-name> --spawn-file <path> [--exclude-map <map>] --class-name <n> --constant-name <n> --spawn-class-name <n> --spawn-array-name <n> --output-definition <Mob.cs> --output-spawns <MobSpawns.cs>");
         Console.Error.WriteLine("WorldDataImporter generate-mob-spawns --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/World directory> [--custom-mobs <data/custom/mobs>]");
