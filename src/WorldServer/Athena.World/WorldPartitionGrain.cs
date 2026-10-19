@@ -43,6 +43,12 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     // for as long as any player remains registered on that map, since unloading it would force a
     // spurious resync (fresh epoch) on every currently-connected observer for no reason.
     private readonly Dictionary<string, WorldPlayerMapSimulation> _playerSimulations = new(StringComparer.OrdinalIgnoreCase);
+    // Feature 16 S2/S3: one WorldGroundItemMapSimulation per map, created lazily on first touch -
+    // same "never pre-materialize state for a map nobody has touched" convention as the two
+    // dictionaries above. Deliberately never unloaded by the touched-window policy (see that type's
+    // own doc comment for why): a map with zero current players can still legitimately hold a ground
+    // item nobody has picked up yet.
+    private readonly Dictionary<string, WorldGroundItemMapSimulation> _groundItemSimulations = new(StringComparer.OrdinalIgnoreCase);
     private Orleans.Runtime.IGrainTimer? _monsterTickTimer;
     private DateTimeOffset? _lastMonsterTickAt;
     private string PartitionId => this.GetPrimaryKeyString();
@@ -95,6 +101,14 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (_playerSimulations.TryGetValue(mapId, out var simulation)) return simulation;
         simulation = new WorldPlayerMapSimulation(mapId);
         _playerSimulations[mapId] = simulation;
+        return simulation;
+    }
+
+    private WorldGroundItemMapSimulation GroundItemSimulation(string mapId)
+    {
+        if (_groundItemSimulations.TryGetValue(mapId, out var simulation)) return simulation;
+        simulation = new WorldGroundItemMapSimulation(mapId, timeProvider);
+        _groundItemSimulations[mapId] = simulation;
         return simulation;
     }
 
@@ -772,6 +786,45 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (current.PresenceId != update.PresenceId) return Task.FromResult(new WorldPresenceLifeStateResult(WorldPresenceLifeStateStatus.StalePresence));
         Map(current.MapId).Players[current.CharacterId] = current with { IsAlive = update.IsAlive };
         return Task.FromResult(new WorldPresenceLifeStateResult(WorldPresenceLifeStateStatus.Updated));
+    }
+
+    // Feature 16 S2/S3: ground-item lifecycle RPCs. See WorldGroundItemMapSimulation's own doc
+    // comment for the claim-before-grant exclusivity mechanism these thin wrappers expose; none of
+    // these methods await anything, so each one is a single uninterruptible grain turn exactly like
+    // ApplyMonsterDamageAsync above - two concurrent ClaimGroundItemAsync calls for the same item
+    // can never interleave.
+    public Task<WorldGroundItemDropResult> DropGroundItemAsync(WorldGroundItemDrop drop)
+    {
+        var mapId = RequireOwnedMap(drop.MapId);
+        var result = GroundItemSimulation(mapId).Drop(drop with { MapId = mapId });
+        return Task.FromResult(result);
+    }
+
+    public Task<WorldGroundItemClaimResult> ClaimGroundItemAsync(WorldGroundItemClaim claim)
+    {
+        var mapId = RequireOwnedMap(claim.Item.MapId);
+        var simulation = GroundItemSimulation(mapId);
+        if (!claim.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemClaimResult(WorldGroundItemClaimStatus.StaleEpoch, null));
+        return Task.FromResult(simulation.Claim(claim));
+    }
+
+    public Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference)
+    {
+        var mapId = RequireOwnedMap(reference.Item.MapId);
+        return Task.FromResult(GroundItemSimulation(mapId).Complete(reference));
+    }
+
+    public Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference)
+    {
+        var mapId = RequireOwnedMap(reference.Item.MapId);
+        return Task.FromResult(GroundItemSimulation(mapId).Release(reference));
+    }
+
+    public Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId)
+    {
+        mapId = RequireOwnedMap(mapId);
+        return Task.FromResult(GroundItemSimulation(mapId).BuildSnapshot());
     }
 
     private string RequireOwnedMap(string mapId)

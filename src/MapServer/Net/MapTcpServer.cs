@@ -276,6 +276,11 @@ public sealed class MapTcpServer
         }
         public Task<WorldMonsterAttackPublishResult> PublishMonsterAttackActionAsync(WorldMonsterAttackActionCommand command, CancellationToken cancellationToken) =>
             throw new NotSupportedException("InMemoryTestWorldRuntime does not implement monster-authority RPCs - use a real Orleans TestCluster with OrleansWorldRuntime for tests that need monster behavior.");
+
+        // Ground-item RPCs: default-implemented (NotSupported) on IWorldRuntime itself - see that
+        // interface's own doc comment. Same rationale as the monster-authority RPCs above (claim
+        // exclusivity depends on WorldGroundItemMapSimulation's real grain-turn serialization, which
+        // this in-memory stand-in deliberately never reimplements) - no override needed here.
     }
 
     public int BoundPort { get; private set; }

@@ -86,11 +86,17 @@ public sealed class CharacterInventoryService
         get { lock (_inDoubt) return [.. _inDoubt.Keys]; }
     }
 
-    /// <summary>Plans and applies one durable change. <paramref name="plan"/> sees the current snapshot and returns the mutations, or null to decline.</summary>
+    /// <summary>
+    /// Plans and applies one durable change. <paramref name="plan"/> sees the current snapshot and returns the mutations, or null to decline.
+    /// <paramref name="operationId"/> defaults to a fresh id; a caller with its OWN external idempotency key (e.g. a ground-item pickup claim -
+    /// see ClaimGroundItemAsync) supplies a deterministic one so a retry of the same logical attempt replays through CharServer's operation
+    /// log instead of risking a duplicate grant, exactly like this service's own internal retry/InDoubt handling already does for OperationId.
+    /// </summary>
     public async Task<InventoryChange> ExecuteAsync(
         InventoryOperationKind kind,
         Func<CharacterInventorySnapshot, IReadOnlyList<InventoryMutation>?> plan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? operationId = null)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -101,7 +107,7 @@ public sealed class CharacterInventoryService
             var mutations = plan(Snapshot);
             if (mutations is null || mutations.Count == 0) return new(InventoryChangeStatus.Rejected, Snapshot, [], Guid.Empty);
 
-            var request = new InventoryOperationRequest(_accountId, _charId, Guid.NewGuid(), kind, mutations);
+            var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations);
             return await SendAsync(request, cancellationToken);
         }
         finally { _gate.Release(); }
@@ -110,15 +116,16 @@ public sealed class CharacterInventoryService
     /// <summary>
     /// Grants several items in ONE durable operation (all or nothing). The regional pc_additem rules decide each unit against the capacity and
     /// weight limits current at planning time; when one does not fit, nothing is sent and <see cref="InventoryChange.Failure"/> carries its code.
+    /// <paramref name="operationId"/>: see <see cref="ExecuteAsync"/>'s own doc comment.
     /// </summary>
-    public async Task<InventoryChange> GrantAsync(IReadOnlyList<InventoryPlanner.GrantRequest> grants, InventoryOperationKind kind, CancellationToken cancellationToken)
+    public async Task<InventoryChange> GrantAsync(IReadOnlyList<InventoryPlanner.GrantRequest> grants, InventoryOperationKind kind, CancellationToken cancellationToken, Guid? operationId = null)
     {
         InventoryPlanner.GrantPlan? plan = null;
         var change = await ExecuteAsync(kind, inventory =>
         {
             plan = InventoryPlanner.PlanGrants(_rules, inventory, _limits(), _items, grants);
             return plan.Mutations;
-        }, cancellationToken);
+        }, cancellationToken, operationId);
         return plan is { Succeeded: false } ? change with { Failure = plan.Result } : change;
     }
 

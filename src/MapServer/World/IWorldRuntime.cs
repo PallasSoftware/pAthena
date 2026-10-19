@@ -62,4 +62,21 @@ public interface IWorldRuntime
     // Item 14 §6 "Monster -> player" cross-replica projection publish - see
     // WorldMonsterAttackActionCommand's own doc comment.
     Task<WorldMonsterAttackPublishResult> PublishMonsterAttackActionAsync(WorldMonsterAttackActionCommand command, CancellationToken cancellationToken);
+
+    // Feature 16 S2/S3: the World-authoritative ground-item lifecycle - see IWorldPartitionGrain's
+    // own doc comment for the full claim-before-grant contract. Default-implemented (NotSupported)
+    // exactly like the member defaults above, so the many existing narrow test doubles that
+    // implement IWorldRuntime for player-presence/movement/monster-combat scenarios only (and never
+    // exercise ground items) do not all need a mechanical per-file override - a test that genuinely
+    // needs ground-item behavior overrides these explicitly (see GroundItem test fixtures).
+    Task<WorldGroundItemDropResult> DropGroundItemAsync(WorldGroundItemDrop drop, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
+    Task<WorldGroundItemClaimResult> ClaimGroundItemAsync(WorldGroundItemClaim claim, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
+    Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
+    Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
+    Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
 }
