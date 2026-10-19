@@ -40,7 +40,11 @@ public static class ItemScriptEvaluator
 {
     private sealed class UnsupportedException(string reason) : Exception(reason);
 
-    private sealed record Handler(int Arguments, Func<long[], string?> Validate, Func<IItemEffectHost, long[], CancellationToken, Task> Run);
+    // Run is null for a grant: its items are created in the same durable operation that consumes the used item, not afterwards.
+    private sealed record Handler(int MinArguments, int MaxArguments, Func<long[], string?> Validate, Func<IItemEffectHost, long[], CancellationToken, Task>? Run)
+    {
+        public Handler(int arguments, Func<long[], string?> validate, Func<IItemEffectHost, long[], CancellationToken, Task>? run) : this(arguments, arguments, validate, run) { }
+    }
 
     private static string? NonNegative(long[] a) => a.Any(v => v < 0 || v > int.MaxValue) ? "negative-or-out-of-range-amount" : null;
 
@@ -67,8 +71,14 @@ public static class ItemScriptEvaluator
         ["sc_end"] = new(1, a => a[0] is < 0 or > ushort.MaxValue ? "status-id-out-of-range" : null, (host, a, ct) => host.EndStatusAsync((ushort)a[0], ct)),
         // Presentation only (clif_specialeffect -> 0x01F3): no server state. Protocol-pending-capture, exactly like the NPC host's
         // SpecialEffectAsync - nothing is fabricated on the wire without a stock-iRO capture.
-        ["specialeffect2"] = new(-1, _ => null, (_, _, _) => Task.CompletedTask),
+        ["specialeffect2"] = new(0, int.MaxValue, _ => null, (_, _, _) => Task.CompletedTask),
+        // script.cpp BUILDIN_FUNC(getitem) id,amount: a non-positive amount gives nothing (it is still a successful command).
+        ["getitem"] = new(2, a => a[0] is <= 0 or > int.MaxValue ? "item-id-out-of-range" : a[1] > ushort.MaxValue ? "amount-out-of-range" : null, null),
+        // script.cpp:23225-23243 BUILDIN_FUNC(getgroupitem) group_id{,identify} -> ItemGroupDatabase::pc_get_itemgroup.
+        ["getgroupitem"] = new(1, 2, a => a[0] is < 0 or > ushort.MaxValue ? "group-id-out-of-range" : null, null),
     };
+
+    public static bool IsGrant(ItemEffect effect) => Handlers[effect.Command].Run is null;
 
     public static IReadOnlyCollection<string> SupportedCommands => Handlers.Keys;
 
@@ -95,7 +105,7 @@ public static class ItemScriptEvaluator
     {
         if (!plan.Executable) throw new InvalidOperationException($"Item script is not executable: {plan.Unsupported}");
         foreach (var effect in plan.Effects)
-            await Handlers[effect.Command].Run(host, [.. effect.Arguments], cancellationToken);
+            if (Handlers[effect.Command].Run is { } run) await run(host, [.. effect.Arguments], cancellationToken);
     }
 
     private static void Statement(IrNode node, List<ItemEffect> effects, Func<long, long, long> random)
@@ -105,11 +115,15 @@ public static class ItemScriptEvaluator
             case IrKind.Block:
                 foreach (var child in node.Items) Statement(child, effects, random);
                 return;
+            // A function called as a statement (`getgroupitem(IG_BlueBox);`) runs exactly like its command spelling; its value is unused.
+            case IrKind.ExprStmt when node.Items is [{ Kind: IrKind.Call } call] && Handlers.ContainsKey(call.Text!):
+                Statement(call with { Kind = IrKind.Command }, effects, random);
+                return;
             case IrKind.Command:
                 var name = node.Text!;
                 if (!Handlers.TryGetValue(name, out var handler))
                     throw new UnsupportedException($"command:{name} owner:{ItemScriptCatalog.OwnerOf(name)}");
-                if (handler.Arguments >= 0 && node.Items.Count != handler.Arguments)
+                if (node.Items.Count < handler.MinArguments || node.Items.Count > handler.MaxArguments)
                     throw new UnsupportedException($"command:{name} arguments:{node.Items.Count}");
                 var arguments = node.Items.Select(argument => Expression(argument, random)).ToArray();
                 if (handler.Validate(arguments) is { } invalid) throw new UnsupportedException($"command:{name} {invalid}");

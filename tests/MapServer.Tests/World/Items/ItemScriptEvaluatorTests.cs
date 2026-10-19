@@ -174,6 +174,6 @@ public sealed class ItemScriptEvaluatorTests
 
         Assert.All(plans, plan => Assert.True(plan.Executable || !string.IsNullOrWhiteSpace(plan.Unsupported)));
         Assert.All(plans.Where(plan => plan.Executable), plan => Assert.NotEmpty(plan.Effects));
-        Assert.Equal(795, plans.Count(plan => plan.Executable));
+        Assert.Equal(4774, plans.Count(plan => plan.Executable));
     }
 }

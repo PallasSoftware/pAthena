@@ -15,12 +15,14 @@ public sealed class ItemCatalog
     public string RathenaCommit { get; }
     public FrozenDictionary<int, ItemDefinition> ById { get; }
     public IReadOnlyList<PackScript> Scripts { get; }
+    public FrozenDictionary<uint, PackItemGroup> Groups { get; }
 
-    private ItemCatalog(string commit, FrozenDictionary<int, ItemDefinition> byId, IReadOnlyList<PackScript> scripts)
+    private ItemCatalog(string commit, FrozenDictionary<int, ItemDefinition> byId, IReadOnlyList<PackScript> scripts, FrozenDictionary<uint, PackItemGroup> groups)
     {
         RathenaCommit = commit;
         ById = byId;
         Scripts = scripts;
+        Groups = groups;
     }
 
     public static ItemCatalog Open(string path) => Create(ItemPackFormat.Read(File.ReadAllBytes(path)));
@@ -29,7 +31,7 @@ public sealed class ItemCatalog
     {
         var definitions = new Dictionary<int, ItemDefinition>(pack.Items.Count);
         foreach (var item in pack.Items) definitions.Add((int)item.Id, Build(item, pack));
-        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts);
+        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts, pack.Groups.ToFrozenDictionary(group => group.GroupId));
     }
 
     private static ItemDefinition Build(PackItem item, ItemPack pack)

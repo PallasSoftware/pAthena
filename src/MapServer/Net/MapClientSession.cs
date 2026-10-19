@@ -3678,9 +3678,31 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
         // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
         // destroyed the box and delivered only some of the contents.)
-        var grants = itemDefinition is UsableItemDefinition { Grants: { Count: > 0 } containerGrants }
-            ? containerGrants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray()
-            : [];
+        InventoryPlanner.GrantRequest[] grants;
+        if (itemDefinition is UsableItemDefinition { Grants: { Count: > 0 } containerGrants })
+        {
+            grants = containerGrants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
+        }
+        else if (scriptPlan is not null && scriptPlan.Effects.Any(Athena.Net.MapServer.World.Items.ItemScriptEvaluator.IsGrant))
+        {
+            // getitem/getgroupitem must grant in the SAME durable operation as the consume (ItemGrantResolver's own contract):
+            // either the used item is gone and every grant exists, or nothing changed - never a consumed item with a partial grant.
+            var grantEffects = scriptPlan.Effects.Where(Athena.Net.MapServer.World.Items.ItemScriptEvaluator.IsGrant);
+            var resolved = Athena.Net.MapServer.World.Items.ItemGrantResolver.Resolve(
+                grantEffects, GeneratedItems.ById, Athena.Net.MapServer.World.Items.ItemCatalog.Current.Groups,
+                Athena.Net.MapServer.World.Items.ItemGroupPools.Shared, _rules.Inventory, _charId,
+                (uint)_timeProvider.GetUtcNow().ToUnixTimeSeconds(), (min, max) => Random.Shared.NextInt64(min, max + 1));
+            if (resolved.Unsupported is not null)
+            {
+                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} grant unresolvable ({resolved.Unsupported}).");
+                return;
+            }
+            grants = [.. resolved.Grants];
+        }
+        else
+        {
+            grants = [];
+        }
         var use = _inventoryService is null ? null : await _inventoryService.ConsumeAndGrantAsync(row.DurableId, 1, grants, InventoryOperationKind.Use, cancellationToken);
         if (use is not { Succeeded: true })
         {

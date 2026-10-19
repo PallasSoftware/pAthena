@@ -147,6 +147,41 @@ public sealed class MapClientSessionUseItemTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // Blue_Potion_B_10 (9539, Type: Healing): `getitem 11572,10;` - a getitem-only script, run through the GENERIC
+    // ItemScriptEvaluator path (it is not a UsableItemDefinition.Grants container), proving ItemGrantResolver's getitem
+    // output reaches the SAME one-durable-operation consume+grant path as a container (architecture decision 1).
+    [Fact]
+    public async Task UseGetItemScriptItem_ConsumesOneRow_GrantsScriptedItem_SendsCorrectAck()
+    {
+        var (client, stream, session, run, persistence) = await SetupAsync(Holding(9539, amount: 3));
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(2, AccountId)); // clientIndex 2 -> slotIndex 0 -> Blue_Potion_B_10
+
+        var ack = await ReadExact(stream, 15);
+        Assert.Equal((short)0x01c8, BinaryPrimitives.ReadInt16LittleEndian(ack));
+        Assert.Equal((ushort)2, BinaryPrimitives.ReadUInt16LittleEndian(ack.AsSpan(2)));
+        Assert.Equal(AccountId, BinaryPrimitives.ReadUInt32LittleEndian(ack.AsSpan(8)));
+        Assert.Equal((ushort)2, BinaryPrimitives.ReadUInt16LittleEndian(ack.AsSpan(12))); // 3 - 1 remaining
+        Assert.Equal((byte)1, ack[14]);
+
+        var pickup = await ReadExact(stream, PacketConstants.ZcItemPickupAckLength);
+        Assert.Equal((short)PacketConstants.ZcItemPickupAck, BinaryPrimitives.ReadInt16LittleEndian(pickup));
+        Assert.Equal((ushort)10, BinaryPrimitives.ReadUInt16LittleEndian(pickup.AsSpan(4)));
+        Assert.Equal(11572u, BinaryPrimitives.ReadUInt32LittleEndian(pickup.AsSpan(6)));
+
+        // ONE durable operation: the consume and the scripted grant persist together.
+        var operation = Assert.Single(persistence.Applied);
+        var consume = Assert.IsType<RemoveFromRowMutation>(operation.Mutations[0]);
+        Assert.Equal((1u, 1u), (consume.DurableId, consume.Amount));
+        var added = Assert.Single(operation.Mutations.OfType<AddNewRowMutation>());
+        Assert.Equal(11572u, added.Row.ItemId);
+        Assert.Equal(10u, added.Row.Amount);
+
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task UseFirstAidBox_RowDeleted_RuntimeSnapshotImmediatelyReflectsRemovalAndGrants()
     {
