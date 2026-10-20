@@ -139,6 +139,31 @@ public sealed class MapClientSessionEquipmentMutationTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // S4 equipment eligibility (pinned pc_isequip, pc.cpp:1882-1883): a real generated item (1101
+    // Sword, EquipLevelMin: 2) requested by a character below that level must be rejected with the
+    // FailLevel ack (0x0999 result byte 1), never persisted - proven through the REAL 0x0998 wire
+    // path, not just the service layer (CharacterEquipmentMutationServiceTests already covers that).
+    [Fact]
+    public async Task EquipRealItemBelowItsEquipLevelMin_SendsFailLevelAck_NeverPersists()
+    {
+        const int sword = 1101; // EquipLevelMin: 2, pinned db/re/item_db_equip.yml.
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, sword, 1, 0, true, 0, 0, 0)]);
+        var (client, stream, session, run, persistence) = await SetupAsync(initial); // BaseLevel=1 in this fixture's own gameplay state.
+        using var _ = client;
+
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000002));
+
+        var ack = await ReadExact(stream, 11);
+        Assert.Equal((short)0x0999, BinaryPrimitives.ReadInt16LittleEndian(ack));
+        Assert.Equal(PacketConstants.EquipAckResultFailLevel, ack[10]);
+
+        Assert.Empty(persistence.EquipUpdates);
+        Assert.Null(session.Equipment!.RightHandItemId);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task UnequipAlreadyUnequippedItem_SendsFailureAckWithoutMutatingState()
     {

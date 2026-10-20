@@ -4034,9 +4034,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_inventory is not { } inventory || request.ClientIndex < 2) return;
         var slotIndex = (uint)(request.ClientIndex - 2);
 
-        if (_inventoryService is null) return;
+        if (_inventoryService is null || _gameplayState is not { } gameplayState) return;
         var service = new CharacterEquipmentMutationService(_inventoryService);
-        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, cancellationToken);
+        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, gameplayState.State.BaseLevel, _sex, cancellationToken);
         if (outcome is not { } equipOutcome) return; // invalid slot/index - pc_equipitem sends no ack either (clif.cpp:12154-12156 early-out)
 
         var result = equipOutcome.Result switch

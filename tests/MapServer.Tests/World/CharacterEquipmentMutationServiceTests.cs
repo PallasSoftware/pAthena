@@ -2,6 +2,7 @@ using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.MapServer.World.Items;
 using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.World;
@@ -40,7 +41,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var (operations, _, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0, true, 0, 0, 0)]));
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
         Assert.Equal(0x000002u, outcome.Value.WearLocation);
@@ -54,7 +55,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var (operations, _, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]));
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
         Assert.Null(updated);
@@ -67,7 +68,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         // Armor's EquipLocation is EQP_ARMOR (0x10); requesting EQP_HAND_R (0x2) should fail.
         var (operations, _, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2301, 1, 0, true, 0, 0, 0)]));
 
-        var (outcome, _) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, _) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
         Assert.Empty(operations.Requests);
@@ -78,7 +79,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var (_, _, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 6008, 1, 0, true, 0, 0, 0)]));
 
-        var (outcome, _) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, _) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
     }
@@ -88,7 +89,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var (_, _, service) = Setup(new([]));
 
-        var (outcome, updated) = await service.EquipAsync(5, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(5, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Null(outcome);
         Assert.Null(updated);
@@ -104,7 +105,7 @@ public sealed class CharacterEquipmentMutationServiceTests
             new CharacterInventoryItem(DurableId: 2, SlotIndex: 1, 1201, 1, 0, true, 0, 0, 0),
         ]));
 
-        var (outcome, updated) = await service.EquipAsync(1, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(1, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
         Assert.Equal(0u, updated!.Items[0].Equip); // old slot unequipped
@@ -120,7 +121,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         var (operations, inventory, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0, true, 0, 0, 0)]));
         operations.DropRequests = 10; // CharServer never answers
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
         Assert.Null(updated);
@@ -134,7 +135,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         var (operations, inventory, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0, true, 0, 0, 0)]));
         operations.LoseAnswers = 1; // the equip IS durable, but its answer is lost
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
         Assert.Equal(0x000002u, updated!.Items[0].Equip);
@@ -154,7 +155,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         await other.ExecuteAsync(Athena.Net.Shared.Inventory.InventoryOperationKind.Update, snapshot =>
             [new Athena.Net.Shared.Inventory.UpdateRowMutation(Athena.Net.Shared.Inventory.InventoryContainer.Inventory, 1, 0, snapshot.Items[0].ToRow() with { Favorite = 1 })], CancellationToken.None);
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
         Assert.Null(updated);
@@ -183,7 +184,7 @@ public sealed class CharacterEquipmentMutationServiceTests
         var (_, inventory, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2301, 1, 0, true, 0, 0, 0)]));
 
         Assert.True(Rules.Stats.TryResolveEquipment(inventory.Snapshot, Items, out var before));
-        var (_, equipped) = await service.EquipAsync(0, requestedPosition: 0x000010, Items, CancellationToken.None);
+        var (_, equipped) = await service.EquipAsync(0, requestedPosition: 0x000010, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
         Assert.True(Rules.Stats.TryResolveEquipment(equipped!, Items, out var wearing));
         var (_, unequipped) = await service.UnequipAsync(0, CancellationToken.None);
         Assert.True(Rules.Stats.TryResolveEquipment(unequipped!, Items, out var after));
@@ -226,5 +227,79 @@ public sealed class CharacterEquipmentMutationServiceTests
         Assert.False(outcome!.Value.Success);
         Assert.Null(updated);
         Assert.Equal(0x000002u, inventory.Snapshot.Items[0].Equip);
+    }
+
+    // ===== S4 equipment eligibility (pinned pc_isequip, pc.cpp:1850-1908) - real generated items,
+    // never hand-built ItemMetadata, so a pack-format/loader regression would also be caught here. =====
+
+    private static readonly IReadOnlyDictionary<int, ItemDefinition> RealItems = ItemCatalog.Current.ById;
+    private const int Sword = 1101; // EquipLevelMin: 2, pinned db/re/item_db_equip.yml.
+    private const int SinisterViollin = 1900; // Gender: Male, EquipLevelMin: 160, pinned db/re/item_db_equip.yml.
+
+    [Fact]
+    public async Task EquipAsync_BelowEquipLevelMin_ReturnsFailLevel_NeverPersists()
+    {
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]);
+        var operations = new InMemoryInventoryOperations(initial);
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, initial));
+
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 1, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.FailLevel, outcome!.Value.Result);
+        Assert.Null(updated);
+        Assert.Empty(operations.Requests);
+    }
+
+    [Fact]
+    public async Task EquipAsync_AtOrAboveEquipLevelMin_Succeeds()
+    {
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 2, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+        Assert.NotNull(updated);
+    }
+
+    [Fact]
+    public async Task EquipAsync_WrongSex_ReturnsFail_NeverPersists()
+    {
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, SinisterViollin, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 160, characterSex: 0 /* SEX_FEMALE */, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
+        Assert.Null(updated);
+        Assert.Empty(operations.Requests);
+    }
+
+    [Fact]
+    public async Task EquipAsync_MatchingSex_Succeeds()
+    {
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, SinisterViollin, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 160, characterSex: 1 /* SEX_MALE */, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+        Assert.NotNull(updated);
+    }
+
+    // Pinned pc.cpp:1890-1891: attribute == 1 ("broken") blocks equip outright - a generic row-state
+    // check, never item-id-specific, so a hand-built fixture (any item, any Attribute=1) suffices.
+    [Fact]
+    public async Task EquipAsync_BrokenItem_ReturnsFail_NeverPersists()
+    {
+        var brokenRow = new CharacterInventoryItem(1, 0, Knife.Id, 1, 0, true, 0, 0, 0,
+            Detail: new ItemInstanceDetail(Attribute: 1, 0, 0, 0, 0, 0, default, default, default, default, default, 0, 0, 0, 0));
+        var (operations, _, service) = Setup(new([brokenRow]));
+
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, Items, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
+        Assert.Null(updated);
+        Assert.Empty(operations.Requests);
     }
 }

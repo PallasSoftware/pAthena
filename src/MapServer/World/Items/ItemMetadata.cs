@@ -34,4 +34,16 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     // gate) to read the full Data.NoEquip bitmask once that map-flag/zone runtime concept exists - do not special-case
     // any item to compensate; extend the generic bitmask evaluation against the new map-flag state instead.
     public bool RestrictedOnNormalMaps => (Data.NoEquip & 1) != 0;
+
+    // Pinned pc_isequip (pc.cpp:1882-1886) level-gate fields. 0 means "no gate" for each bound
+    // independently - pinned source's own `if (item->elv && ...)` / `if (item->elvmax && ...)`
+    // guards, never implicitly 1/uint.MaxValue.
+    public uint EquipLevelMin => Data.EquipLevelMin;
+    public uint EquipLevelMax => Data.EquipLevelMax;
+
+    // Pinned SEX_FEMALE=0, SEX_MALE=1, SEX_BOTH=2 (mmo.hpp:1116-1118) - matches this project's own
+    // session Sex byte convention (0=female,1=male) exactly for the two concrete values; BothSexes
+    // is the pinned "no restriction" sentinel.
+    public const byte BothSexes = 2;
+    public byte Sex => Data.Sex;
 }

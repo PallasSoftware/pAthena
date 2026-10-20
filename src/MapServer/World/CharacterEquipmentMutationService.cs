@@ -1,4 +1,5 @@
 using Athena.Net.MapServer.Net;
+using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.World;
@@ -48,11 +49,7 @@ public static class EquipSlots
 
 public enum EquipMutationResult
 {
-    // Pinned enum clif_equipitemack_flag, PACKETVER_RE_NUM >= 20121107 branch (clif.hpp:522-533):
-    // OK=0, FAILLEVEL=1, FAIL=2. This slice does not model item level/sex/broken/restricted-map
-    // eligibility (ItemDefinition has no Elv/Sex/Attribute fields yet) - FailLevel is therefore
-    // never produced by this service today; it exists so a future level-gate implementation has
-    // the correct ack value to report, rather than needing a new enum member later.
+    // Pinned enum clif_equipitemack_flag, PACKETVER_RE_NUM >= 20121107 branch (clif.hpp:522-533): OK=0, FAILLEVEL=1, FAIL=2.
     Success,
     FailLevel,
     Fail,
@@ -63,9 +60,14 @@ public readonly record struct UnequipOutcome(bool Success, uint WearLocation);
 
 // Runtime equip/unequip mutation - the pinned PACKETVER 20220406 equivalent of
 // pc_equipitem/pc_unequipitem (pc.cpp:12015-12240, 12398-12500), scoped to the structural
-// slot-conflict/EQP_ARMS logic those functions implement. Explicitly NOT modeled (see each
-// method's own doc comment): EquipLevelMin/Max, Sex, broken-item, and restricted-map
-// eligibility checks - those belong to the equipment rules (Feature 16 stage S4).
+// slot-conflict/EQP_ARMS logic those functions implement plus pc_isequip's (pc.cpp:1850-1908)
+// level/sex/broken/restricted-map eligibility gate. Explicitly NOT modeled (Feature 16 stage S4,
+// documented as a tracked gap, not silently skipped): pc_job_can_use_item/pc_isItemClass job-class
+// eligibility (ClassBase0/1/2/ClassUpper ARE already in the generated item data - PackItem/
+// ItemMetadata - but this project has no JobClass -> pinned MAPID_*/JOBL_2_1/JOBL_2_2/JOBL_UPPER/
+// JOBL_BABY/JOBL_THIRD/JOBL_FOURTH tier-bitmask mapping yet; that is substantial, separate
+// infrastructure, not a quick addition to this file), status-effect equip-blocking (SC__STRIPACCESSORY
+// etc. - Feature 17/status-effect territory), and ammo/weapon-type compatibility (ammo_check_weapon).
 //
 // CharServer remains the durable owner of CharInventory.Equip. An equip is ONE atomic inventory operation that unequips every
 // conflicting item AND equips the target, so a failure can never leave the old item unequipped while the new one is not worn.
@@ -76,10 +78,14 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // Pinned pc_equipitem (pc.cpp:12015-12172), restricted to this service's modeled checks:
     //   1. already-equipped items.equip != 0 -> ITEM_EQUIP_ACK_FAIL (pc.cpp:12063-12070)
     //   2. requested position must intersect the item's EquipLocation -> ITEM_EQUIP_ACK_FAIL
-    //   3. EQP_ARMS dual-wield: if the item's own EquipLocation is exactly EQP_HAND_R and the
+    //   3. pc_isequip's own eligibility gate (pc.cpp:1850-1908): EquipLevelMin/Max -> FAILLEVEL,
+    //      Sex mismatch -> FAIL, broken (Attribute != 0) -> FAIL, restricted-map -> FAIL (see
+    //      ItemMetadata.RestrictedOnNormalMaps's own doc comment for this project's current
+    //      "every reachable map is normal" scope).
+    //   4. EQP_ARMS dual-wield: if the item's own EquipLocation is exactly EQP_HAND_R and the
     //      caller requested EQP_ARMS (both hands), pick whichever hand is free, preferring
     //      HAND_L when both are free (pc.cpp:12108-12115, RENEWAL branch)
-    //   4. slot conflict: any currently-equipped item occupying one of the resolved position's
+    //   5. slot conflict: any currently-equipped item occupying one of the resolved position's
     //      EQI slots is unequipped first (pc.cpp:12147-12157)
     // Returns a null outcome if the requested slotIndex is not a real row in the snapshot (the caller turns that into no ack,
     // matching pc_equipitem's own `if (!(id = sd->inventory_data[n])) return false;` early-out).
@@ -87,13 +93,15 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         uint slotIndex,
         uint requestedPosition,
         IReadOnlyDictionary<int, ItemDefinition> items,
+        uint characterBaseLevel,
+        byte characterSex,
         CancellationToken cancellationToken)
     {
         EquipOutcome? decided = null;
         uint wearLocation = 0;
         var change = await inventoryService.ExecuteAsync(InventoryOperationKind.Equip, inventory =>
         {
-            var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, out var outcome, out wearLocation);
+            var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, characterBaseLevel, characterSex, out var outcome, out wearLocation);
             decided = outcome;
             return plan;
         }, cancellationToken);
@@ -107,13 +115,42 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
 
     private static IReadOnlyList<InventoryMutation>? PlanEquip(
         CharacterInventorySnapshot inventory, uint slotIndex, uint requestedPosition,
-        IReadOnlyDictionary<int, ItemDefinition> items, out EquipOutcome? outcome, out uint wearLocation)
+        IReadOnlyDictionary<int, ItemDefinition> items, uint characterBaseLevel, byte characterSex, out EquipOutcome? outcome, out uint wearLocation)
     {
         wearLocation = 0;
         var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
         if (target is null) { outcome = null; return null; }
         if (!items.TryGetValue(target.ItemId, out var definition) || definition is not IEquippableItemDefinition equippable
             || target.Equip != 0 || (equippable.EquipLocation & requestedPosition) == 0)
+        {
+            outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+            return null;
+        }
+
+        var meta = definition.Meta;
+        if (meta is not null)
+        {
+            // Pinned pc.cpp:1882-1885: elv/elvmax are independent gates, each only checked when non-zero.
+            if ((meta.EquipLevelMin != 0 && characterBaseLevel < meta.EquipLevelMin) || (meta.EquipLevelMax != 0 && characterBaseLevel > meta.EquipLevelMax))
+            {
+                outcome = new EquipOutcome(EquipMutationResult.FailLevel, 0);
+                return null;
+            }
+            if (meta.Sex != ItemMetadata.BothSexes && meta.Sex != characterSex)
+            {
+                outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+                return null;
+            }
+        }
+        if (target.Details.IsBroken)
+        {
+            outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+            return null;
+        }
+        // shortcut: allow_equip_restricted_item (always-false default) is not modeled as a conf
+        // toggle - this project enforces the restriction unconditionally, matching the pinned
+        // DEFAULT battle_config value; upgrade once a conf-override concept exists for this flag.
+        if (meta is { RestrictedOnNormalMaps: true })
         {
             outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
             return null;
