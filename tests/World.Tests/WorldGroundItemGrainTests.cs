@@ -138,29 +138,11 @@ public sealed class WorldGroundItemGrainTests : IAsyncLifetime
         Assert.Equal(WorldGroundItemClaimStatus.NotFound, result.Status);
     }
 
-    // Ownership window (pinned item_first_get_time, first tier only - see
-    // WorldGroundItemMapSimulation's own documented scope simplification): only the owner may claim
-    // during the window; anyone may claim once it elapses.
-    [Fact]
-    public async Task OwnershipWindow_BlocksNonOwner_ThenOpensToAnyoneAfterItElapses()
-    {
-        var grain = Partition("prontera-region");
-        var ownership = new WorldGroundItemOwnership(OwnerCharacterId: 1001, OwnerWindowMs: 200);
-        var drop = await grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, Content(), ownership, Guid.NewGuid()));
-        var reference = new WorldGroundItemReference("prontera", (await grain.GetGroundItemsAsync("prontera")).Epoch, drop.GroundItemId!.Value);
-
-        var ownerClaimId = Guid.NewGuid();
-        var ownerClaim = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1001, ownerClaimId));
-        Assert.Equal(WorldGroundItemClaimStatus.Claimed, ownerClaim.Status);
-        await grain.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(reference, ownerClaimId));
-
-        var nonOwnerDuringWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
-        Assert.Equal(WorldGroundItemClaimStatus.NotEligible, nonOwnerDuringWindow.Status);
-
-        await Task.Delay(250);
-        var nonOwnerAfterWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
-        Assert.Equal(WorldGroundItemClaimStatus.Claimed, nonOwnerAfterWindow.Status);
-    }
+    // Ownership-window timing itself is covered deterministically (fake clock, never real
+    // Task.Delay against a 200ms window shared with full-suite ambient load) by
+    // GroundItemOwnershipWindowTests below - moved there after this real-time version proved
+    // flaky under parallel suite load (the owner's own claim+release round trip could itself eat
+    // enough of a 200ms window to make the "during window" assertion race the window's own end).
 
     // This test's grain uses the DEFAULT 60s lifetime (this fixture's cluster has no short-timing
     // override) - so actual time-based expiry is exercised by ShortDeadlineGroundItemGrainTests
@@ -214,6 +196,47 @@ public sealed class WorldGroundItemGrainTests : IAsyncLifetime
         Assert.Single((await grain.GetGroundItemsAsync("prontera")).Items);
     }
 
+    // CompleteGroundItemClaimAsync/ReleaseGroundItemClaimAsync must apply the SAME epoch fencing
+    // ClaimGroundItemAsync already does - a caller holding a reference minted against a stale/
+    // reactivated simulation must never complete or release a claim in the CURRENT one, even if the
+    // GroundItemId/ClaimId values happen to coincide.
+    [Fact]
+    public async Task CompleteWithStaleEpoch_IsRejected_AndNeverDisturbsTheRealClaim()
+    {
+        var grain = Partition("prontera-region");
+        var drop = await grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, Content(), NoOwner, Guid.NewGuid()));
+        var realEpoch = (await grain.GetGroundItemsAsync("prontera")).Epoch;
+        var realReference = new WorldGroundItemReference("prontera", realEpoch, drop.GroundItemId!.Value);
+        var claimId = Guid.NewGuid();
+        await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(realReference, CharacterId: 1001, claimId));
+        var staleReference = new WorldGroundItemReference("prontera", new WorldSimulationEpoch(Guid.NewGuid()), drop.GroundItemId!.Value);
+
+        var staleComplete = await grain.CompleteGroundItemClaimAsync(new WorldGroundItemClaimReference(staleReference, claimId));
+
+        Assert.Equal(WorldGroundItemCompletionStatus.StaleEpoch, staleComplete.Status);
+        // The real claim is untouched - completing it with the REAL epoch still succeeds.
+        Assert.Equal(WorldGroundItemCompletionStatus.Applied,
+            (await grain.CompleteGroundItemClaimAsync(new WorldGroundItemClaimReference(realReference, claimId))).Status);
+    }
+
+    [Fact]
+    public async Task ReleaseWithStaleEpoch_IsRejected_AndNeverDisturbsTheRealClaim()
+    {
+        var grain = Partition("prontera-region");
+        var drop = await grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, Content(), NoOwner, Guid.NewGuid()));
+        var realEpoch = (await grain.GetGroundItemsAsync("prontera")).Epoch;
+        var realReference = new WorldGroundItemReference("prontera", realEpoch, drop.GroundItemId!.Value);
+        var claimId = Guid.NewGuid();
+        await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(realReference, CharacterId: 1001, claimId));
+        var staleReference = new WorldGroundItemReference("prontera", new WorldSimulationEpoch(Guid.NewGuid()), drop.GroundItemId!.Value);
+
+        var staleRelease = await grain.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(staleReference, claimId));
+
+        Assert.Equal(WorldGroundItemCompletionStatus.StaleEpoch, staleRelease.Status);
+        // The real claim is untouched - releasing it with the REAL epoch still succeeds.
+        Assert.Equal(WorldGroundItemCompletionStatus.Applied,
+            (await grain.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(realReference, claimId))).Status);
+    }
 }
 
 // GroundItemId is the wire-facing "groundActorId" field (see ai/iro-2026-wire.md) and must never
@@ -360,6 +383,145 @@ public sealed class ShortDeadlineGroundItemGrainTests : IAsyncLifetime
                 .AddSingleton<IMovementPathProvider, UnverifiedGridLineMovementPathProvider>()
                 .AddSingleton<IMapCollisionProvider>(EmptyMapCollisionProvider.Instance)
                 .AddSingleton(new WorldGroundItemOptions(ShortLifetime, ShortUnresolvedClaimDeadline, ShortDropDedupWindow));
+        }
+    }
+}
+
+// Issue 1 regression, reproduced with a deterministic fake clock (moved explicitly, never real
+// wall-clock waiting) at the PRODUCTION default durations: DropDedupWindow (30s) used to be tracked
+// completely independently of the item's own lifetime (60s default) - SweepExpired's dedup sweep
+// purged a DropId's dedup record purely by its own 30s-old deadline, with no regard for whether the
+// ground item it pointed to was still alive. A retry arriving after 30s but before the item's own
+// 60s lifetime elapsed (or before its claim completed) would find no dedup record and mint a SECOND
+// ground item for the exact same logical drop - a real duplication bug. The fix (WorldGroundItemMap
+// Simulation.SweepExpired) now never reaps a dedup record whose GroundItemId is still present in
+// _byId, regardless of the record's own DeadlineUtc - only once the item actually leaves the world
+// does the bounded post-removal window begin.
+public sealed class GroundItemDropDedupVersusLifetimeTests : IAsyncLifetime
+{
+    private static readonly WorldPresenceLeaseTests.OffsetClock Clock = new();
+    private TestCluster _cluster = null!;
+    public async Task InitializeAsync()
+    {
+        Clock.Reset();
+        var builder = new TestClusterBuilder();
+        builder.AddSiloBuilderConfigurator<Configurator>();
+        _cluster = builder.Build();
+        await _cluster.DeployAsync();
+    }
+    public async Task DisposeAsync() => await _cluster.StopAllSilosAsync();
+
+    private IWorldPartitionGrain Partition(string id) => _cluster.GrainFactory.GetGrain<IWorldPartitionGrain>(id);
+
+    [Fact]
+    public async Task DelayedRetry_PastTheOldDedupWindow_ButWhileTheItemIsStillAlive_StillAnswersAlreadyDropped()
+    {
+        var grain = Partition("prontera-region");
+        var dropId = Guid.NewGuid();
+        var drop = new WorldGroundItemDrop("prontera", 150, 180, new WorldGroundItemContent(501, 1), new WorldGroundItemOwnership(null), dropId);
+
+        var first = await grain.DropGroundItemAsync(drop);
+        Assert.Equal(WorldGroundItemDropStatus.Dropped, first.Status);
+
+        // Past the OLD independent 30s dedup deadline, but well before the item's own 60s
+        // flooritem_lifetime - the item is still Available and alive the entire time.
+        Clock.Advance(TimeSpan.FromSeconds(35));
+
+        var delayedRetry = await grain.DropGroundItemAsync(drop);
+
+        Assert.Equal(WorldGroundItemDropStatus.AlreadyDropped, delayedRetry.Status);
+        Assert.Equal(first.GroundItemId, delayedRetry.GroundItemId);
+        Assert.Single((await grain.GetGroundItemsAsync("prontera")).Items); // Exactly one item - never duplicated.
+    }
+
+    [Fact]
+    public async Task DelayedRetry_PastTheOldDedupWindow_WhileTheItemIsStillClaimedAndUnresolved_StillAnswersAlreadyDropped()
+    {
+        var grain = Partition("prontera-region");
+        var dropId = Guid.NewGuid();
+        var drop = new WorldGroundItemDrop("prontera", 150, 180, new WorldGroundItemContent(501, 1), new WorldGroundItemOwnership(null), dropId);
+        var first = await grain.DropGroundItemAsync(drop);
+        var reference = new WorldGroundItemReference("prontera", (await grain.GetGroundItemsAsync("prontera")).Epoch, first.GroundItemId!.Value);
+        await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1001, Guid.NewGuid()));
+
+        // Past the OLD independent 30s dedup deadline, but still well within the unresolved-claim's
+        // own (also default 30s - advanced together here since the bug was DeadlineUtc tracking
+        // ANY independent value, not specifically the dedup default) deadline is not what matters:
+        // the item remains present in _byId (claimed) the whole time, which is what the fix checks.
+        Clock.Advance(TimeSpan.FromSeconds(29));
+
+        var delayedRetry = await grain.DropGroundItemAsync(drop);
+
+        Assert.Equal(WorldGroundItemDropStatus.AlreadyDropped, delayedRetry.Status);
+        Assert.Equal(first.GroundItemId, delayedRetry.GroundItemId);
+    }
+
+    public sealed class Configurator : ISiloConfigurator
+    {
+        public void Configure(ISiloBuilder siloBuilder)
+        {
+            siloBuilder.AddMemoryGrainStorage("actorIdBlockAuthority");
+            siloBuilder.Services.AddSingleton<IWorldPartitionResolver>(
+                WorldPartitionTopologyLoader.Load(TestWorldPartitionsPath.Resolve(), ["prontera", "prt_fild08d", "izlude", "geffen"]))
+                .AddSingleton<IMovementPathProvider, UnverifiedGridLineMovementPathProvider>()
+                .AddSingleton<IMapCollisionProvider>(EmptyMapCollisionProvider.Instance)
+                .AddSingleton<TimeProvider>(Clock);
+        }
+    }
+}
+
+// Ownership window (pinned item_first_get_time, first tier only - see
+// WorldGroundItemMapSimulation's own documented scope simplification): only the owner may claim
+// during the window; anyone may claim once it elapses. Uses a deterministic fake clock (moved
+// explicitly, never real wall-clock waiting) so the assertion can never race ambient full-suite
+// load the way the original real-Task.Delay version did.
+public sealed class GroundItemOwnershipWindowTests : IAsyncLifetime
+{
+    private static readonly WorldPresenceLeaseTests.OffsetClock Clock = new();
+    private TestCluster _cluster = null!;
+    public async Task InitializeAsync()
+    {
+        Clock.Reset();
+        var builder = new TestClusterBuilder();
+        builder.AddSiloBuilderConfigurator<Configurator>();
+        _cluster = builder.Build();
+        await _cluster.DeployAsync();
+    }
+    public async Task DisposeAsync() => await _cluster.StopAllSilosAsync();
+
+    private IWorldPartitionGrain Partition(string id) => _cluster.GrainFactory.GetGrain<IWorldPartitionGrain>(id);
+
+    [Fact]
+    public async Task BlocksNonOwnerDuringTheWindow_ThenOpensToAnyoneAfterItElapses()
+    {
+        var grain = Partition("prontera-region");
+        var ownership = new WorldGroundItemOwnership(OwnerCharacterId: 1001, OwnerWindowMs: 200);
+        var drop = await grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, new WorldGroundItemContent(501, 1), ownership, Guid.NewGuid()));
+        var reference = new WorldGroundItemReference("prontera", (await grain.GetGroundItemsAsync("prontera")).Epoch, drop.GroundItemId!.Value);
+
+        var ownerClaimId = Guid.NewGuid();
+        var ownerClaim = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1001, ownerClaimId));
+        Assert.Equal(WorldGroundItemClaimStatus.Claimed, ownerClaim.Status);
+        await grain.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(reference, ownerClaimId));
+
+        var nonOwnerDuringWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
+        Assert.Equal(WorldGroundItemClaimStatus.NotEligible, nonOwnerDuringWindow.Status);
+
+        Clock.Advance(TimeSpan.FromMilliseconds(250));
+        var nonOwnerAfterWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
+        Assert.Equal(WorldGroundItemClaimStatus.Claimed, nonOwnerAfterWindow.Status);
+    }
+
+    public sealed class Configurator : ISiloConfigurator
+    {
+        public void Configure(ISiloBuilder siloBuilder)
+        {
+            siloBuilder.AddMemoryGrainStorage("actorIdBlockAuthority");
+            siloBuilder.Services.AddSingleton<IWorldPartitionResolver>(
+                WorldPartitionTopologyLoader.Load(TestWorldPartitionsPath.Resolve(), ["prontera", "prt_fild08d", "izlude", "geffen"]))
+                .AddSingleton<IMovementPathProvider, UnverifiedGridLineMovementPathProvider>()
+                .AddSingleton<IMapCollisionProvider>(EmptyMapCollisionProvider.Instance)
+                .AddSingleton<TimeProvider>(Clock);
         }
     }
 }

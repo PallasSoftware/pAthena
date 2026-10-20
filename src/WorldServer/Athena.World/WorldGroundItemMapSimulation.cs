@@ -69,15 +69,18 @@ internal sealed class WorldGroundItemMapSimulation
     // DropId -> (GroundItemId, DeadlineUtc): lets a retried DropGroundItemAsync call (the SAME
     // logical drop, e.g. a monster-death event retried after a transient RPC failure) answer
     // AlreadyDropped instead of minting a second physical item - see WorldGroundItemDrop.DropId's
-    // own doc comment. Unlike the ground item itself (removed on pickup/expiry), this dedup record
-    // is kept for DropDedupWindow AFTER the item leaves the world (pickup or expiry), specifically
-    // so a DELAYED retry that arrives after the original item was already picked up still finds the
-    // dedup record and answers AlreadyDropped instead of creating a duplicate - this is the
-    // "bounded deduplication for the lifetime of a logical drop event, including the relevant
-    // delayed-retry window" the caller's own retry policy needs. A drop event older than the window
-    // is assumed to have no more in-flight retries and is reaped (SweepExpired), so a genuinely NEW
-    // drop that happens to reuse the same caller-chosen Guid (extremely unlikely, caller's own
-    // responsibility) is never blocked forever.
+    // own doc comment. DeadlineUtc is NEVER set independently of the item's own lifetime: while the
+    // item is still alive in _byId, this record's deadline is kept pinned to (at least) the item's
+    // own ExpiresAtUtc/ClaimDeadlineUtc, so a dedup record can never expire out from under a still-
+    // live item (the bug a 30s-vs-60s mismatch previously allowed: a retry after the dedup window
+    // but before the item's own longer lifetime elapsed would wrongly mint a duplicate). Only once
+    // the item actually leaves the world (Remove) does the deadline become a plain, bounded
+    // DropDedupWindow-from-now value - specifically so a DELAYED retry that arrives after the
+    // original item was already picked up/expired still finds the dedup record and answers
+    // AlreadyDropped instead of creating a duplicate. A drop event older than that post-removal
+    // window is assumed to have no more in-flight retries and is reaped (SweepExpired), so a
+    // genuinely NEW drop that happens to reuse the same caller-chosen Guid (extremely unlikely,
+    // caller's own responsibility) is never blocked forever.
     private readonly Dictionary<Guid, (uint GroundItemId, DateTimeOffset DeadlineUtc)> _dropDedup = [];
 
     public string MapId { get; }
@@ -126,7 +129,15 @@ internal sealed class WorldGroundItemMapSimulation
         if (_dropDedup.Count == 0) return;
         List<Guid>? staleDedup = null;
         foreach (var (dropId, record) in _dropDedup)
+        {
+            // Never reap a dedup record whose item is STILL ALIVE, regardless of DeadlineUtc - the
+            // deadline only governs the bounded post-removal retry window (see this field's own doc
+            // comment). A live item's own SweepExpired branch above (Available ExpiresAtUtc or
+            // Claimed ClaimDeadlineUtc) is the sole authority for when it actually leaves the world;
+            // only THAT event (via Remove) ever starts this record's real countdown.
+            if (_byId.ContainsKey(record.GroundItemId)) continue;
             if (record.DeadlineUtc <= now) (staleDedup ??= []).Add(dropId);
+        }
         if (staleDedup is not null) foreach (var dropId in staleDedup) _dropDedup.Remove(dropId);
     }
 
@@ -179,10 +190,10 @@ internal sealed class WorldGroundItemMapSimulation
             CreatedAtUtc = now,
             ExpiresAtUtc = now + _lifetime,
         };
-        // The dedup record's own deadline starts now and is refreshed to extend DropDedupWindow
-        // past whenever the item actually leaves the world (pickup or expiry) - see SweepExpired's
-        // own handling of _byId removal, which does not touch _dropDedup, and Complete/EndClaim
-        // below, which refreshes it explicitly at the moment of removal.
+        // This initial deadline is a placeholder, never actually consulted while the item is alive -
+        // SweepExpired's dedup sweep skips any record whose GroundItemId still exists in _byId,
+        // regardless of DeadlineUtc (see that method's own doc comment). Remove overwrites this with
+        // the REAL post-removal deadline the instant the item actually leaves the world.
         _dropDedup[drop.DropId] = (id, now + _dropDedupWindow);
         return new(WorldGroundItemDropStatus.Dropped, id);
     }

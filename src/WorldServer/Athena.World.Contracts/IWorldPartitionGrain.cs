@@ -196,6 +196,8 @@ public enum WorldGroundItemCompletionStatus
     AlreadyApplied,
     /// <summary>No such claim is currently held by this ClaimId (never claimed, or held by a different ClaimId) - the caller's own bug or a genuinely stale retry racing a NEWER claim.</summary>
     NotFound,
+    /// <summary>The reference's own Epoch does not match this map's CURRENT ground-item simulation epoch (same fencing ClaimGroundItemAsync already applies) - a caller addressing a reactivated/rebuilt simulation it does not actually hold a claim against.</summary>
+    StaleEpoch,
 }
 
 [GenerateSerializer]

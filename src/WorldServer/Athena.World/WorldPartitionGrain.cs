@@ -844,13 +844,19 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     public Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference)
     {
         var mapId = RequireOwnedMap(reference.Item.MapId);
-        return Task.FromResult(GroundItemSimulation(mapId).Complete(reference));
+        var simulation = GroundItemSimulation(mapId);
+        if (!reference.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemCompletionResult(WorldGroundItemCompletionStatus.StaleEpoch));
+        return Task.FromResult(simulation.Complete(reference));
     }
 
     public Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference)
     {
         var mapId = RequireOwnedMap(reference.Item.MapId);
-        return Task.FromResult(GroundItemSimulation(mapId).Release(reference));
+        var simulation = GroundItemSimulation(mapId);
+        if (!reference.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemCompletionResult(WorldGroundItemCompletionStatus.StaleEpoch));
+        return Task.FromResult(simulation.Release(reference));
     }
 
     public Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId)
