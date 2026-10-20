@@ -494,8 +494,18 @@ public sealed class GroundItemOwnershipWindowTests : IAsyncLifetime
     [Fact]
     public async Task BlocksNonOwnerDuringTheWindow_ThenOpensToAnyoneAfterItElapses()
     {
+        // OffsetClock.GetUtcNow() is real wall-clock time PLUS an explicit offset (see its own doc
+        // comment) - it never runs BACKWARD or freezes real time, so a short window (the original
+        // 200ms bug) remains exposed to ordinary real RPC overhead across several grain calls before
+        // this test ever reaches its own "during window" assertion. A window comfortably longer than
+        // any plausible real elapsed time here (a handful of in-process TestCluster RPCs) is what
+        // actually makes the "during window" assertion deterministic - Clock.Advance then jumps WELL
+        // past it for the "after window" assertion, never relying on elapsed real time staying under
+        // a tight bound. Must stay comfortably UNDER the item's own 60s default flooritem_lifetime
+        // (this cluster uses production WorldGroundItemOptions defaults) - advancing past that would
+        // expire the item itself before the "after window" claim ever ran.
         var grain = Partition("prontera-region");
-        var ownership = new WorldGroundItemOwnership(OwnerCharacterId: 1001, OwnerWindowMs: 200);
+        var ownership = new WorldGroundItemOwnership(OwnerCharacterId: 1001, OwnerWindowMs: 5_000);
         var drop = await grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, new WorldGroundItemContent(501, 1), ownership, Guid.NewGuid()));
         var reference = new WorldGroundItemReference("prontera", (await grain.GetGroundItemsAsync("prontera")).Epoch, drop.GroundItemId!.Value);
 
@@ -507,7 +517,7 @@ public sealed class GroundItemOwnershipWindowTests : IAsyncLifetime
         var nonOwnerDuringWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
         Assert.Equal(WorldGroundItemClaimStatus.NotEligible, nonOwnerDuringWindow.Status);
 
-        Clock.Advance(TimeSpan.FromMilliseconds(250));
+        Clock.Advance(TimeSpan.FromMilliseconds(6_000));
         var nonOwnerAfterWindow = await grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, CharacterId: 1002, Guid.NewGuid()));
         Assert.Equal(WorldGroundItemClaimStatus.Claimed, nonOwnerAfterWindow.Status);
     }
