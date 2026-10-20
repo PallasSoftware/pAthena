@@ -2,6 +2,12 @@ using Athena.Net.World.Contracts;
 
 namespace Athena.Net.World;
 
+// Composition-time override for WorldGroundItemMapSimulation's own lifetime/deadline/dedup-window
+// defaults - same rationale as WorldMonsterTouchedWindowOptions: lets a test inject much shorter
+// durations and observe the real expiry/unresolved-claim-reap/dedup behavior deterministically
+// within a bounded real-wall-clock wait, without the production defaults ever needing to change.
+public sealed record WorldGroundItemOptions(TimeSpan? Lifetime = null, TimeSpan? UnresolvedClaimDeadline = null, TimeSpan? DropDedupWindow = null);
+
 // Feature 16 S2/S3: one map's worth of World-authoritative ground-item state, owned entirely by
 // WorldPartitionGrain (never its own grain - same "one coarse WorldPartitionGrain, no
 // MonsterGrain/MapGrain/CellGrain/ItemGrain" architecture as WorldMonsterMapSimulation/
@@ -41,27 +47,47 @@ internal sealed class WorldGroundItemMapSimulation
         public required WorldGroundItemOwnership Ownership { get; init; }
         public required DateTimeOffset CreatedAtUtc { get; init; }
         public required DateTimeOffset ExpiresAtUtc { get; init; }
-        // null = Available (unclaimed). Set the instant a claim wins; cleared only by Complete/Release.
+        // null = Available (unclaimed). Set the instant a claim wins; cleared only by Release (never
+        // by expiry - see ClaimDeadlineUtc's own doc comment for why an UNRESOLVED claim is reaped by
+        // permanent removal, never by quietly reverting to Available).
         public (Guid ClaimId, uint CharacterId)? Claim { get; set; }
+        // Set the instant a claim wins, alongside Claim itself: the latest moment an UNRESOLVED claim
+        // (the caller never called Complete or Release - e.g. the claiming MapServer crashed between
+        // winning the claim and learning its CharServer grant's outcome) is still honored as
+        // exclusively reserved. Past this deadline the item is permanently removed (see SweepExpired)
+        // - NEVER silently returned to Available, because World has no way to know whether the
+        // original claimant's CharServer grant already committed; handing the same item to a SECOND
+        // character here could duplicate an already-granted item. This matches the project's existing
+        // "ground items are ephemeral world state, not a durable entity" decision: a WorldServer
+        // restart already loses all ground-item state unconditionally (fresh Epoch, empty state) -
+        // this is the same acceptable-loss policy applied to one orphaned claim instead of a whole
+        // restart, never a recovery/lease/renewal mechanism.
+        public DateTimeOffset? ClaimDeadlineUtc { get; set; }
     }
 
     private readonly Dictionary<uint, Entry> _byId = [];
-    // DropId -> GroundItemId: lets a retried DropGroundItemAsync call (the SAME logical drop) answer
-    // AlreadyDropped instead of minting a second physical item - see WorldGroundItemDrop.DropId's own
-    // doc comment. Entries are removed together with their ground item (expiry or claim completion),
-    // matching the item's own lifetime - a drop that has already fully left the world (picked up,
-    // expired) is eligible to be re-dropped fresh under the SAME DropId without being mistaken for a
-    // still-pending duplicate (this is intentional: DropId's purpose is dedup of IN-FLIGHT retries of
-    // one drop call, not a permanent "this logical drop may only ever happen once" ledger).
-    private readonly Dictionary<Guid, uint> _groundItemIdByDropId = [];
-    private uint _nextGroundItemId = 1;
+    // DropId -> (GroundItemId, DeadlineUtc): lets a retried DropGroundItemAsync call (the SAME
+    // logical drop, e.g. a monster-death event retried after a transient RPC failure) answer
+    // AlreadyDropped instead of minting a second physical item - see WorldGroundItemDrop.DropId's
+    // own doc comment. Unlike the ground item itself (removed on pickup/expiry), this dedup record
+    // is kept for DropDedupWindow AFTER the item leaves the world (pickup or expiry), specifically
+    // so a DELAYED retry that arrives after the original item was already picked up still finds the
+    // dedup record and answers AlreadyDropped instead of creating a duplicate - this is the
+    // "bounded deduplication for the lifetime of a logical drop event, including the relevant
+    // delayed-retry window" the caller's own retry policy needs. A drop event older than the window
+    // is assumed to have no more in-flight retries and is reaped (SweepExpired), so a genuinely NEW
+    // drop that happens to reuse the same caller-chosen Guid (extremely unlikely, caller's own
+    // responsibility) is never blocked forever.
+    private readonly Dictionary<Guid, (uint GroundItemId, DateTimeOffset DeadlineUtc)> _dropDedup = [];
 
     public string MapId { get; }
     public WorldSimulationEpoch Epoch { get; }
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _lifetime;
+    private readonly TimeSpan _unresolvedClaimDeadline;
+    private readonly TimeSpan _dropDedupWindow;
 
-    public WorldGroundItemMapSimulation(string mapId, TimeProvider timeProvider, TimeSpan? lifetime = null)
+    public WorldGroundItemMapSimulation(string mapId, TimeProvider timeProvider, TimeSpan? lifetime = null, TimeSpan? unresolvedClaimDeadline = null, TimeSpan? dropDedupWindow = null)
     {
         MapId = mapId;
         Epoch = WorldSimulationEpoch.NewEpoch();
@@ -70,42 +96,78 @@ internal sealed class WorldGroundItemMapSimulation
         // battle configuration" section. A conf-driven override is future work; no conf plumbing
         // exists for World yet.
         _lifetime = lifetime ?? TimeSpan.FromMilliseconds(60_000);
+        // No pinned reference value exists for this (pinned rAthena is single-process and never faces
+        // this failure mode) - chosen as a short bound on the window a crashed caller can block one
+        // item, never a lease/renewal deadline. A caller's own CharServer round trip is expected to
+        // resolve in low milliseconds to a few seconds even under retry; this leaves ample margin
+        // while still bounding the loss to a predictable, short window.
+        _unresolvedClaimDeadline = unresolvedClaimDeadline ?? TimeSpan.FromSeconds(30);
+        _dropDedupWindow = dropDedupWindow ?? TimeSpan.FromSeconds(30);
     }
 
     // Expiry is lazy/on-access (exactly like WorldPresenceLease's own "World decides expiry on its
     // own clock, on every call that touches the relevant state" convention) - no dedicated timer.
-    // A CLAIMED item never expires out from under its holder: the pinned reference has no "the
-    // ground item vanished mid-pickup" race, and the window here is always short (one CharServer
-    // round trip) - an item only becomes expiry-eligible again if its claim is released.
     private void SweepExpired()
     {
-        if (_byId.Count == 0) return;
         var now = _timeProvider.GetUtcNow();
-        List<uint>? expired = null;
-        foreach (var (id, entry) in _byId)
+        if (_byId.Count > 0)
         {
-            if (entry.Claim is not null) continue;
-            if (entry.ExpiresAtUtc > now) continue;
-            (expired ??= []).Add(id);
+            List<uint>? toRemove = null;
+            foreach (var (id, entry) in _byId)
+            {
+                var expired = entry.Claim is null
+                    ? entry.ExpiresAtUtc <= now // Available: ordinary flooritem_lifetime expiry.
+                    : entry.ClaimDeadlineUtc <= now; // Claimed-but-unresolved past its deadline: permanently removed, never released - see ClaimDeadlineUtc's own doc comment.
+                if (expired) (toRemove ??= []).Add(id);
+            }
+            if (toRemove is not null) foreach (var id in toRemove) Remove(id);
         }
-        if (expired is null) return;
-        foreach (var id in expired) Remove(id);
+
+        if (_dropDedup.Count == 0) return;
+        List<Guid>? staleDedup = null;
+        foreach (var (dropId, record) in _dropDedup)
+            if (record.DeadlineUtc <= now) (staleDedup ??= []).Add(dropId);
+        if (staleDedup is not null) foreach (var dropId in staleDedup) _dropDedup.Remove(dropId);
     }
 
+    // Called on every path an item permanently leaves the world (ordinary expiry, claim completion,
+    // or an unresolved-claim deadline reap) - in every case, the dedup record's deadline is refreshed
+    // from THIS moment, so a drop-event retry that was merely delayed (not lost) still finds it and
+    // answers AlreadyDropped for the full DropDedupWindow AFTER the item actually left the world,
+    // not just after it was created.
     private void Remove(uint groundItemId)
     {
         if (!_byId.Remove(groundItemId)) return;
-        var dropId = _groundItemIdByDropId.FirstOrDefault(pair => pair.Value == groundItemId, default(KeyValuePair<Guid, uint>));
-        if (dropId.Key != Guid.Empty) _groundItemIdByDropId.Remove(dropId.Key);
+        foreach (var (dropId, record) in _dropDedup)
+        {
+            if (record.GroundItemId != groundItemId) continue;
+            _dropDedup[dropId] = (groundItemId, _timeProvider.GetUtcNow() + _dropDedupWindow);
+            break;
+        }
     }
 
-    public WorldGroundItemDropResult Drop(WorldGroundItemDrop drop)
+    // Non-mutating dedup check - called BEFORE the caller allocates a GroundItemId (from the shared
+    // global actor-ID namespace - see WorldPartitionGrain.GroundItemActorIdAllocator's own doc
+    // comment) so a dedup hit never burns an id for nothing. SweepExpired still runs here (not only
+    // in Drop) so a caller who dedup-hits on their very first check still observes fresh state.
+    public bool TryGetExistingDrop(Guid dropId, out uint groundItemId)
     {
         SweepExpired();
-        if (_groundItemIdByDropId.TryGetValue(drop.DropId, out var existingId) && _byId.ContainsKey(existingId))
-            return new(WorldGroundItemDropStatus.AlreadyDropped, existingId);
+        if (_dropDedup.TryGetValue(dropId, out var existing)) { groundItemId = existing.GroundItemId; return true; }
+        groundItemId = default;
+        return false;
+    }
 
-        var id = _nextGroundItemId++;
+    // `groundItemId` is caller-allocated (from the shared global actor-ID namespace) - this method
+    // never mints its own id. The caller must have already confirmed TryGetExistingDrop returned
+    // false for this EXACT drop.DropId in the same logical attempt (WorldPartitionGrain.
+    // DropGroundItemAsync does this immediately before allocating, under the same grain turn, so no
+    // other call can interleave between the check and this commit).
+    public WorldGroundItemDropResult Drop(WorldGroundItemDrop drop, uint groundItemId)
+    {
+        if (_dropDedup.TryGetValue(drop.DropId, out var existing)) return new(WorldGroundItemDropStatus.AlreadyDropped, existing.GroundItemId);
+
+        var id = groundItemId;
         var now = _timeProvider.GetUtcNow();
         _byId[id] = new Entry
         {
@@ -117,7 +179,11 @@ internal sealed class WorldGroundItemMapSimulation
             CreatedAtUtc = now,
             ExpiresAtUtc = now + _lifetime,
         };
-        _groundItemIdByDropId[drop.DropId] = id;
+        // The dedup record's own deadline starts now and is refreshed to extend DropDedupWindow
+        // past whenever the item actually leaves the world (pickup or expiry) - see SweepExpired's
+        // own handling of _byId removal, which does not touch _dropDedup, and Complete/EndClaim
+        // below, which refreshes it explicitly at the moment of removal.
+        _dropDedup[drop.DropId] = (id, now + _dropDedupWindow);
         return new(WorldGroundItemDropStatus.Dropped, id);
     }
 
@@ -129,7 +195,11 @@ internal sealed class WorldGroundItemMapSimulation
 
         if (entry.Claim is { } existing)
         {
-            return existing.ClaimId == claim.ClaimId
+            // Issue 3: a repeated ClaimId must ALSO match its original CharacterId - a caller-minted
+            // Guid colliding is not proof of "the same character retrying," and returning Content to
+            // whichever character merely GUESSES or reuses a leaked ClaimId would leak the pickup to
+            // the wrong character.
+            return existing.ClaimId == claim.ClaimId && existing.CharacterId == claim.CharacterId
                 ? new(WorldGroundItemClaimStatus.AlreadyClaimed, entry.Content)
                 : new(WorldGroundItemClaimStatus.AlreadyClaimedByOther, null);
         }
@@ -143,23 +213,35 @@ internal sealed class WorldGroundItemMapSimulation
         }
 
         entry.Claim = (claim.ClaimId, claim.CharacterId);
+        entry.ClaimDeadlineUtc = _timeProvider.GetUtcNow() + _unresolvedClaimDeadline;
         return new(WorldGroundItemClaimStatus.Claimed, entry.Content);
     }
 
     private WorldGroundItemCompletionResult EndClaim(WorldGroundItemClaimReference reference, bool complete)
     {
         if (!_byId.TryGetValue(reference.Item.GroundItemId, out var entry))
-            // Not found could mean "never existed" OR "already completed" - both answer the same safe
-            // AlreadyApplied/NotFound split the caller cannot usefully distinguish further without
-            // keeping a separate tombstone ledger forever; completion already permanently removes the
-            // entry, so a replayed Complete after a successful one correctly finds nothing here.
+            // Not found could mean "never existed" OR "already completed/reaped" - both answer the
+            // same safe AlreadyApplied/NotFound split the caller cannot usefully distinguish further
+            // without a separate permanent tombstone ledger; completion (and the unresolved-claim
+            // deadline reap) already permanently removes the entry, so a replayed Complete after a
+            // successful one correctly finds nothing here.
             return new(complete ? WorldGroundItemCompletionStatus.AlreadyApplied : WorldGroundItemCompletionStatus.NotFound);
 
         if (entry.Claim is not { } held || held.ClaimId != reference.ClaimId)
             return new(WorldGroundItemCompletionStatus.NotFound);
 
-        if (complete) Remove(reference.Item.GroundItemId);
-        else entry.Claim = null; // Released: item returns to Available, still subject to its original ownership window/expiry.
+        if (complete)
+        {
+            Remove(reference.Item.GroundItemId);
+        }
+        else
+        {
+            // Release: the caller has CONFIRMED (via CharServer's own idempotent operation log - see
+            // CharacterInventoryService's own doc comment) that no durable mutation occurred for this
+            // attempt - only then is it safe to return the item to Available for anyone to claim.
+            entry.Claim = null;
+            entry.ClaimDeadlineUtc = null;
+        }
         return new(WorldGroundItemCompletionStatus.Applied);
     }
 

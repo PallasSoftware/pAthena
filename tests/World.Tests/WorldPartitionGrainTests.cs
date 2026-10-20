@@ -284,9 +284,15 @@ public sealed class WorldPartitionGrainTests : IAsyncLifetime
         // provider - never the same thing as UnverifiedFallbackMobSpawnCellSelector, which is a
         // SELECTOR choice this project's spawn-construction code must never make silently) is
         // supplied here purely to satisfy that constructor requirement.
-        public void Configure(ISiloBuilder siloBuilder) => siloBuilder.Services.AddSingleton<IWorldPartitionResolver>(
-            WorldPartitionTopologyLoader.Load(TestWorldPartitionsPath.Resolve(), ["prontera", "prt_fild08d", "izlude", "geffen"]))
-            .AddSingleton<IMovementPathProvider, UnverifiedGridLineMovementPathProvider>()
-            .AddSingleton<IMapCollisionProvider>(EmptyMapCollisionProvider.Instance);
+        public void Configure(ISiloBuilder siloBuilder)
+        {
+            // Required for IActorIdBlockAuthorityGrain (leased by GroundItemActorIdAllocator -
+            // see WorldPartitionGrain's own doc comment) to persist its cursor across activations.
+            siloBuilder.AddMemoryGrainStorage("actorIdBlockAuthority");
+            siloBuilder.Services.AddSingleton<IWorldPartitionResolver>(
+                WorldPartitionTopologyLoader.Load(TestWorldPartitionsPath.Resolve(), ["prontera", "prt_fild08d", "izlude", "geffen"]))
+                .AddSingleton<IMovementPathProvider, UnverifiedGridLineMovementPathProvider>()
+                .AddSingleton<IMapCollisionProvider>(EmptyMapCollisionProvider.Instance);
+        }
     }
 }

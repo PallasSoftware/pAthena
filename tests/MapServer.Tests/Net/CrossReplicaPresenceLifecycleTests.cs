@@ -49,7 +49,7 @@ public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests
     private CrashableReplica MakeCrashableReplica(string mapId)
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var world = new MapServerWorld(WorldMapRegistry.Tutorial, [PoringSpawn(mapId)], combat, EmptyMapCollisionProvider.Instance,
             new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), combatState, rules: TestGameplayRules.Services());
         var orleans = new OrleansWorldRuntime(_cluster.Client, Resolver());

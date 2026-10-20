@@ -14,6 +14,9 @@ public sealed class ItemCatalog
 
     public string RathenaCommit { get; }
     public FrozenDictionary<int, ItemDefinition> ById { get; }
+    // Pinned item_db lookups by AegisName (e.g. mob_db.yml `Drops:` entries, which name items by
+    // AegisName, never by id) are case-insensitive, matching itemdb_search_aegisname's own strcasecmp.
+    public FrozenDictionary<string, ItemDefinition> ByAegisName { get; }
     public IReadOnlyList<PackScript> Scripts { get; }
     public FrozenDictionary<uint, PackItemGroup> Groups { get; }
 
@@ -21,6 +24,7 @@ public sealed class ItemCatalog
     {
         RathenaCommit = commit;
         ById = byId;
+        ByAegisName = byId.Values.ToFrozenDictionary(item => item.AegisName, StringComparer.OrdinalIgnoreCase);
         Scripts = scripts;
         Groups = groups;
     }

@@ -184,7 +184,7 @@ public sealed class MapClientSessionMonsterCombatTests
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(rollWeaponAtk));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat(rollWeaponAtk));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
@@ -1166,7 +1166,7 @@ public sealed class MapClientSessionMonsterCombatTests
         combatState.Register(targetA.Map, epoch, targetA.ActorId, new WorldMonsterIncarnationId(targetA.IncarnationId.Value));
         combatState.Register(targetB.Map, epoch, targetB.ActorId, new WorldMonsterIncarnationId(targetB.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(targetA.Map, epoch, combatState, registry.AllInstances, fakeWorld);

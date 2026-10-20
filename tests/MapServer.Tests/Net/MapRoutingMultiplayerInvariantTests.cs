@@ -104,7 +104,7 @@ public sealed class MapRoutingMultiplayerInvariantTests
     private static MapConfigStore ConfigStore() => new(new MapConfig(), "unused.conf");
 
     private static MapServerWorld MakeWorld() => new(
-        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
         EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     private static async Task<byte[]> ReadExact(Stream stream, int length)

@@ -95,6 +95,15 @@ public static class PacketConstants
     public const short IroCzUseItem = 0x00a7;
     public const int IroCzUseItemLength = 9;
 
+    // VERIFIED via G108.pcapng (stock iRO client, port 4501 - see ai/iro-2026-wire.md's "Verified
+    // ground-item appearance/pickup/removal wire evidence" section for the full byte-level
+    // independent re-parse). Observed wire bytes 62 03 BD 6E 01 00 CD (frame 83238): opcode.W(2)
+    // groundActorId.L(4) + one opaque trailing byte(1) = 7, matching the SAME "+1 opaque trailing
+    // byte beyond a familiar generic shape" pattern already proven for attack/equip/unequip/
+    // movement/NPC/item-use/skill-up client packets on this MapServer connection.
+    public const short IroCzItemPickupRequest = 0x0362;
+    public const int IroCzItemPickupRequestLength = 7;
+
     // VERIFIED via dedicated stock-iRO skill-up capture (iro-skill-up-nv-basic-0-to-1.pcapng,
     // frame 3604, isolated single click on NV_BASIC's + button with a fresh Novice/JobLevel 2/
     // SkillPoints=1/NV_BASIC=0 precondition, no other client action in the surrounding window -
@@ -207,6 +216,16 @@ public static class PacketConstants
     public const short ZcItemPickupAck = 0x0b41;
     public const int ZcItemPickupAckLength = 70;
     public const byte ZcItemPickupResultSuccess = 0;
+    // VERIFIED via G108.pcapng (see ai/iro-2026-wire.md's "Verified ground-item appearance/pickup/
+    // removal wire evidence" section). 0x0ADD, 24 bytes: opcode.W(2) groundActorId.L(4) itemId.L(4)
+    // + 14 unresolved bytes (not guessed at - see that section's own "Evidence boundary" for exactly
+    // which offsets within those 14 bytes ARE independently confirmed: x.W at offset 16, y.W at
+    // offset 18). 0x00A1, 6 bytes: opcode.W(2) groundActorId.L(4) - confirmed in both captured
+    // appearance/removal pairs.
+    public const short ZcFloorItemAppearance = 0x0add;
+    public const int ZcFloorItemAppearanceLength = 24;
+    public const short ZcFloorItemRemoval = 0x00a1;
+    public const int ZcFloorItemRemovalLength = 6;
     // Verified sailor-packet-export.txt, frame 7291, TCP-payload offset 0x0049 (right after
     // Sailor's "...right now!\0" dialogue text): exact 8-byte match `fa 07 00 00 04 00 02 00` to
     // pinned PACKET_ZC_DELETE_ITEM_FROM_BODY / ZC_DELETE_ITEM_FROM_BODY (clif_delitem,

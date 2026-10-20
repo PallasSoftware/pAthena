@@ -64,7 +64,7 @@ public sealed class MonsterCombatCoordinatorTests
             CurrentHp: maxHp, MaxHp: maxHp);
 
         var questDrops = new QuestDropResolver([new(Quest21008, GPoringMobId, WoodId, 1, 10000, new("rAthena", "abc", "quest_db.yml", 1))]);
-        var coordinator = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
+        var coordinator = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var life = new WorldMonsterLifeReference(mapId, epoch, actorId, incarnationId);
 
         return new Scenario(coordinator, new FakeHpLedger(maxHp), new WorldMonsterActorView(instance), life);

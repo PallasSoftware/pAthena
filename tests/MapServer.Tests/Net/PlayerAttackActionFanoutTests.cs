@@ -73,7 +73,7 @@ public sealed class PlayerAttackActionFanoutTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var fakeWorld = new FakeCombatWorldRuntime();
         var projections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], combat, EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), projections, combatState, rules: TestGameplayRules.Services());

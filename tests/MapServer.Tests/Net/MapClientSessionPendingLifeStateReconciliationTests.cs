@@ -74,7 +74,7 @@ public sealed class MapClientSessionPendingLifeStateReconciliationTests
             "int_land", 75, 51, WorldMapRegistry.Tutorial,
             gameplayStatePersistence: gameplayPersistence,
             accountId: AccountId, charId: CharId, monsterProjections: new MonsterFeedProjectionRegistry(),
-            combat: new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+            combat: new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
             combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", 75, 51, 0, 0, 0));

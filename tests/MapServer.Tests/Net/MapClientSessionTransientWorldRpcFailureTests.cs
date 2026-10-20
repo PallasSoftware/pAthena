@@ -96,7 +96,7 @@ public sealed class MapClientSessionTransientWorldRpcFailureTests
         var combatState = new MonsterAttackCadenceStore();
         var incarnation = new WorldMonsterIncarnationId(target.IncarnationId.Value);
         combatState.Register(target.Map, epoch, target.ActorId, incarnation);
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         // Explicitly (re)seed the fake's own ledger at the CALLER's requested maxHp - the projection's
         // own snapshot HP (from registry.AllInstances, G_Poring's real MaxHp) may not match what this

@@ -23,7 +23,7 @@ public sealed class MapTcpServerMonsterTickHardeningTests
     private static MapServerWorld MakeWorld()
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         return new MapServerWorld(
             WorldMapRegistry.Tutorial,
             [],

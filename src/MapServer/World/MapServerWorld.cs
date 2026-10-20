@@ -5,6 +5,7 @@ using Athena.Net.MapServer.Generated.GameData.Quests;
 using Athena.Net.MapServer.Generated.World.Izlude.Academy;
 using Athena.Net.MapServer.Generated.World;
 using Athena.Net.MapServer.World.GeneratedScripts;
+using Athena.Net.MapServer.World.Items;
 
 namespace Athena.Net.MapServer.World;
 
@@ -112,8 +113,9 @@ public sealed record MapServerWorld(
         var effectiveMobSpawnMaps = mobSpawnMaps ?? servedMaps;
         var servedMobSpawns = effectiveMobSpawnMaps is null ? world.MobSpawns : world.MobSpawns.Where(spawn => effectiveMobSpawnMaps.Contains(spawn.Map)).ToArray();
         var questDrops = new QuestDropResolver(GeneratedQuestDrops.All);
+        var mobDrops = new MobDropResolver(ItemCatalog.Current.ByAegisName);
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(questDrops, gameplayRules.Combat);
+        var combat = new MonsterCombatCoordinator(questDrops, mobDrops, gameplayRules.Combat);
         // Same either/or composition rule the old cell-selector/movement-provider split used:
         // EmptyMapCollisionProvider.Instance keeps the collision-less placeholder path provider
         // (tests/dev fixtures); any real provider gets the collision-backed A* implementation.

@@ -40,6 +40,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         [PacketConstants.IroCzReqWearEquip] = PacketConstants.IroCzReqWearEquipLength,
         [PacketConstants.IroCzReqTakeoffEquip] = PacketConstants.IroCzReqTakeoffEquipLength,
         [PacketConstants.IroCzUseItem] = PacketConstants.IroCzUseItemLength,
+        [PacketConstants.IroCzItemPickupRequest] = PacketConstants.IroCzItemPickupRequestLength,
         [PacketConstants.IroCzSkillLevelUp] = PacketConstants.IroCzSkillLevelUpLength,
         [PacketConstants.IroCzStatusUp] = PacketConstants.IroCzStatusUpLength,
     };
@@ -1549,6 +1550,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             case PacketConstants.IroCzUseItem when _iroAuthRequested:
                 await HandleIroUseItemRequestAsync(packet, cancellationToken);
                 break;
+            case PacketConstants.IroCzItemPickupRequest when _iroAuthRequested:
+                await HandleIroItemPickupRequestAsync(packet, cancellationToken);
+                break;
             case PacketConstants.IroCzSkillLevelUp when _iroAuthRequested:
                 await HandleIroSkillLevelUpRequestAsync(packet, cancellationToken);
                 break;
@@ -2913,17 +2917,53 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 }
             }
 
+            // Regular mob_db Drops (mob.cpp's common-drop loop, run AFTER quest drops - see
+            // MobDropResolver's own doc comment): unlike quest drops, these become GROUND items, not
+            // a direct grant - World is the sole ground-item authority (see WorldGroundItemMapSimulation).
+            // DropId is deterministic from this exact kill's own life identity (map+epoch+actor+
+            // incarnation, which World already guarantees is unique per kill) plus the drop's own index
+            // within this kill's outcome - a retried RPC for the SAME kill event can never duplicate loot.
+            if (_distributedWorld is not null)
+            {
+                var (mobX, mobY) = targetSnapshot.GetPosition();
+                for (var dropIndex = 0; dropIndex < outcome.MobDrops.Count; dropIndex++)
+                {
+                    var mobDrop = outcome.MobDrops[dropIndex];
+                    var dropId = DeriveGroundItemDropId(life, dropIndex);
+                    var ownership = new WorldGroundItemOwnership(_charId, OwnerWindowMs: 3000); // pinned item_first_get_time default.
+                    var dropResult = await _distributedWorld.DropGroundItemAsync(
+                        new WorldGroundItemDrop(_mapName, mobX, mobY, new WorldGroundItemContent(mobDrop.Item.Id, mobDrop.Amount, mobDrop.StealProtected), ownership, dropId),
+                        cancellationToken);
+                    MapLogger.Info($"[iRO MAP DEBUG] Mob drop itemId={mobDrop.Item.Id} amount={mobDrop.Amount} groundItemId={dropResult.GroundItemId} status={dropResult.Status} map={_mapName} x={mobX} y={mobY}");
+                }
+            }
+
             // DEBUG-LOG-ONLY: quest-drop inventory persistence (a CharServer round trip per drop) runs
             // after the vanish but while _attackExecutionGate is still held, so it can delay the NEXT
             // attack turn/fixpos even though the death already reached the client.
             CombatTiming.Log("LETHAL AFTERMATH",
-                $"actorId={life.ActorId} questDrops={questDropsProcessed} questDropsPersistAndWriteMs={CombatTiming.F(CombatTiming.ElapsedMsSince(questDropsStartedAt))} lethalTailTotalMs={CombatTiming.F(CombatTiming.ElapsedMsSince(lethalTailStartedAt))}");
+                $"actorId={life.ActorId} questDrops={questDropsProcessed} mobDrops={outcome.MobDrops.Count} questDropsPersistAndWriteMs={CombatTiming.F(CombatTiming.ElapsedMsSince(questDropsStartedAt))} lethalTailTotalMs={CombatTiming.F(CombatTiming.ElapsedMsSince(lethalTailStartedAt))}");
         }
         catch
         {
             if (lethalCommitLife is { } leaked) CompleteLethalInFlight(leaked, markProjected: false);
             throw;
         }
+    }
+
+    // World already guarantees (MapId, SimulationEpoch, ActorId, IncarnationId) uniquely identifies
+    // ONE monster life - no two kills, ever, across the life of this map simulation, can share all
+    // four values (see WorldMonsterLifeReference's own doc comment). Hashing that identity plus this
+    // drop's own index within the kill's outcome list yields a DropId that is: (a) deterministic -
+    // a retried RPC for the exact same kill always recomputes the identical value, so
+    // WorldGroundItemMapSimulation's own DropId dedup (see its doc comment) recognizes the retry and
+    // never creates a duplicate; (b) distinct across different drop entries of the SAME kill (the
+    // index); (c) effectively never colliding with an unrelated kill (SHA-256 over the full identity).
+    private static Guid DeriveGroundItemDropId(WorldMonsterLifeReference life, int dropIndex)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes($"{life.MapId}|{life.SimulationEpoch.Value}|{life.ActorId}|{life.IncarnationId.Value}|{dropIndex}");
+        var hash = System.Security.Cryptography.SHA256.HashData(bytes);
+        return new Guid(hash.AsSpan(0, 16));
     }
 
     // The shared allocate-then-first-dispatch implementation (§1 of the substep-9 plan): allocates a
@@ -3734,6 +3774,85 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // consumed here; a later effect persistence failure is logged by the effect itself, never rolled back into the inventory
         // (consume-first matches the reference and can never duplicate an effect without its cost).
         if (scriptPlan is not null) await Athena.Net.MapServer.World.Items.ItemScriptEvaluator.ExecuteAsync(scriptPlan, this, cancellationToken);
+    }
+
+    // Verified 0x0362 pickup request (see IroItemPickupRequestPacket, ai/iro-2026-wire.md). The
+    // client supplies only GroundActorId (World's own minted ground-item identity) - every other
+    // fact (item identity/amount, eligibility, exclusivity) is resolved server-side against World's
+    // authoritative ground-item state, never trusted from the client.
+    //
+    // Full cross-server pipeline, exactly the project's own validate -> persist -> update runtime
+    // state -> notify rule:
+    //   1. ClaimGroundItemAsync: an exclusive reservation in World - resolves two racing pickups to
+    //      exactly one winner (see WorldGroundItemMapSimulation's own doc comment). A non-Claimed/
+    //      AlreadyClaimed result (AlreadyClaimedByOther, NotFound, NotEligible, StaleEpoch) ends the
+    //      attempt here with NO durable mutation attempted at all.
+    //   2. GrantAsync, with a DETERMINISTIC operationId derived from this claim's own ClaimId - a
+    //      retried grant for the SAME claim always replays through CharServer's idempotency log
+    //      instead of risking a duplicate (see CharacterInventoryService.GrantAsync's own
+    //      operationId doc comment).
+    //   3a. Grant succeeded -> CompleteGroundItemClaimAsync (permanently removes the item in World)
+    //       -> 0x0B41 inventory ack (the SAME existing serializer every other grant path already
+    //       uses) -> 0x00A1 floor-item removal ack to this session.
+    //   3b. Grant produced a CONFIRMED no-mutation outcome (Rejected - the planner declined
+    //       synchronously, no request ever reached CharServer) -> ReleaseGroundItemClaimAsync (the
+    //       item returns to Available for anyone, including this same character later).
+    //   3c. Grant's outcome is UNKNOWN (InDoubt/Unavailable/Conflict) -> the claim is left exactly as
+    //       is, deliberately NEVER released - per this project's own ephemeral-world-state policy
+    //       (see WorldGroundItemMapSimulation's ClaimDeadlineUtc doc comment), an unresolved claim is
+    //       eventually reaped by PERMANENT REMOVAL, never silently handed to a different character -
+    //       a duplicate grant is strictly worse than one permanently lost ground item.
+    private async Task HandleIroItemPickupRequestAsync(byte[] packet, CancellationToken cancellationToken)
+    {
+        if (!IroItemPickupRequestPacket.TryParse(packet, out var request)) return;
+        if (_distributedWorld is null || _inventoryService is null) return;
+
+        var epochSnapshot = await _distributedWorld.GetGroundItemsAsync(_mapName, cancellationToken);
+        var reference = new WorldGroundItemReference(_mapName, epochSnapshot.Epoch, request.GroundActorId);
+        var claimId = Guid.NewGuid();
+        var claim = await _distributedWorld.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, _charId, claimId), cancellationToken);
+        if (claim.Status is not (WorldGroundItemClaimStatus.Claimed or WorldGroundItemClaimStatus.AlreadyClaimed))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} status={claim.Status}.");
+            return;
+        }
+
+        if (!GeneratedItems.ById.TryGetValue(claim.Content!.ItemId, out var itemDefinition))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} references unregistered itemId={claim.Content.ItemId}.");
+            return;
+        }
+
+        var grant = await _inventoryService.GrantAsync(
+            [new InventoryPlanner.GrantRequest(itemDefinition, claim.Content.Amount)], InventoryOperationKind.Add, cancellationToken, claimId);
+        var claimReference = new WorldGroundItemClaimReference(reference, claimId);
+        if (grant.Succeeded)
+        {
+            await _distributedWorld.CompleteGroundItemClaimAsync(claimReference, cancellationToken);
+
+            _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+            foreach (var (placedRow, added) in grant.Placements())
+            {
+                var placedItem = GeneratedItems.ById[placedRow.ItemId];
+                var grantClientIndex = (ushort)(placedRow.SlotIndex + 2);
+                var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)added, placedItem.ClientViewId, IroInventoryListPackets.ItemType(placedItem));
+                MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for ground-item pickup itemId={placedRow.ItemId} count={added} clientIndex={grantClientIndex}");
+                await WriteAsync(pickupPacket, cancellationToken);
+            }
+
+            await WriteAsync(IroGroundItemPackets.BuildFloorItemRemoval(request.GroundActorId), cancellationToken);
+        }
+        else if (grant.Status == InventoryChangeStatus.Rejected)
+        {
+            // Confirmed: the planner declined synchronously, no request ever reached CharServer - safe to release.
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup grant rejected (no room/invalid) for groundActorId={request.GroundActorId}; releasing claim.");
+            await _distributedWorld.ReleaseGroundItemClaimAsync(claimReference, cancellationToken);
+        }
+        else
+        {
+            // Unknown outcome (InDoubt/Unavailable/Conflict) - never release; see this method's own doc comment.
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup grant outcome unknown (status={grant.Status}) for groundActorId={request.GroundActorId}; claim left unresolved.");
+        }
     }
 
     // Thin parse-and-call handler (task section 16) for the verified stock-iRO skill-up request
