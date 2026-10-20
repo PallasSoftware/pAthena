@@ -866,6 +866,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // unarmed, never "unknown". CharacterEquipmentSnapshot is derived from the SAME
         // inventory read - never a second independent CharServer fetch.
         _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!, _rules.Inventory, GeneratedItems.ById, CurrentInventoryLimits);
+        await ExpireDueRentalsAsync(_sessionCancellation.Token);
         _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;
@@ -3599,6 +3600,40 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // GENUINE transition (this method's own caller in ApplyIncomingMobBasicAttackAsync) is what
         // sets a new one; this call site never re-records the same transition twice.
         _pendingLifeState = null;
+    }
+
+    // Pinned pc_inventory_rentals (pc.cpp:1200-1225), called at login/reconnect - see
+    // RentalExpiryResolver's own doc comment for the exact scope/timing this reproduces and the
+    // one documented difference (no continuously-ticking re-announce timer; an in-session expiry
+    // is instead caught at the NEXT login/reconnect). Every already-due rental row is removed in
+    // ONE durable operation (never one CharServer round trip per row) - if that operation does not
+    // succeed, the stale rows simply remain in the live snapshot and are retried on the next
+    // reconnect; nothing here can leave the snapshot internally inconsistent. Client notification
+    // (clif_rental_expired/0x0299, clif_rental_time/0x0298) has no capture evidence yet (see
+    // ai/iro-2026-wire.md) and is Protocol-pending-capture - the durable removal itself is fully
+    // authoritative and independent of it.
+    private async Task ExpireDueRentalsAsync(CancellationToken cancellationToken)
+    {
+        if (_inventoryService is null) return;
+        var nowUnixSeconds = (uint)_timeProvider.GetUtcNow().ToUnixTimeSeconds();
+        var expired = RentalExpiryResolver.FindExpired(_inventoryService.Snapshot, nowUnixSeconds);
+        if (expired.Count == 0) return;
+
+        var change = await _inventoryService.ExecuteAsync(InventoryOperationKind.Expire, inventory =>
+        {
+            var mutations = new List<Athena.Net.Shared.Inventory.InventoryMutation>();
+            foreach (var due in expired)
+            {
+                var row = inventory.Items.FirstOrDefault(i => i.DurableId == due.DurableId);
+                if (row is not null) mutations.Add(InventoryPlanner.RemoveFromRow(row, row.Amount));
+            }
+            return mutations.Count == 0 ? null : mutations;
+        }, cancellationToken);
+
+        if (change.Succeeded)
+            MapLogger.Info($"[iRO MAP DEBUG] Expired {expired.Count} due rental item(s) at login for accountId={_accountId} charId={_charId}.");
+        else
+            MapLogger.Warning($"[iRO MAP DEBUG] Rental-expiry persistence failed (status={change.Status}) for accountId={_accountId} charId={_charId}; will retry on next reconnect.");
     }
 
     // Pinned clif_parse_UseItem (clif.cpp:12077-12106) -> pc_useitem (pc.cpp:6450-6576).

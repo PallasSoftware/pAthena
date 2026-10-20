@@ -14,6 +14,13 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
 {
     private readonly object _gate = new();
     private readonly List<InventoryItemRow> _rows;
+    // Storage/Cart (and GuildStorage) rows, modeled the same way the real CharServer executor
+    // tracks them - a separate per-container row list, sharing the SAME durable-id sequence space
+    // as inventory (matching production's single CharInventoryOperation-keyed identity domain per
+    // character; a real deployment's Storage/Cart rows are a genuinely separate SQL table with
+    // their own identity column, but nothing in this test double's own contract depends on the two
+    // spaces colliding or not, so sharing one counter is the simplest faithful choice).
+    private readonly Dictionary<InventoryContainer, List<InventoryItemRow>> _containerRows = [];
     private readonly Dictionary<Guid, (byte[] Hash, InventoryOperationResponse Response)> _log = [];
     private CharacterInventorySnapshot? _firstRead;
     private uint _nextId;
@@ -25,6 +32,22 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
         _firstRead = initial;
         _rows = [.. initial.Items.Select(item => item.ToRow())];
         _nextId = _rows.Count == 0 ? 1 : _rows.Max(row => row.DurableId) + 1;
+    }
+
+    /// <summary>Seeds a non-inventory container (Storage/Cart/GuildStorage) with initial rows - test setup only, never touched by production code.</summary>
+    public void SeedContainer(InventoryContainer container, IReadOnlyList<InventoryItemRow> rows)
+    {
+        lock (_gate)
+        {
+            _containerRows[container] = [.. rows];
+            var maxId = rows.Count == 0 ? 0 : rows.Max(r => r.DurableId);
+            if (maxId >= _nextId) _nextId = maxId + 1;
+        }
+    }
+
+    public IReadOnlyList<InventoryItemRow> ContainerRows(InventoryContainer container)
+    {
+        lock (_gate) return _containerRows.TryGetValue(container, out var rows) ? [.. rows.OrderBy(r => r.DurableId)] : [];
     }
 
     /// <summary>The next N requests are never answered and never applied (the request was lost on the way).</summary>
@@ -96,32 +119,34 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
         }
     }
 
+    private List<InventoryItemRow> RowsFor(InventoryContainer container) =>
+        container == InventoryContainer.Inventory ? _rows : _containerRows.TryGetValue(container, out var rows) ? rows : _containerRows[container] = [];
+
     private InventoryOperationResponse Apply(InventoryOperationRequest request, byte[] hash)
     {
-        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) =>
-            container == InventoryContainer.Inventory ? _rows.FirstOrDefault(row => row.DurableId == id) : null);
+        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => RowsFor(container).FirstOrDefault(row => row.DurableId == id));
         if (evaluation.Status != InventoryOperationStatus.Applied)
             return new(evaluation.Status, request.CharId, request.OperationId, evaluation.FailedIndex, []);
 
         var results = new List<InventoryMutationResult>();
         foreach (var change in evaluation.Changes)
         {
-            // Only the inventory container is modeled here; other containers are accepted as no-ops for result shape.
+            var rows = RowsFor(change.Container);
             switch (change.Kind)
             {
                 case InventoryRowChangeKind.Insert:
                 {
                     var row = change.Row with { DurableId = _nextId++ };
-                    _rows.Add(row);
+                    rows.Add(row);
                     results.Add(new(row.DurableId, false, row));
                     break;
                 }
                 case InventoryRowChangeKind.Update:
-                    _rows[_rows.FindIndex(r => r.DurableId == change.Row.DurableId)] = change.Row;
+                    rows[rows.FindIndex(r => r.DurableId == change.Row.DurableId)] = change.Row;
                     results.Add(new(change.Row.DurableId, false, change.Row));
                     break;
                 case InventoryRowChangeKind.Delete:
-                    _rows.RemoveAll(r => r.DurableId == change.Row.DurableId);
+                    rows.RemoveAll(r => r.DurableId == change.Row.DurableId);
                     results.Add(new(change.Row.DurableId, true, null));
                     break;
             }
