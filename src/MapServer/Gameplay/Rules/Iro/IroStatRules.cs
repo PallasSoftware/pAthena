@@ -144,7 +144,7 @@ public sealed class IroStatRules : IStatRules
             }
             // Flat stat bonuses apply for every equipped row regardless of concrete type (pinned status_calc_pc_sub
             // sums param_bonus independently of the equip slot/item category).
-            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script); }
+            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
         equipment = new EquipmentStats(hardDefense, weapon, paramBonus);

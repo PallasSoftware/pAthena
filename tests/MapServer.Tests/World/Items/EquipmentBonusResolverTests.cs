@@ -53,6 +53,38 @@ public sealed class EquipmentBonusResolverTests
         Assert.Equal(new EquipmentParamBonus(1, 2, 3, 4, 5, 6), EquipmentBonusResolver.Resolve(script));
     }
 
+    private static IrNode GetRefine() => new(IrKind.Call, Text: "getrefine");
+
+    [Fact]
+    public void Resolve_GetRefine_ReturnsCurrentItemsOwnRefineValue()
+    {
+        // Pinned Id 15070 "Robe_Of_Happiness": `bonus bLuk,getrefine();`
+        var script = Lowered(new(IrKind.Block, Children: [new(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bLuk", Number: Sp["bLuk"]), GetRefine()])]));
+        Assert.Equal(new EquipmentParamBonus(0, 0, 0, 0, 0, Luck: 7), EquipmentBonusResolver.Resolve(script, refine: 7));
+    }
+
+    [Fact]
+    public void Resolve_GetRefineArithmetic_AppliesOperatorToRefineValue()
+    {
+        // Pinned Id 4358 "Seyren_Card": `bonus bStr,getrefine()-6;`
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "bonus", Children:
+            [
+                new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]),
+                new(IrKind.Binary, Number: (long)IrOp.Sub, Children: [GetRefine(), new(IrKind.Int, Number: 6)]),
+            ]),
+        ]));
+        Assert.Equal(new EquipmentParamBonus(Strength: 4, 0, 0, 0, 0, 0), EquipmentBonusResolver.Resolve(script, refine: 10));
+    }
+
+    [Fact]
+    public void Resolve_GetRefineWithDefaultRefineArgument_UsesZero()
+    {
+        var script = Lowered(new(IrKind.Block, Children: [new(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]), GetRefine()])]));
+        Assert.Equal(new EquipmentParamBonus(Strength: 0, 0, 0, 0, 0, 0), EquipmentBonusResolver.Resolve(script));
+    }
+
     [Fact]
     public void Resolve_Bonus2Command_ThrowsUnsupported()
     {
