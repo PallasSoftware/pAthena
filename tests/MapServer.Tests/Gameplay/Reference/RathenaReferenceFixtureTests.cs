@@ -343,6 +343,40 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.True(withRing.BaseAttack >= withoutRing.BaseAttack);
     }
 
+    // S6 refine bonus: pinned db/re/refine.yml Group: Weapon, Levels[Level: 1].RefineLevels[Level: 5].Bonus:
+    // a real pinned weapon (1101 Sword, WeaponLevel: 1) refined to +5 must contribute the pinned flat refine
+    // ATK bonus (Bonus/100) on top of its own static Attack, proving GeneratedRefineBonus's integration into
+    // TryResolveEquipment/WeaponAttack end to end.
+    [Fact]
+    public void EquipmentStats_RealRefinedWeapon_AddsRefineBonusToWeaponAttack()
+    {
+        const int sword = 1101;
+        var unrefined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 0, 0, 0)]);
+        var refined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(unrefined, GeneratedItems.ById, out var unrefinedEquipment));
+        Assert.True(Rules.Stats.TryResolveEquipment(refined, GeneratedItems.ById, out var refinedEquipment));
+
+        Assert.Equal(0, unrefinedEquipment.WeaponRefineAtk);
+        Assert.True(refinedEquipment.WeaponRefineAtk > 0);
+        Assert.Equal(unrefinedEquipment.Weapon!.Attack + refinedEquipment.WeaponRefineAtk, refinedEquipment.WeaponAttack);
+        Assert.True(refinedEquipment.WeaponAttack > unrefinedEquipment.WeaponAttack);
+    }
+
+    // S6 refine bonus: a graded item (EnchantGrade > 0) is explicitly rejected rather than silently applying
+    // the refine-only half, since the enchant-grade multiplier is not modeled yet (enchantgrade_db is not
+    // generated) - matching this project's own fail-clearly convention for an unmodeled bonus category.
+    [Fact]
+    public void EquipmentStats_RealRefinedWeaponWithEnchantGrade_IsUnresolvedNotRefineOnly()
+    {
+        const int sword = 1101;
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 1, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
     public static TheoryData<int> KnifeTargets => [0, 1, 2];
 
     // Reference: a Knife-wielding Novice's non-critical, non-miss damage values against real mobs. Accuracy and

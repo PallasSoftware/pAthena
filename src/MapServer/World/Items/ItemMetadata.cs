@@ -54,4 +54,10 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     public ulong ClassBase0 => Data.ClassBase0;
     public ulong ClassBase1 => Data.ClassBase1;
     public ulong ClassBase2 => Data.ClassBase2;
+
+    // Pinned item_db ArmorLevel (Default 1 for armor, 0 for non-armor - ItemDatabaseLoader's own
+    // load-time default). Used only by the refine-bonus lookup (GeneratedRefineBonus.Bonus) - see
+    // EquipmentBonusResolver's sibling, the weapon/armor refine ATK/DEF formula in
+    // IroStatRules/KroStatRules.TryResolveEquipment.
+    public uint ArmorLevel => Data.ArmorLevel;
 }

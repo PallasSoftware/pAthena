@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Generated.GameData.Refine;
 using Athena.Net.MapServer.Generated.Progression;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
@@ -72,13 +73,16 @@ public sealed class IroStatRules : IStatRules
             mdef2 += (e.Intelligence - b.Intelligence) + (int)(((float)e.Dexterity / 5 - (float)b.Dexterity / 5) + ((float)e.Vitality / 5 - (float)b.Vitality / 5));
         mdef2 = Math.Clamp(mdef2, short.MinValue, ShortMax);
 
-        // Hard DEF = summed equipped-armor DEF; status_calc_def with no active DEF status is cap_value(def, SHRT_MIN, SHRT_MAX).
-        var hardDef = Math.Clamp(equipment.HardDefense, short.MinValue, ShortMax);
+        // Hard DEF = summed equipped-armor DEF plus the refine bonus (status.cpp:4096's own
+        // `(refinedef+50)/100` truncation, applied once to the SUM of every equipped armor row's
+        // own refine bonus, not per-row); status_calc_def with no active DEF status is
+        // cap_value(def, SHRT_MIN, SHRT_MAX).
+        var hardDef = Math.Clamp(equipment.HardDefense + (equipment.ArmorRefineDefense + 50) / 100, short.MinValue, ShortMax);
 
         // RENEWAL MATK from the EFFECTIVE stats; weapon MATK, %, pseudo-buffs and equipment MATK are not modeled, so a
         // weapon with MagicAttack is rejected rather than ignored.
         if ((equipment.Weapon?.MagicAttack ?? 0) != 0) throw new NotSupportedException("Weapon MATK is not modeled.");
-        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4, 0, ushort.MaxValue);
+        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4 + equipment.WeaponRefineMatk, 0, ushort.MaxValue);
 
         // CRI and perfect FLEE have no overlay from the supported statuses (LUK is unchanged by them).
         return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef, MagicAttackMin = matk, MagicAttackMax = matk };
@@ -121,22 +125,46 @@ public sealed class IroStatRules : IStatRules
         return state with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = Math.Min(state.CurrentHp, maxHp), CurrentSp = Math.Min(state.CurrentSp, maxSp) };
     }
 
+    // Pinned status_calc_pc's equipment loop (status.cpp:3927-4015,4096), scoped to the refine
+    // formula's flat-Bonus half only: weapon `wa->atk2 += info->bonus/100` and (sd->weapontype1 !=
+    // W_BOW) `wa->matk += info->bonus/100`, armor `refinedef += info->bonus` folded into
+    // `base_status->def += (refinedef+50)/100` by the caller. Gated on ItemMetadata.Refineable
+    // (pinned findLevelInfoSub's own `if (data.flag.no_refine) return nullptr;` early-out,
+    // status.cpp:417-419) so a non-refineable row's Refine byte (never expected nonzero, but never
+    // trusted either) can never contribute a bonus. The enchant-grade multiplier
+    // (`(info->bonus/100) * enchantgrade_info->bonus / 100`) is explicitly NOT modeled yet -
+    // enchantgrade_db is not generated (see docs/gameplay/feature-16-execution-plan.md's S6 entry) -
+    // so a graded item (EnchantGrade > 0) is rejected rather than silently applying refine-only.
+    // Shadow gear refine (a third GeneratedRefineBonus group this project never generates) and the
+    // weapon-level-5 pAtk/sMatk bonus are likewise out of this slice's scope.
     public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment)
     {
         var hardDefense = 0;
         WeaponItemDefinition? weapon = null;
         var paramBonus = EquipmentParamBonus.None;
+        var weaponRefineAtk = 0;
+        var weaponRefineMatk = 0;
+        var armorRefineDefense = 0;
         foreach (var row in inventory.Items)
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
             if (!items.TryGetValue(row.ItemId, out var definition)) { equipment = default; return false; }
+            if (row.Details.EnchantGrade > 0) { equipment = default; return false; } // enchant-grade multiplier not modeled yet.
             switch (definition)
             {
                 case ArmorItemDefinition armor:
                     hardDefense += armor.Defense;
+                    if (definition.Meta is { Refineable: true } armorMeta)
+                        armorRefineDefense += (int)GeneratedRefineBonus.Bonus("Armor", (int)armorMeta.ArmorLevel, row.Refine);
                     break;
                 case WeaponItemDefinition w when (row.Equip & 0x000002) != 0:
                     weapon = w;
+                    if (definition.Meta is { Refineable: true })
+                    {
+                        var bonus = (int)GeneratedRefineBonus.Bonus("Weapon", w.WeaponLevel, row.Refine);
+                        weaponRefineAtk += bonus;
+                        if (w.WeaponType != WeaponType.Bow) weaponRefineMatk += bonus;
+                    }
                     break;
                 default:
                     equipment = default;
@@ -147,7 +175,7 @@ public sealed class IroStatRules : IStatRules
             try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
-        equipment = new EquipmentStats(hardDefense, weapon, paramBonus);
+        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense);
         return true;
     }
 

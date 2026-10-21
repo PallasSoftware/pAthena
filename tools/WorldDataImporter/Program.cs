@@ -37,6 +37,7 @@ internal static partial class WorldDataImporterCli
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
                 "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
+                "compile-refine" => await CompileRefineAsync(args[1..]),
                 "survey-item-scripts" => SurveyItemScripts(args[1..]),
                 "compile-item-pack" => await CompileItemPackAsync(args[1..]),
                 "collect-rathena-names" => await CollectRathenaNamesAsync(args[1..]),
@@ -996,6 +997,22 @@ internal static partial class WorldDataImporterCli
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllTextAsync(output, SizeFixCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
         Console.WriteLine($"Generated size fix table for {table.GetLength(0)} weapon types.");
+        return 0;
+    }
+
+    // Regenerates GameData/Refine/GeneratedRefineBonus.cs from db/re/refine.yml's Weapon/Armor
+    // groups (see RefineDataCompiler's own doc comment for the exact scope - only each (Group,
+    // Level, RefineLevel)'s flat Bonus field, not the Chances/Catalyst/Options refine-action data).
+    private static async Task<int> CompileRefineAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, RefineDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated refine bonus table for {table.Count} item groups.");
         return 0;
     }
 
