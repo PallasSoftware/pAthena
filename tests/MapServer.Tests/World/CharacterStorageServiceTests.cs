@@ -16,6 +16,8 @@ public sealed class CharacterStorageServiceTests
     private const uint CharId = 1;
     private static readonly ItemDefinition Wood = ItemCatalog.Current.ByAegisName["Wood"]; // Stackable Etc item.
     private static readonly ItemDefinition Knife = ItemCatalog.Current.ByAegisName["Knife"]; // Non-stackable weapon.
+    // Pinned db/re/item_db_etc.yml Id 766 "Silky_Fur_Bundle": Trade.NoCart/NoStorage/NoGuildStorage all true.
+    private static readonly ItemDefinition SilkyFurBundle = ItemCatalog.Current.ByAegisName["Silky_Fur_Bundle"];
 
     private static CharacterInventorySnapshot InventoryWith(params CharacterInventoryItem[] items) => new(items);
 
@@ -33,6 +35,40 @@ public sealed class CharacterStorageServiceTests
         Assert.Equal((uint)Wood.Id, row.ItemId);
         Assert.Equal(4u, row.Amount);
         Assert.Equal(6, ops.AmountOf(Wood.Id)); // Inventory side correctly decremented in the SAME operation.
+    }
+
+    // Pinned itemdb_canstore_sub (itemdb.cpp:3298-3299): NoStorage blocks storage transfer unconditionally - this
+    // project has no GM trade-override-level concept yet, matching CharacterEquipmentMutationService's own
+    // RestrictedOnNormalMaps precedent for an unconditionally-enforced pinned flag.
+    [Fact]
+    public async Task TransferIn_NoStorageFlaggedItem_IntoStorage_RejectsAsNotStorable()
+    {
+        var inventory = InventoryWith(new CharacterInventoryItem(1, 0, SilkyFurBundle.Id, 1, 0, true, 0, 0, 0));
+        var ops = new InMemoryInventoryOperations(inventory);
+        var service = new CharacterStorageService(AccountId, CharId, ops, InventoryContainer.Storage, [], ItemCatalog.Current.ById);
+
+        var result = await service.TransferInAsync(inventory, sourceDurableId: 1, amount: 1, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ContainerPlanner.StorageTransferResult.NotStorable, result.Reason);
+        Assert.Empty(service.Rows);
+        Assert.Empty(ops.Requests);
+    }
+
+    // Pinned itemdb_cancartstore_sub (itemdb.cpp:3294-3295): NoCart blocks cart transfer the same way.
+    [Fact]
+    public async Task TransferIn_NoCartFlaggedItem_IntoCart_RejectsAsNotStorable()
+    {
+        var inventory = InventoryWith(new CharacterInventoryItem(1, 0, SilkyFurBundle.Id, 1, 0, true, 0, 0, 0));
+        var ops = new InMemoryInventoryOperations(inventory);
+        var service = new CharacterStorageService(AccountId, CharId, ops, InventoryContainer.Cart, [], ItemCatalog.Current.ById);
+
+        var result = await service.TransferInAsync(inventory, sourceDurableId: 1, amount: 1, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ContainerPlanner.StorageTransferResult.NotStorable, result.Reason);
+        Assert.Empty(service.Rows);
+        Assert.Empty(ops.Requests);
     }
 
     [Fact]

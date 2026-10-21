@@ -42,6 +42,11 @@ public static class ContainerPlanner
         if (amount == 0 || amount > sourceRow.Amount) return new(false, null, StorageTransferResult.Invalid);
         if (sourceRow.Equip != 0) return new(false, null, StorageTransferResult.NotStorable); // pc_candrop-equivalent: an equipped row is never transferable.
         if (!items.TryGetValue(sourceRow.ItemId, out var item)) return new(false, null, StorageTransferResult.Invalid);
+        // Pinned itemdb_cancartstore_sub/itemdb_canstore_sub (itemdb.cpp:3294-3299): NoCart/NoStorage block the
+        // transfer unless a GM's trade-override level clears it - this project has no GM-permission/trade-override
+        // concept yet, so (like RestrictedOnNormalMaps/CharacterEquipmentMutationService) the restriction is
+        // enforced unconditionally until that concept exists, never silently ignored.
+        if (IsRestricted(item, targetContainer)) return new(false, null, StorageTransferResult.NotStorable);
 
         var stackCap = StackCapFor(item, targetContainer);
         if (stackCap is { } cap && amount > cap) return new(false, null, StorageTransferResult.StackLimit);
@@ -84,6 +89,19 @@ public static class ContainerPlanner
         row.ItemId == (uint)source.ItemId && row.Identify == (source.Identified ? 1 : 0) && row.Refine == source.Refine &&
         row.Attribute == source.Details.Attribute && row.Card0 == source.Details.Card0 && row.Card1 == source.Details.Card1 &&
         row.Card2 == source.Details.Card2 && row.Card3 == source.Details.Card3;
+
+    private static bool IsRestricted(ItemDefinition item, InventoryContainer container)
+    {
+        var data = item.Meta?.Data;
+        if (data is null) return false;
+        return container switch
+        {
+            InventoryContainer.Storage => data.Flags.HasFlag(PackItemFlags.NoStorage),
+            InventoryContainer.Cart => data.Flags.HasFlag(PackItemFlags.NoCart),
+            InventoryContainer.GuildStorage => data.Flags.HasFlag(PackItemFlags.NoGuildStorage),
+            _ => false,
+        };
+    }
 
     private static uint? StackCapFor(ItemDefinition item, InventoryContainer container)
     {
