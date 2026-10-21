@@ -45,6 +45,9 @@ public static class EquipSlots
 
     // Pinned EQP_ARMS = EQP_HAND_R|EQP_HAND_L (pc.hpp:1132).
     public const uint Arms = 0x000002 | 0x000020;
+
+    // Pinned EQP_ACC = EQP_ACC_L|EQP_ACC_R (pc.hpp:1134).
+    public const uint Acc = 0x000080 | 0x000008;
 }
 
 public enum EquipMutationResult
