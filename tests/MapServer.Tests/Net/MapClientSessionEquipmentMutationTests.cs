@@ -46,7 +46,7 @@ public sealed class MapClientSessionEquipmentMutationTests
     }
 
     private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, InMemoryInventoryOperations Persistence)> SetupAsync(
-        CharacterInventorySnapshot initialInventory)
+        CharacterInventorySnapshot initialInventory, ushort jobClass = 0 /* JOB_NOVICE */)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -57,7 +57,7 @@ public sealed class MapClientSessionEquipmentMutationTests
         listener.Stop();
         var stream = client.GetStream();
 
-        var gameplayState = new CharacterGameplayState(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
+        var gameplayState = new CharacterGameplayState(CharId, 1, jobClass, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
         var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
@@ -156,6 +156,32 @@ public sealed class MapClientSessionEquipmentMutationTests
         var ack = await ReadExact(stream, 11);
         Assert.Equal((short)0x0999, BinaryPrimitives.ReadInt16LittleEndian(ack));
         Assert.Equal(PacketConstants.EquipAckResultFailLevel, ack[10]);
+
+        Assert.Empty(persistence.EquipUpdates);
+        Assert.Null(session.Equipment!.RightHandItemId);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // S4 job-class equipment eligibility (pinned pc_job_can_use_item, pc.cpp:1771-1790): a real
+    // generated item (1900 Sinister_Viollin, Jobs: BardDancer only, Gender: Male) requested by a
+    // Novice job class must be rejected with the plain Fail ack (0x0999 result byte 2 - not
+    // FailLevel, since job-class and level are independent pinned gates), never persisted -
+    // proven through the REAL 0x0998 wire path, not just the service layer.
+    [Fact]
+    public async Task EquipRealItemWithIneligibleJobClass_SendsFailAck_NeverPersists()
+    {
+        const int javelin = 530040; // Jobs: Crusader/Knight/Swordman only; no EquipLevelMin (isolates job-class from the level gate).
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, javelin, 1, 0, true, 0, 0, 0)]);
+        var (client, stream, session, run, persistence) = await SetupAsync(initial, jobClass: 0 /* JOB_NOVICE */);
+        using var _ = client;
+
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000002));
+
+        var ack = await ReadExact(stream, 11);
+        Assert.Equal((short)0x0999, BinaryPrimitives.ReadInt16LittleEndian(ack));
+        Assert.Equal(PacketConstants.EquipAckResultFail, ack[10]);
 
         Assert.Empty(persistence.EquipUpdates);
         Assert.Null(session.Equipment!.RightHandItemId);

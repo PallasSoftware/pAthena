@@ -97,6 +97,7 @@ internal static partial class CharacterDataCompiler
         var artifacts = new List<CharacterDataArtifact>
         {
             new("Jobs/GeneratedJobRegistry.cs", EmitJobs(jobs, commit)),
+            new("Jobs/GeneratedJobEquipClass.cs", EmitJobEquipClass(jobs, commit)),
             new("Progression/GeneratedProgressionData.cs", EmitProgressions(progressions, commit)),
             new("Progression/GeneratedProgressionRegistry.cs", EmitProgressionRegistry(progressions, commit)),
             new("Progression/GeneratedJobAspd.cs", EmitJobAspd(progressions, builders, commit)),
@@ -469,6 +470,132 @@ internal static partial class CharacterDataCompiler
         _ => throw new ArgumentException($"Job id {jobId} has no pinned pc_jobid2mapid classification for a Status Point cap. Extend ResolveJobParameterCategory with its exact pc_jobid2mapid case before generating progression data for this job."),
     };
 
+    // Pinned pc_job_can_use_item (src/map/pc.cpp:1771-1790): `job = 1ULL << (sd->class_ & MAPID_FIRSTMASK)`,
+    // then tests item_db's class_base[index] where index is 0 (base profession), 1 (JOBL_2_1 set) or
+    // 2 (JOBL_2_2 set) - no other JOBL_*/MAPID_* bit is ever consulted by this check (JOBL_THIRD/
+    // FOURTH/UPPER/BABY only affect OTHER pinned systems, e.g. ResolveJobParameterCategory's stat
+    // caps above - a job's "tier" never changes which class_base array or bit it tests). This table is
+    // ported offline from pc_jobid2mapid (src/map/pc.cpp:7519-7698) and the e_mapid enum (src/map/
+    // map.hpp) exactly like ResolveJobParameterCategory above, for the same reason given in that
+    // method's own doc comment: this project does not model rAthena's full uint64 JOBL_*/MAPID_*
+    // bitmask machinery at runtime (it has no other consumer), so the (FirstMask, ClassBaseIndex) pair
+    // every job resolves to is ported once, offline, as this fixed table keyed by the exact pinned
+    // numeric Job ID - never inferred from a job's display/enum name.
+    //
+    // FirstMask values below were derived by walking e_mapid's declaration order in full: each
+    // explicit "= JOBL_X|MAPID_Y" reset's FirstMask equals MAPID_Y's own FirstMask (which itself may
+    // be a reset), and every following unassigned enumerator increments by 1 from its predecessor
+    // within that same declaration run. ClassBaseIndex is 1 only for symbols declared in an e_mapid
+    // section whose reset uses JOBL_2_1 (or inherits from one - e.g. every 2-1/Trans-2-1/Baby-2-1/3-1/
+    // Trans-3-1/Baby-3-1/4-1 section resets from a JOBL_2_1-rooted symbol), 2 only for sections rooted
+    // in a JOBL_2_2 reset, 0 otherwise (the base-profession run and every section resetting from it,
+    // e.g. Trans/Baby/3rd/4th variants of a BASE job like Novice/Taekwon/Gunslinger/Ninja/Summoner/
+    // Gangsi that was never 2-1/2-2 split).
+    //
+    // The "2" gender/appearance-variant job IDs (Knight2, Crusader2, LordKnight2, Paladin2,
+    // BabyKnight2, BabyCrusader2, RuneKnight2/RuneKnightT2/RoyalGuard2/RoyalGuardT2/Ranger2/RangerT2/
+    // Mechanic2/MechanicT2, BabyRuneKnight2/BabyRoyalGuard2/BabyRanger2/BabyMechanic2, StarGladiator2,
+    // StarEmperor2/BabyStarEmperor2, Windhawk2/Meister2/DragonKnight2/ImperialGuard2, SkyEmperor2) are
+    // genuinely UNCLASSIFIABLE here: pc_jobid2mapid (src/map/pc.cpp:7519-7698) has NO case label for
+    // any of them at all (confirmed by reading the full switch), so they fall to its `default: return
+    // -1`, and pc_authok (src/map/pc.cpp:2098-2104) treats that -1 as an invalid class and forcibly
+    // resets the CHARACTER's own class_ to MAPID_NOVICE at load time - it does NOT fall back to the
+    // "2" variant's base job's class_base bit. ResolveJobParameterCategory's own doc comment
+    // (ABOVE in this same file) that these "2" ids "share their base job's every stat rule" is about
+    // job_stats.yml Jobs-block membership for a DIFFERENT pinned mechanism (pc_maxparameter's stat
+    // caps) - it does not apply to pc_job_can_use_item, and must not be reused here as a shortcut.
+    private static (byte FirstMask, byte ClassBaseIndex)? ResolveJobEquipClass(ushort jobId) => jobId switch
+    {
+        // Novice And 1-1 Jobs (base run, ClassBaseIndex 0): Novice=0 Swordman=1 Mage=2 Archer=3
+        // Acolyte=4 Merchant=5 Thief=6 Taekwon=7 Gunslinger=8 Ninja=9 Summoner=10 Gangsi=11.
+        0 => (0, 0), 1 => (1, 0), 2 => (2, 0), 3 => (3, 0), 4 => (4, 0), 5 => (5, 0), 6 => (6, 0),
+        4046 => (7, 0), 24 => (8, 0), 25 => (9, 0), 4218 => (10, 0), 4050 => (11, 0),
+        // 2-1 Jobs (JOBL_2_1, ClassBaseIndex 1, reset to Novice's FirstMask=0): SuperNovice=0
+        // Knight=1 Wizard=2 Hunter=3 Priest=4 Blacksmith=5 Assassin=6 StarGladiator=7 Rebellion=8
+        // Kagerou/Oboro=9 SpiritHandler=10 DeathKnight=11.
+        23 => (0, 1), 7 => (1, 1), 9 => (2, 1), 11 => (3, 1), 8 => (4, 1), 10 => (5, 1), 12 => (6, 1),
+        4047 => (7, 1), 4215 => (8, 1), 4211 => (9, 1), 4212 => (9, 1), 4308 => (10, 1), 4051 => (11, 1),
+        // 2-2 Jobs (JOBL_2_2, ClassBaseIndex 2, reset to Swordman's FirstMask=1): Crusader=1
+        // Sage=2 BardDancer=3 Monk=4 Alchemist=5 Rogue=6 SoulLinker=7, then DarkCollector resets
+        // to Gangsi's FirstMask=11.
+        14 => (1, 2), 16 => (2, 2), 19 => (3, 2), 20 => (3, 2), 15 => (4, 2), 18 => (5, 2), 17 => (6, 2),
+        4049 => (7, 2), 4052 => (11, 2),
+        // Trans Novice/1-1 (JOBL_UPPER, ClassBaseIndex 0, reset to Novice's FirstMask=0):
+        // NoviceHigh=0 SwordmanHigh=1 MageHigh=2 ArcherHigh=3 AcolyteHigh=4 MerchantHigh=5 ThiefHigh=6.
+        4001 => (0, 0), 4002 => (1, 0), 4003 => (2, 0), 4004 => (3, 0), 4005 => (4, 0), 4006 => (5, 0), 4007 => (6, 0),
+        // Trans 2-1 (JOBL_UPPER, ClassBaseIndex 1, reset to Knight's FirstMask=1): LordKnight=1
+        // HighWizard=2 Sniper=3 HighPriest=4 Whitesmith=5 AssassinCross=6.
+        4008 => (1, 1), 4010 => (2, 1), 4012 => (3, 1), 4009 => (4, 1), 4011 => (5, 1), 4013 => (6, 1),
+        // Trans 2-2 (JOBL_UPPER, ClassBaseIndex 2, reset to Crusader's FirstMask=1): Paladin=1
+        // Professor=2 ClownGypsy=3 Champion=4 Creator=5 Stalker=6.
+        4015 => (1, 2), 4017 => (2, 2), 4020 => (3, 2), 4021 => (3, 2), 4016 => (4, 2), 4019 => (5, 2), 4018 => (6, 2),
+        // Baby Novice/1-1 (JOBL_BABY, ClassBaseIndex 0, reset to Novice's FirstMask=0): Baby=0
+        // BabySwordman=1 BabyMage=2 BabyArcher=3 BabyAcolyte=4 BabyMerchant=5 BabyThief=6
+        // BabyTaekwon=7 BabyGunslinger=8 BabyNinja=9 BabySummoner=10.
+        4023 => (0, 0), 4024 => (1, 0), 4025 => (2, 0), 4026 => (3, 0), 4027 => (4, 0), 4028 => (5, 0), 4029 => (6, 0),
+        4225 => (7, 0), 4228 => (8, 0), 4222 => (9, 0), 4220 => (10, 0),
+        // Baby 2-1 (JOBL_BABY, ClassBaseIndex 1, reset to SuperNovice's FirstMask=0): SuperBaby=0
+        // BabyKnight=1 BabyWizard=2 BabyHunter=3 BabyPriest=4 BabyBlacksmith=5 BabyAssassin=6
+        // BabyStarGladiator=7 BabyRebellion=8 BabyKagerou/BabyOboro=9.
+        4045 => (0, 1), 4030 => (1, 1), 4032 => (2, 1), 4034 => (3, 1), 4031 => (4, 1), 4033 => (5, 1), 4035 => (6, 1),
+        4226 => (7, 1), 4229 => (8, 1), 4223 => (9, 1), 4224 => (9, 1),
+        // Baby 2-2 (JOBL_BABY, ClassBaseIndex 2, reset to Crusader's FirstMask=1): BabyCrusader=1
+        // BabySage=2 BabyBardDancer=3 BabyMonk=4 BabyAlchemist=5 BabyRogue=6 BabySoulLinker=7.
+        4037 => (1, 2), 4039 => (2, 2), 4042 => (3, 2), 4043 => (3, 2), 4038 => (4, 2), 4041 => (5, 2), 4040 => (6, 2),
+        4227 => (7, 2),
+        // 3-1 Jobs (JOBL_THIRD, ClassBaseIndex 1, reset to SuperNovice's FirstMask=0):
+        // SuperNoviceE=0 RuneKnight=1 Warlock=2 Ranger=3 ArchBishop=4 Mechanic=5 GuillotineCross=6
+        // StarEmperor=7 NightWatch=8 Shinkiro/Shiranui=9.
+        4190 => (0, 1), 4054 => (1, 1), 4055 => (2, 1), 4056 => (3, 1), 4057 => (4, 1), 4058 => (5, 1), 4059 => (6, 1),
+        4239 => (7, 1), 4306 => (8, 1), 4304 => (9, 1), 4305 => (9, 1),
+        // 3-2 Jobs (JOBL_THIRD, ClassBaseIndex 2, reset to Crusader's FirstMask=1): RoyalGuard=1
+        // Sorcerer=2 MinstrelWanderer=3 Sura=4 Genetic=5 ShadowChaser=6 SoulReaper=7.
+        4066 => (1, 2), 4067 => (2, 2), 4068 => (3, 2), 4069 => (3, 2), 4070 => (4, 2), 4071 => (5, 2), 4072 => (6, 2),
+        4240 => (7, 2),
+        // Trans 3-1 (JOBL_THIRD|JOBL_UPPER, ClassBaseIndex 1, reset to LordKnight's FirstMask=1):
+        // RuneKnightT=1 WarlockT=2 RangerT=3 ArchBishopT=4 MechanicT=5 GuillotineCrossT=6.
+        4060 => (1, 1), 4061 => (2, 1), 4062 => (3, 1), 4063 => (4, 1), 4064 => (5, 1), 4065 => (6, 1),
+        // Trans 3-2 (JOBL_THIRD|JOBL_UPPER, ClassBaseIndex 2, reset to Paladin's FirstMask=1):
+        // RoyalGuardT=1 SorcererT=2 MinstrelWandererT=3 SuraT=4 GeneticT=5 ShadowChaserT=6.
+        4073 => (1, 2), 4074 => (2, 2), 4075 => (3, 2), 4076 => (3, 2), 4077 => (4, 2), 4078 => (5, 2), 4079 => (6, 2),
+        // Baby 3-1 (JOBL_THIRD|JOBL_BABY, ClassBaseIndex 1, reset to SuperBaby's FirstMask=0):
+        // SuperBabyE=0 BabyRuneKnight=1 BabyWarlock=2 BabyRanger=3 BabyArchBishop=4 BabyMechanic=5
+        // BabyGuillotineCross=6 BabyStarEmperor=7.
+        4191 => (0, 1), 4096 => (1, 1), 4097 => (2, 1), 4098 => (3, 1), 4099 => (4, 1), 4100 => (5, 1), 4101 => (6, 1),
+        4241 => (7, 1),
+        // Baby 3-2 (JOBL_THIRD|JOBL_BABY, ClassBaseIndex 2, reset to BabyCrusader's FirstMask=1):
+        // BabyRoyalGuard=1 BabySorcerer=2 BabyMinstrelWanderer=3 BabySura=4 BabyGenetic=5
+        // BabyShadowChaser=6 BabySoulReaper=7.
+        4102 => (1, 2), 4103 => (2, 2), 4104 => (3, 2), 4105 => (3, 2), 4106 => (4, 2), 4107 => (5, 2), 4108 => (6, 2),
+        4242 => (7, 2),
+        // 4-1 Jobs (JOBL_FOURTH|JOBL_THIRD, ClassBaseIndex 1, reset to SuperNoviceE's FirstMask=0):
+        // HyperNovice=0 DragonKnight=1 ArchMage=2 Windhawk=3 Cardinal=4 Meister=5 ShadowCross=6
+        // SkyEmperor=7.
+        4307 => (0, 1), 4252 => (1, 1), 4255 => (2, 1), 4257 => (3, 1), 4256 => (4, 1), 4253 => (5, 1), 4254 => (6, 1),
+        4302 => (7, 1),
+        // 4-2 Jobs (JOBL_FOURTH|JOBL_THIRD, ClassBaseIndex 2, reset to RoyalGuard's FirstMask=1):
+        // ImperialGuard=1 ElementalMaster=2 Troubadour/Trouvere=3 Inquisitor=4 Biolo=5
+        // AbyssChaser=6 SoulAscetic=7.
+        4258 => (1, 2), 4261 => (2, 2), 4263 => (3, 2), 4264 => (3, 2), 4262 => (4, 2), 4259 => (5, 2), 4260 => (6, 2),
+        4303 => (7, 2),
+        // "2" gender/appearance-variant ids: pc_jobid2mapid has no case for them at all (falls to its
+        // own `default: return -1`) - see this method's own doc comment. Not a gap in this table to
+        // extend; TryResolveJobEquipClass below reports these as "no entry" exactly like pc_authok's
+        // own invalid-class handling, never silently aliased to a base job's bit.
+        13 or 21 or 4014 or 4022 or 4036 or 4044 or 4048 or 4080 or 4081 or 4082 or 4083 or 4084 or 4085
+            or 4086 or 4087 or 4109 or 4110 or 4111 or 4112 or 4238 or 4243 or 4244 or 4278 or 4279 or 4280 or 4281 or 4316
+            => null,
+        _ => throw new ArgumentException($"Job id {jobId} has no pinned pc_jobid2mapid classification for job-class equip eligibility. Extend ResolveJobEquipClass with its exact pc_jobid2mapid case before generating item-eligibility data for this job."),
+    };
+
+    private static bool TryResolveJobEquipClass(ushort jobId, out (byte FirstMask, byte ClassBaseIndex) equipClass)
+    {
+        var resolved = ResolveJobEquipClass(jobId);
+        if (resolved is { } value) { equipClass = value; return true; }
+        equipClass = default;
+        return false;
+    }
+
     // Matches pinned JobDatabase::loadingFinished (src/map/pc.cpp): for every base level,
     // an explicit table row wins; a level the table never set (job->base_hp[j] == 0) is
     // resolved through calc_basehp/calc_basesp instead. A table row for a level beyond
@@ -815,6 +942,32 @@ internal static partial class CharacterDataCompiler
         output.AppendLine("    };");
         output.AppendLine("    internal static string GetRathenaName(JobClass jobClass) => ByJobClass.TryGetValue(jobClass, out var value) ? value : throw new NotSupportedException($\"Job class {jobClass} is not generated.\");");
         output.AppendLine("    internal static bool IsDefined(ushort jobClass) => ByJobClass.ContainsKey((JobClass)jobClass);");
+        return output.AppendLine("}").ToString();
+    }
+
+    // Pinned pc_job_can_use_item (src/map/pc.cpp:1771-1790) - see ResolveJobEquipClass's own doc
+    // comment for the full derivation. FirstMask/ClassBaseIndex are baked per job at generation
+    // time so no runtime code needs rAthena's uint64 JOBL_*/MAPID_* bitmask machinery at all.
+    private static string EmitJobEquipClass(IReadOnlyList<JobIdentity> jobs, string commit)
+    {
+        var output = new StringBuilder(Header(commit, "src/map/pc.cpp", "src/map/map.hpp")).AppendLine("namespace Athena.Net.MapServer.Generated.Jobs;").AppendLine();
+        output.AppendLine("// Pinned pc_job_can_use_item's own (FirstMask, ClassBaseIndex) pair per job - see");
+        output.AppendLine("// WorldCompiler's ResolveJobEquipClass for the full pinned derivation and the \"2\"-variant");
+        output.AppendLine("// caveat. ClassBaseIndex selects which of an item's ClassBase0/1/2 fields to test;");
+        output.AppendLine("// FirstMask is the bit position within it (job = 1UL << FirstMask).");
+        output.AppendLine("public readonly record struct JobEquipClass(byte FirstMask, byte ClassBaseIndex);").AppendLine();
+        output.AppendLine("internal static class GeneratedJobEquipClass").AppendLine("{");
+        output.AppendLine("    private static readonly IReadOnlyDictionary<JobClass, JobEquipClass> ByJobClass = new Dictionary<JobClass, JobEquipClass>").AppendLine("    {");
+        foreach (var job in jobs)
+        {
+            if (!TryResolveJobEquipClass(job.Id, out var equipClass)) continue;
+            output.Append("        [JobClass.").Append(job.CSharpIdentifier).Append("] = new(").Append(equipClass.FirstMask).Append(", ").Append(equipClass.ClassBaseIndex).AppendLine("),");
+        }
+        output.AppendLine("    };");
+        output.AppendLine("    // False for a job pc_jobid2mapid has no case for at all (the \"2\" gender/appearance-variant");
+        output.AppendLine("    // ids - see ResolveJobEquipClass's own doc comment); the caller must treat that exactly");
+        output.AppendLine("    // like pc_authok's own invalid-class handling, never by guessing a fallback class.");
+        output.AppendLine("    internal static bool TryGet(JobClass jobClass, out JobEquipClass equipClass) => ByJobClass.TryGetValue(jobClass, out equipClass);");
         return output.AppendLine("}").ToString();
     }
 

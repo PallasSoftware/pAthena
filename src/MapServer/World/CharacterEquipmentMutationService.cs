@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Generated.Jobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
@@ -64,13 +65,15 @@ public readonly record struct UnequipOutcome(bool Success, uint WearLocation);
 // Runtime equip/unequip mutation - the pinned PACKETVER 20220406 equivalent of
 // pc_equipitem/pc_unequipitem (pc.cpp:12015-12240, 12398-12500), scoped to the structural
 // slot-conflict/EQP_ARMS logic those functions implement plus pc_isequip's (pc.cpp:1850-1908)
-// level/sex/broken/restricted-map eligibility gate. Explicitly NOT modeled (Feature 16 stage S4,
-// documented as a tracked gap, not silently skipped): pc_job_can_use_item/pc_isItemClass job-class
-// eligibility (ClassBase0/1/2/ClassUpper ARE already in the generated item data - PackItem/
-// ItemMetadata - but this project has no JobClass -> pinned MAPID_*/JOBL_2_1/JOBL_2_2/JOBL_UPPER/
-// JOBL_BABY/JOBL_THIRD/JOBL_FOURTH tier-bitmask mapping yet; that is substantial, separate
-// infrastructure, not a quick addition to this file), status-effect equip-blocking (SC__STRIPACCESSORY
-// etc. - Feature 17/status-effect territory), and ammo/weapon-type compatibility (ammo_check_weapon).
+// level/sex/broken/restricted-map eligibility gate and pc_job_can_use_item's (pc.cpp:1771-1790)
+// class_base job-eligibility gate (GeneratedJobEquipClass.TryGet + ItemMetadata.ClassBase0/1/2).
+// Explicitly NOT modeled (Feature 16 stage S4, documented as a tracked gap, not silently skipped):
+// pc_isItemClass's ClassUpper/JOBL_UPPER|BABY|THIRD|FOURTH tier eligibility (a materially larger,
+// separate bitmask mechanism than the base/2-1/2-2 class_base check - this project still does not
+// model rAthena's JOBL_UPPER/BABY/THIRD/FOURTH tier bits at runtime, only the base-profession
+// FirstMask/ClassBaseIndex pair GeneratedJobEquipClass bakes offline), status-effect equip-blocking
+// (SC__STRIPACCESSORY etc. - Feature 17/status-effect territory), and ammo/weapon-type compatibility
+// (ammo_check_weapon).
 //
 // CharServer remains the durable owner of CharInventory.Equip. An equip is ONE atomic inventory operation that unequips every
 // conflicting item AND equips the target, so a failure can never leave the old item unequipped while the new one is not worn.
@@ -85,10 +88,13 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     //      Sex mismatch -> FAIL, broken (Attribute != 0) -> FAIL, restricted-map -> FAIL (see
     //      ItemMetadata.RestrictedOnNormalMaps's own doc comment for this project's current
     //      "every reachable map is normal" scope).
-    //   4. EQP_ARMS dual-wield: if the item's own EquipLocation is exactly EQP_HAND_R and the
+    //   4. pc_job_can_use_item's class_base job-eligibility gate -> FAIL (pc.cpp:1771-1790,
+    //      called from pc_equipitem:1961-1962 - AFTER pc_isequip's own checks, before the final
+    //      OK return; see GeneratedJobEquipClass's own doc comment for the full pinned derivation).
+    //   5. EQP_ARMS dual-wield: if the item's own EquipLocation is exactly EQP_HAND_R and the
     //      caller requested EQP_ARMS (both hands), pick whichever hand is free, preferring
     //      HAND_L when both are free (pc.cpp:12108-12115, RENEWAL branch)
-    //   5. slot conflict: any currently-equipped item occupying one of the resolved position's
+    //   6. slot conflict: any currently-equipped item occupying one of the resolved position's
     //      EQI slots is unequipped first (pc.cpp:12147-12157)
     // Returns a null outcome if the requested slotIndex is not a real row in the snapshot (the caller turns that into no ack,
     // matching pc_equipitem's own `if (!(id = sd->inventory_data[n])) return false;` early-out).
@@ -98,13 +104,14 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         IReadOnlyDictionary<int, ItemDefinition> items,
         uint characterBaseLevel,
         byte characterSex,
+        JobClass characterJobClass,
         CancellationToken cancellationToken)
     {
         EquipOutcome? decided = null;
         uint wearLocation = 0;
         var change = await inventoryService.ExecuteAsync(InventoryOperationKind.Equip, inventory =>
         {
-            var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, characterBaseLevel, characterSex, out var outcome, out wearLocation);
+            var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, characterBaseLevel, characterSex, characterJobClass, out var outcome, out wearLocation);
             decided = outcome;
             return plan;
         }, cancellationToken);
@@ -118,7 +125,8 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
 
     private static IReadOnlyList<InventoryMutation>? PlanEquip(
         CharacterInventorySnapshot inventory, uint slotIndex, uint requestedPosition,
-        IReadOnlyDictionary<int, ItemDefinition> items, uint characterBaseLevel, byte characterSex, out EquipOutcome? outcome, out uint wearLocation)
+        IReadOnlyDictionary<int, ItemDefinition> items, uint characterBaseLevel, byte characterSex, JobClass characterJobClass,
+        out EquipOutcome? outcome, out uint wearLocation)
     {
         wearLocation = 0;
         var target = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);
@@ -157,6 +165,25 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         {
             outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
             return null;
+        }
+        // Pinned pc_job_can_use_item (pc.cpp:1771-1790, called from pc_equipitem:1961-1962): tests
+        // item_db's class_base[ClassBaseIndex] bit at FirstMask for the character's own job. A job
+        // GeneratedJobEquipClass has no entry for (the "2" gender/appearance-variant ids - see that
+        // generator's own doc comment) can never equip anything through this check, matching pinned
+        // pc_authok's own invalid-class handling of the same condition.
+        if (meta is not null)
+        {
+            if (!GeneratedJobEquipClass.TryGet(characterJobClass, out var equipClass))
+            {
+                outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+                return null;
+            }
+            var classBase = equipClass.ClassBaseIndex switch { 0 => meta.ClassBase0, 1 => meta.ClassBase1, _ => meta.ClassBase2 };
+            if ((classBase & (1UL << equipClass.FirstMask)) == 0)
+            {
+                outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+                return null;
+            }
         }
 
         var pos = equippable.EquipLocation;

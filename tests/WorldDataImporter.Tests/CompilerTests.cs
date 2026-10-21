@@ -435,7 +435,7 @@ public sealed class CompilerTests
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(firstDir)));
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(secondDir)));
             static string[] Files(string root) => Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories).Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')).Order(StringComparer.Ordinal).ToArray();
-            var expected = new[] { "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedJobWeight.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
+            var expected = new[] { "Jobs/GeneratedJobEquipClass.cs", "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedJobWeight.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
             Assert.Equal(expected, Files(firstDir)); Assert.Equal(expected, Files(secondDir));
             var checkedIn = Path.Combine(repository, "src/MapServer/Generated");
             foreach (var relative in expected)
@@ -553,6 +553,78 @@ public sealed class CompilerTests
         Assert.Equal(175, definitionLines.Length);
         foreach (var line in definitionLines)
             Assert.Matches(@", \d+\);\s*$", line);
+    }
+
+    // Parity fixtures for ResolveJobEquipClass (pc_job_can_use_item, pc.cpp:1771-1790): one
+    // representative job per distinct e_mapid section, cross-checked by hand against the pinned
+    // source. (FirstMask, ClassBaseIndex) pairing:
+    //   Novice      -> (0, 0)  base profession, ClassBase0 bit 0.
+    //   Knight      -> (1, 1)  2-1 (JOBL_2_1), ClassBase1 bit 1 (Swordman's 2-1 line).
+    //   Crusader    -> (1, 2)  2-2 (JOBL_2_2), ClassBase2 bit 1 (Swordman's 2-2 line).
+    //   NoviceHigh  -> (0, 0)  Trans novice resets to Novice's own FirstMask.
+    //   LordKnight  -> (1, 1)  Trans 2-1 resets to Knight's FirstMask, still ClassBaseIndex 1.
+    //   Paladin     -> (1, 2)  Trans 2-2 resets to Crusader's FirstMask, still ClassBaseIndex 2.
+    //   Baby        -> (0, 0)  Baby novice resets to Novice's own FirstMask.
+    //   RuneKnight  -> (1, 1)  3-1 resets to SuperNovice's FirstMask (0+1 for Knight's own slot).
+    //   DragonKnight-> (1, 1)  4-1 resets to SuperNoviceE's FirstMask, ClassBaseIndex still 1.
+    //   Summoner    -> (10, 0) base profession, 11th MAPID_FIRSTMASK ordinal.
+    //   SpiritHandler -> (10, 1) 2-1, despite being JobParameterCategory.Fourth for STAT caps -
+    //     the two classifications are genuinely independent pinned mechanisms.
+    [Theory]
+    [InlineData("Novice", (byte)0, (byte)0)]
+    [InlineData("Knight", (byte)1, (byte)1)]
+    [InlineData("Crusader", (byte)1, (byte)2)]
+    [InlineData("NoviceHigh", (byte)0, (byte)0)]
+    [InlineData("LordKnight", (byte)1, (byte)1)]
+    [InlineData("Paladin", (byte)1, (byte)2)]
+    [InlineData("Baby", (byte)0, (byte)0)]
+    [InlineData("RuneKnight", (byte)1, (byte)1)]
+    [InlineData("DragonKnight", (byte)1, (byte)1)]
+    [InlineData("Summoner", (byte)10, (byte)0)]
+    [InlineData("SpiritHandler", (byte)10, (byte)1)]
+    public void CharacterDataCompiler_ResolvesPinnedJobEquipClass(string jobIdentifier, byte expectedFirstMask, byte expectedClassBaseIndex)
+    {
+        var root = Path.Combine(FindRepositoryRoot(), "legacy/rathena");
+        var equipClass = CompileCharacterData(root).Artifacts.Single(item => item.RelativePath == "Jobs/GeneratedJobEquipClass.cs").Source;
+        var line = equipClass.Split('\n').Single(entry => entry.Contains($"[JobClass.{jobIdentifier}] = new(", StringComparison.Ordinal));
+        Assert.Contains($"new({expectedFirstMask}, {expectedClassBaseIndex})", line);
+    }
+
+    // The "2" gender/appearance-variant ids genuinely have no pc_jobid2mapid case at all (see
+    // ResolveJobEquipClass's own doc comment) - they must be ABSENT from the generated registry
+    // entirely, never silently aliased to their base job's bit.
+    [Theory]
+    [InlineData("Knight2")]
+    [InlineData("Crusader2")]
+    [InlineData("LordKnight2")]
+    [InlineData("Paladin2")]
+    [InlineData("BabyKnight2")]
+    [InlineData("BabyCrusader2")]
+    [InlineData("StarGladiator2")]
+    [InlineData("RuneKnight2")]
+    [InlineData("SkyEmperor2")]
+    public void CharacterDataCompiler_GenderVariantJobsHaveNoEquipClassEntry(string jobIdentifier)
+    {
+        var root = Path.Combine(FindRepositoryRoot(), "legacy/rathena");
+        var equipClass = CompileCharacterData(root).Artifacts.Single(item => item.RelativePath == "Jobs/GeneratedJobEquipClass.cs").Source;
+        Assert.DoesNotContain($"[JobClass.{jobIdentifier}] = new(", equipClass);
+    }
+
+    // Every job id in pc_jobid2mapid's switch must be classified by ResolveJobEquipClass - a
+    // real id with no case there (other than a known "2" variant) makes generation fail loudly
+    // rather than silently omitting it. Simply completing Compile() without throwing already
+    // proves full coverage against the real 175-job pinned universe.
+    [Fact]
+    public void CharacterDataCompiler_EveryGeneratedJobResolvesOrIsAKnownGenderVariant()
+    {
+        var root = Path.Combine(FindRepositoryRoot(), "legacy/rathena");
+        var generated = CompileCharacterData(root);
+        var equipClass = generated.Artifacts.Single(item => item.RelativePath == "Jobs/GeneratedJobEquipClass.cs").Source;
+        var equipClassEntries = equipClass.Split('\n').Count(line => line.TrimStart().StartsWith("[JobClass.", StringComparison.Ordinal) && line.Contains("] = new(", StringComparison.Ordinal));
+        // 175 generated jobs total (see CharacterDataCompiler_EveryGeneratedJobResolvesAMaxBaseStat);
+        // the 27 known "2" gender/appearance-variant ids (ResolveJobEquipClass's own null arm)
+        // have no entry, everything else must.
+        Assert.Equal(175 - 27, equipClassEntries);
     }
 
     // Proves MaxBaseStat genuinely comes from the SUPPLIED conf/battle/player.conf source, not

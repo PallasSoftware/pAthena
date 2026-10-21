@@ -46,4 +46,12 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     // is the pinned "no restriction" sentinel.
     public const byte BothSexes = 2;
     public byte Sex => Data.Sex;
+
+    // Pinned item_db Jobs/Classes block, compiled into class_base[0/1/2] bitmasks (itemdb.cpp) -
+    // one bit per MAPID_FIRSTMASK base profession value, selected by array index 0 (base job), 1
+    // (JOBL_2_1) or 2 (JOBL_2_2). See CharacterEquipmentMutationService.PlanEquip's own job-class
+    // eligibility gate (pc_job_can_use_item, pc.cpp:1771-1790) for how these three fields are used.
+    public ulong ClassBase0 => Data.ClassBase0;
+    public ulong ClassBase1 => Data.ClassBase1;
+    public ulong ClassBase2 => Data.ClassBase2;
 }
