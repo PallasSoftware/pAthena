@@ -306,6 +306,21 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(0, stats.HardDefense);
     }
 
+    // S5 scope boundary: an item mixing a modeled flat bonus (bonus bStr,2;) with an unmodeled
+    // bonus2 (bSkillAtk - card/combo/skill-target territory, explicitly deferred) must reject the
+    // WHOLE equip, never silently apply just the modeled half - pinned db/re/item_db_equip.yml Id
+    // 1427 "Spear_Of_Excellent": `bonus2 bSkillAtk,"SM_MAGNUM",25; bonus bStr,2;`.
+    [Fact]
+    public void EquipmentStats_ItemMixingModeledAndUnmodeledBonus_IsUnresolvedNotPartiallyApplied()
+    {
+        const int spearOfExcellent = 1427;
+        var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[spearOfExcellent]).EquipLocation;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, spearOfExcellent, 1, equipLocation, true, 0, 0, 0)]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment); // never the bStr,2 half silently applied
+    }
+
     // S5 bonus model: pinned db/re/item_db_equip.yml Id 2601 "Ring" (Both_Accessory, `bonus bStr,2;`) is a real equip
     // item whose flat equip-script bonus must flow through TryResolveEquipment into the character's effective STR,
     // proving the EquipmentBonusResolver integration end to end rather than only at the unit level.
