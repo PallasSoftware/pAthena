@@ -1,6 +1,7 @@
 using Athena.Net.MapServer.Generated.Progression;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using Athena.Net.MapServer.World.Items;
 
 namespace Athena.Net.MapServer.Gameplay.Rules.Kro;
 
@@ -33,10 +34,18 @@ public sealed class KroStatRules : IStatRules
     // status.cpp:4291-4301 clamps the sum to 0..USHRT_MAX; allocated stats are already capped at pc_maxparameter.
     private static ushort AddBonus(ushort allocated, uint jobBonus) => (ushort)Math.Min((uint)allocated + jobBonus, ushort.MaxValue);
 
+    // status.cpp:4291-4301: base + status + param_bonus (equip flat bonuses) + param_equip, each capped to 0..USHRT_MAX
+    // independently before any derived stat reads it. param_equip (bonus2-5/card/combo territory) is not modeled yet.
+    private static PrimaryStats ApplyParamBonus(PrimaryStats s, EquipmentParamBonus bonus) => new(
+        Cap(s.Strength + bonus.Strength), Cap(s.Agility + bonus.Agility), Cap(s.Vitality + bonus.Vitality),
+        Cap(s.Intelligence + bonus.Intelligence), Cap(s.Dexterity + bonus.Dexterity), Cap(s.Luck + bonus.Luck));
+
+    private static ushort Cap(int value) => (ushort)Math.Clamp(value, 0, ushort.MaxValue);
+
     public DerivedStats CalculateDerivedStats(CharacterStatusSnapshot snapshot, EquipmentStats equipment = default)
     {
         var level = snapshot.State.BaseLevel;
-        var b = BasePrimaryStats(snapshot.State);
+        var b = ApplyParamBonus(BasePrimaryStats(snapshot.State), equipment.ParamBonus);
         var e = snapshot.Effective;
         var baseDerived = BaseDerived(level, b);
 
@@ -116,6 +125,7 @@ public sealed class KroStatRules : IStatRules
     {
         var hardDefense = 0;
         WeaponItemDefinition? weapon = null;
+        var paramBonus = EquipmentParamBonus.None;
         foreach (var row in inventory.Items)
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
@@ -132,8 +142,12 @@ public sealed class KroStatRules : IStatRules
                     equipment = default;
                     return false;
             }
+            // Flat stat bonuses apply for every equipped row regardless of concrete type (pinned status_calc_pc_sub
+            // sums param_bonus independently of the equip slot/item category).
+            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script); }
+            catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
-        equipment = new EquipmentStats(hardDefense, weapon);
+        equipment = new EquipmentStats(hardDefense, weapon, paramBonus);
         return true;
     }
 

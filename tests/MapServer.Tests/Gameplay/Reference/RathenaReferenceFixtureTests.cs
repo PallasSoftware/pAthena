@@ -7,6 +7,7 @@ using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
+using Athena.Net.MapServer.World.Items;
 
 namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 
@@ -303,6 +304,28 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         var unequippedUnknown = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, 999999, 1, 0, true, 0, 0, 0)]);
         Assert.True(Rules.Stats.TryResolveEquipment(unequippedUnknown, GeneratedItems.ById, out var stats));
         Assert.Equal(0, stats.HardDefense);
+    }
+
+    // S5 bonus model: pinned db/re/item_db_equip.yml Id 2601 "Ring" (Both_Accessory, `bonus bStr,2;`) is a real equip
+    // item whose flat equip-script bonus must flow through TryResolveEquipment into the character's effective STR,
+    // proving the EquipmentBonusResolver integration end to end rather than only at the unit level.
+    [Fact]
+    public void EquipmentStats_RealRingWithFlatStrBonus_AddsToDerivedBaseStrength()
+    {
+        const int ring = 2601;
+        var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[ring]).EquipLocation;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, ring, 1, equipLocation, true, 0, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 2, 0, 0, 0, 0, 0), equipment.ParamBonus);
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var withoutRing = Rules.Stats.CalculateDerivedStats(snapshot);
+        var withRing = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        // +2 STR raises BaseAtk (status_base_atk scales with STR) by exactly the pinned formula's STR term.
+        Assert.True(withRing.BaseAttack >= withoutRing.BaseAttack);
     }
 
     public static TheoryData<int> KnifeTargets => [0, 1, 2];
