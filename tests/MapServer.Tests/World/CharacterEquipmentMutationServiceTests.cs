@@ -22,12 +22,26 @@ public sealed class CharacterEquipmentMutationServiceTests
         2301, "Cotton_Shirt", "Cotton Shirt", Stackable: false, ClientViewId: 2301, Defense: 10, EquipLocation: 0x000010,
         new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
 
+    // Real two-handed weapon (pinned db/re/item_db_equip.yml:542-555): Locations.Both_Hand ->
+    // EQP_ARMS = EQP_HAND_R|EQP_HAND_L (0x000002|0x000020).
+    private static readonly WeaponItemDefinition Katana = new(
+        1116, "Katana", "Katana", Stackable: false, ClientViewId: 1116, Attack: 60, WeaponLevel: 1, WeaponType.TwoHandSword, Range: 1, EquipLocation: 0x000002 | 0x000020,
+        new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
+
+    // Buckler-style left-hand item (EQP_HAND_L) to prove a two-hander's equip clears a shield too.
+    private static readonly WeaponItemDefinition Shield = new(
+        1201, "Guard", "Guard", Stackable: false, ClientViewId: 1201, Attack: 0, WeaponLevel: 1, WeaponType.Dagger, Range: 1, EquipLocation: 0x000020,
+        new WorldSourceInfo("rAthena", "abc", "db/re/item_db_equip.yml", 1));
+
     private static readonly EtcItemDefinition Wood = new(
         6008, "Wood", "Wood", Stackable: true, ClientViewId: 6008,
         new WorldSourceInfo("rAthena", "abc", "db/re/item_db_etc.yml", 1));
 
     private static readonly IReadOnlyDictionary<int, ItemDefinition> Items =
-        new Dictionary<int, ItemDefinition> { [Knife.Id] = Knife, [CottonShirt.Id] = CottonShirt, [Wood.Id] = Wood };
+        new Dictionary<int, ItemDefinition> { [Knife.Id] = Knife, [CottonShirt.Id] = CottonShirt, [Wood.Id] = Wood, [Katana.Id] = Katana };
+
+    private static readonly IReadOnlyDictionary<int, ItemDefinition> TwoHandItems =
+        new Dictionary<int, ItemDefinition> { [1201] = Shield, [Katana.Id] = Katana };
 
     private static (InMemoryInventoryOperations Operations, CharacterInventoryService Inventory, CharacterEquipmentMutationService Service) Setup(CharacterInventorySnapshot inventory)
     {
@@ -113,6 +127,31 @@ public sealed class CharacterEquipmentMutationServiceTests
         // ONE request: the unequip and the equip are applied together or not at all (previously two separate writes).
         Assert.Single(operations.Requests);
         Assert.Equal([(1u, 0u), (2u, 0x000002u)], operations.EquipUpdates);
+    }
+
+    [Fact]
+    public async Task EquipAsync_TwoHandedWeapon_UnequipsBothCurrentWeaponAndShieldAtomically()
+    {
+        // Pinned pc.cpp:12147-12157: equipping a Both_Hand weapon (EQP_ARMS) must clear whatever
+        // currently occupies EITHER hand, even when those are two separate inventory rows.
+        var (operations, _, service) = Setup(new(
+        [
+            new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201 /* right-hand knife */, 1, 0x000002, true, 0, 0, 0),
+            new CharacterInventoryItem(DurableId: 2, SlotIndex: 1, 1201 /* left-hand shield */, 1, 0x000020, true, 0, 0, 0),
+            new CharacterInventoryItem(DurableId: 3, SlotIndex: 2, Katana.Id, 1, 0, true, 0, 0, 0),
+        ]));
+
+        var (outcome, updated) = await service.EquipAsync(2, requestedPosition: 0x000002 | 0x000020, TwoHandItems, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+        Assert.Equal(0x000002u | 0x000020u, outcome.Value.WearLocation);
+        Assert.Equal(0u, updated!.Items[0].Equip); // right-hand weapon unequipped
+        Assert.Equal(0u, updated.Items[1].Equip); // left-hand shield unequipped
+        Assert.Equal(0x000002u | 0x000020u, updated.Items[2].Equip); // katana occupies both hands
+        Assert.Single(operations.Requests); // one atomic operation
+        Assert.Equal(
+            new HashSet<(uint, uint)> { (1u, 0u), (2u, 0u), (3u, 0x000002u | 0x000020u) },
+            new HashSet<(uint, uint)>(operations.EquipUpdates));
     }
 
     [Fact]
