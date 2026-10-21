@@ -324,43 +324,148 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
     // S5 bonus model: pinned db/re/item_db_equip.yml Id 2601 "Ring" (Both_Accessory, `bonus bStr,2;`) is a real equip
     // item whose flat equip-script bonus must flow through TryResolveEquipment into the character's effective STR,
     // proving the EquipmentBonusResolver integration end to end rather than only at the unit level.
+    //
+    // EXACT values, not positive-only: pinned status_calc_pc (status.cpp:4290-4301) bakes equipment into base_status
+    // BEFORE status_calc_bl_main ever applies a status delta on top - equipment and status effects are NOT two
+    // independent additive layers that each read the raw base separately (see IStatRules.ApplyEquipmentBonus's own
+    // doc comment for the full trace). This test is the direct regression for that architecture: a character with
+    // base STR=1 wearing the Ring (+2 STR) under Blessing (which ALSO changes STR, by +val1) must show
+    // Effective.Strength = 1+2+val1 (equipment AND status both present, additively), and the resulting BaseAttack must
+    // reflect STR=1+2+val1 throughout - a reintroduction of the original bug (equipment and status computed against
+    // two diverging copies of the base, status.cpp:5964's delta math canceling whichever contribution isn't shared)
+    // would make this fail by producing BaseAttack as if STR were only 1+val1 (equipment silently dropped) or 1+2
+    // (status silently dropped), never both at once.
     [Fact]
-    public void EquipmentStats_RealRingWithFlatStrBonus_AddsToDerivedBaseStrength()
+    public void EquipmentStats_RealRingWithFlatStrBonus_CombinesAdditivelyWithBlessingInEffectiveStrength()
     {
         const int ring = 2601;
         var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[ring]).EquipLocation;
         var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, ring, 1, equipLocation, true, 0, 0, 0)]);
-
         Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
         Assert.Equal(new EquipmentParamBonus(Strength: 2, 0, 0, 0, 0, 0), equipment.ParamBonus);
 
-        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
-        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
-        var withoutRing = Rules.Stats.CalculateDerivedStats(snapshot);
-        var withRing = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+        var state = new CharacterGameplayState(CharacterId: 1, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1,
+            BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
+            Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
+        var statuses = NewStatuses(new FakeTimeProvider());
 
-        // +2 STR raises BaseAtk (status_base_atk scales with STR) by exactly the pinned formula's STR term.
-        Assert.True(withRing.BaseAttack >= withoutRing.BaseAttack);
+        // No equipment, no status: Effective.Strength is the raw base (1).
+        var bare = statuses.Capture(() => state);
+        Assert.Equal(1, bare.Effective.Strength);
+
+        // Equipment only (no status yet): Effective.Strength must be 1+2=3 - this is the line that was broken:
+        // Capture (and therefore Effective) previously never saw equipment.ParamBonus at all.
+        var withEquipmentOnly = statuses.Capture(() => state, equipment.ParamBonus);
+        Assert.Equal(3, withEquipmentOnly.Effective.Strength);
+        var derivedEquipmentOnly = Rules.Stats.CalculateDerivedStats(withEquipmentOnly, equipment);
+        var expectedBatkEquipmentOnly = BaseAtkFormula(level: 1, str: 3, dex: 1, luk: 1);
+        Assert.Equal(expectedBatkEquipmentOnly, derivedEquipmentOnly.BaseAttack);
+
+        // Equipment AND Blessing together: Blessing's val2 (== val1 for a PC target) adds to STR on top of the
+        // ALREADY-equipment-inclusive base - val1=10 is an arbitrary but fixed choice so val2=10 too.
+        statuses.Start(CharacterStatusEffectState.StatusIds.Blessing, durationMilliseconds: 60000, val1: 10);
+        var withBoth = statuses.Capture(() => state, equipment.ParamBonus);
+        Assert.Equal(1 + 2 + 10, withBoth.Effective.Strength); // base + equipment + status, all three present at once.
+        var derivedBoth = Rules.Stats.CalculateDerivedStats(withBoth, equipment);
+        // Blessing's val2 also adds to DEX (status.cpp:7059-7061), not just STR/INT - the BaseAtk formula
+        // reads DEX too, so the expected value must include that contribution as well.
+        var expectedBatkBoth = BaseAtkFormula(level: 1, str: 1 + 2 + 10, dex: 1 + 10, luk: 1);
+        Assert.Equal(expectedBatkBoth, derivedBoth.BaseAttack);
     }
 
-    // S6 refine bonus: pinned db/re/refine.yml Group: Weapon, Levels[Level: 1].RefineLevels[Level: 5].Bonus:
-    // a real pinned weapon (1101 Sword, WeaponLevel: 1) refined to +5 must contribute the pinned flat refine
-    // ATK bonus (Bonus/100) on top of its own static Attack, proving GeneratedRefineBonus's integration into
-    // TryResolveEquipment/WeaponAttack end to end.
-    [Fact]
-    public void EquipmentStats_RealRefinedWeapon_AddsRefineBonusToWeaponAttack()
-    {
-        const int sword = 1101;
-        var unrefined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 0, 0, 0)]);
-        var refined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0)]);
+    // Pinned status_base_atk, RENEWAL BL_PC non-ranged weapon, POW=0 (status.cpp:2475-2477) - the SAME formula
+    // IroStatRules/KroStatRules.BaseAtk implements privately; reproduced here as an independent reference
+    // calculation (not a call into the code under test) so this test is real external evidence, not a tautology.
+    private static int BaseAtkFormula(int level, int str, int dex, int luk) =>
+        Math.Clamp((str * 10 + dex * 10 / 5 + luk * 10 / 3 + level * 10 / 4) / 10, 0, ushort.MaxValue);
 
+    // S6 refine bonus, EXACT values (pinned db/re/refine.yml Group: Weapon, Level 1 RefineLevels:
+    // R1=200 R2=400 R3=600 R4=800 R5=1000 R10=2000 R20=6000 - confirmed by direct inspection, not
+    // re-derived from the same generated table under test). Pinned status.cpp:3957
+    // `wa->atk2 += info->bonus/100` divides the RAW tabulated value by 100 before accumulating - a
+    // level-1 Sword (1101, Attack: 25) at +5 contributes exactly 1000/100=10 refine ATK (NOT 1000),
+    // for a total WeaponAttack of exactly 25+10=35. This is the direct regression for the
+    // originally-reported /100 scaling defect (a raw-accumulation bug would have produced 1025).
+    [Theory]
+    [InlineData(0, 0)]    // no refine -> no bonus at all (never looked up, refine<=0).
+    [InlineData(1, 2)]    // 200/100=2
+    [InlineData(2, 4)]    // 400/100=4
+    [InlineData(3, 6)]    // 600/100=6
+    [InlineData(4, 8)]    // 800/100=8
+    [InlineData(5, 10)]   // 1000/100=10 - the report's own reproduction case.
+    [InlineData(10, 20)]  // 2000/100=20
+    [InlineData(20, 60)]  // 6000/100=60 - MAX_REFINE boundary.
+    public void EquipmentStats_RealRefinedWeapon_RefineAtkMatchesExactPinnedScaling(byte refine, int expectedRefineAtk)
+    {
+        const int sword = 1101; // WeaponLevel: 1, Attack: 25.
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, refine, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+
+        Assert.Equal(expectedRefineAtk, equipment.WeaponRefineAtk);
+        Assert.Equal(25 + expectedRefineAtk, equipment.WeaponAttack);
+    }
+
+    // Defect 6 regression: pinned status_base_matk_min/max for BL_PC (status.cpp:2559-2591) are the
+    // IDENTICAL stat-only formula for a player - there is NO min/max variance and NO weapon-matk term
+    // at all (the rhw.matk*70/100..130/100 variance only applies to BL_PET/MOB/MER/ELEM). A refined
+    // weapon with zero original MagicAttack (Sword, 1101) must therefore NOT change
+    // MagicAttackMin/MagicAttackMax at all - WeaponRefineMatk is correctly computed (Defect 2) but
+    // must NOT be added to this general player status calculation; it is a typed contract for a
+    // future skill-formula consumer (Feature 17/18), never applied here.
+    [Fact]
+    public void CalculateDerivedStats_RefinedWeaponWithZeroMagicAttack_DoesNotChangePlayerMatkMinOrMax()
+    {
+        const int sword = 1101; // WeaponLevel: 1, Attack: 25, MagicAttack: 0 (no explicit field).
+        var unrefined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 0, 0, 0)]);
+        var refined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 10, 0, 0)]);
         Assert.True(Rules.Stats.TryResolveEquipment(unrefined, GeneratedItems.ById, out var unrefinedEquipment));
         Assert.True(Rules.Stats.TryResolveEquipment(refined, GeneratedItems.ById, out var refinedEquipment));
+        Assert.Equal(0, unrefinedEquipment.WeaponRefineMatk);
+        Assert.Equal(20, refinedEquipment.WeaponRefineMatk); // computed correctly (Defect 2's /100 scaling), just not applied below.
 
-        Assert.Equal(0, unrefinedEquipment.WeaponRefineAtk);
-        Assert.True(refinedEquipment.WeaponRefineAtk > 0);
-        Assert.Equal(unrefinedEquipment.Weapon!.Attack + refinedEquipment.WeaponRefineAtk, refinedEquipment.WeaponAttack);
-        Assert.True(refinedEquipment.WeaponAttack > unrefinedEquipment.WeaponAttack);
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derivedUnrefined = Rules.Stats.CalculateDerivedStats(snapshot, unrefinedEquipment);
+        var derivedRefined = Rules.Stats.CalculateDerivedStats(snapshot, refinedEquipment);
+
+        Assert.Equal(derivedUnrefined.MagicAttackMin, derivedRefined.MagicAttackMin);
+        Assert.Equal(derivedUnrefined.MagicAttackMax, derivedRefined.MagicAttackMax);
+        Assert.Equal(derivedRefined.MagicAttackMin, derivedRefined.MagicAttackMax); // no min/max variance for BL_PC at all.
+    }
+
+    // Armor refine DEF rounds AFTER accumulating every equipped armor row's own raw Bonus, not
+    // per-row (pinned status.cpp:4014,4096: `refinedef += info->bonus;` ... `(refinedef+50)/100`
+    // applied ONCE to the sum). Cotton_Shirt_ (2302, ArmorLevel default 1, Defense: 10) worn on two
+    // slots at different refine levels: pinned Armor Level 1 Refine 3 Bonus=300, Refine 7 Bonus=1000
+    // (direct inspection of db/re/refine.yml, not re-derived from the generated table under test).
+    // Rounding once over the sum ((300+1000+50)/100=13) differs from summing two independently-
+    // rounded per-row values ((300+50)/100+(1000+50)/100=3+10=13) only by coincidence at these exact
+    // numbers - the assertion below checks the SUM intermediate explicitly so a future accumulation-
+    // order regression (rounding per row instead of once) would still be caught by ArmorRefineDefense
+    // itself even if HardDefense's particular numbers happened to still match.
+    [Fact]
+    public void EquipmentStats_MultiPieceArmorRefineDefense_RoundsOnceAfterSummingAllRows()
+    {
+        const int cottonShirtSlotted = 2302; // ArmorLevel default 1 (no explicit field), Defense: 10, Slots: 1.
+        // TryResolveEquipment sums every row with Equip != 0 independently of slot-exclusivity
+        // (that is CharacterEquipmentMutationService's own concern at equip time) - two rows of the
+        // same real armor item on two different inventory slots validly exercise the "sum across
+        // rows, round once" accumulation this test targets.
+        var row1 = new CharacterInventoryItem(1, 0, cottonShirtSlotted, 1, 0x000010, true, Refine: 3, 0, 0);
+        var row2 = new CharacterInventoryItem(2, 1, cottonShirtSlotted, 1, 0x000010, true, Refine: 7, 0, 0);
+        var inventory = new CharacterInventorySnapshot([row1, row2]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(300 + 1000, equipment.ArmorRefineDefense);
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        // (refinedef+50)/100 applied ONCE to the SUM (1300+50)/100=13, truncated - plus the summed
+        // Defense (10+10=20) from both rows. Never two independently-rounded per-row contributions.
+        Assert.Equal(20 + (300 + 1000 + 50) / 100, derived.HardDefense);
     }
 
     // S6 refine bonus: a graded item (EnchantGrade > 0) is explicitly rejected rather than silently applying

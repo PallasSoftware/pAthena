@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Generated.Jobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World.Items;
@@ -79,8 +80,29 @@ public readonly record struct UnequipOutcome(bool Success, uint WearLocation);
 // conflicting item AND equips the target, so a failure can never leave the old item unequipped while the new one is not worn.
 // The runtime snapshot is only replaced by the confirmed result of that operation (CharacterInventoryService), and success is
 // only reported after it.
-public sealed class CharacterEquipmentMutationService(CharacterInventoryService inventoryService)
+public sealed class CharacterEquipmentMutationService(CharacterInventoryService inventoryService, IStatRules statRules)
 {
+    // Pinned pc_equipitem/pc_unequipitem never leave a character wearing an item combination
+    // status_calc_pc itself cannot resolve - the equip/unequip call IS what rebuilds
+    // sd->inventory_data[]/sd->equip_index[] (pc.cpp:12230-12240, 12481-12488), so an item
+    // the stat-calc layer cannot account for would already have failed earlier in the SAME
+    // pinned function, never deferred to a later read. This project's EquipAsync/UnequipAsync
+    // mirror that: the PROPOSED post-mutation inventory is validated through
+    // IStatRules.TryResolveEquipment BEFORE the durable operation is sent, so a persisted equip
+    // state can never later make TryGetCombatSnapshotAsync's own TryResolveEquipment call fail
+    // and silently drop the player from every monster's valid-target set. A row the resolver
+    // cannot account for (bonus2-5, autobonus, deferred scripts, an unmodeled enchant grade, ...)
+    // is rejected outright (EquipMutationResult.Fail / UnequipOutcome(false, 0)), never persisted.
+    private bool CanResolveAfter(CharacterInventorySnapshot inventory, IReadOnlyList<InventoryMutation> mutations, IReadOnlyDictionary<int, ItemDefinition> items)
+    {
+        var rows = inventory.Items.ToDictionary(i => i.DurableId);
+        foreach (var mutation in mutations)
+            if (mutation is UpdateRowMutation { Container: InventoryContainer.Inventory } update && rows.TryGetValue(update.DurableId, out var existing))
+                rows[update.DurableId] = CharacterInventoryItem.FromRow(update.NewRow, existing.SlotIndex);
+        var simulated = new CharacterInventorySnapshot([.. rows.Values]);
+        return statRules.TryResolveEquipment(simulated, items, out _);
+    }
+
     // Pinned pc_equipitem (pc.cpp:12015-12172), restricted to this service's modeled checks:
     //   1. already-equipped items.equip != 0 -> ITEM_EQUIP_ACK_FAIL (pc.cpp:12063-12070)
     //   2. requested position must intersect the item's EquipLocation -> ITEM_EQUIP_ACK_FAIL
@@ -112,6 +134,11 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         var change = await inventoryService.ExecuteAsync(InventoryOperationKind.Equip, inventory =>
         {
             var plan = PlanEquip(inventory, slotIndex, requestedPosition, items, characterBaseLevel, characterSex, characterJobClass, out var outcome, out wearLocation);
+            if (plan is not null && outcome is { Result: EquipMutationResult.Success } && !CanResolveAfter(inventory, plan, items))
+            {
+                outcome = new EquipOutcome(EquipMutationResult.Fail, 0);
+                plan = null;
+            }
             decided = outcome;
             return plan;
         }, cancellationToken);
@@ -223,6 +250,9 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // Pinned pc_unequipitem (pc.cpp:12398-12495), restricted to this service's modeled checks:
     //   - not currently equipped (items.equip == 0) -> failure (pc.cpp:12407-12410)
     // Ammo-unequip-on-weapon-change and status-effect-cancel side effects are out of scope here.
+    // No CanResolveAfter check needed here (unlike EquipAsync): clearing one row's Equip bit can
+    // only REMOVE that row from TryResolveEquipment's iteration, never newly introduce a resolver
+    // failure that wasn't already present before the unequip.
     public async Task<(UnequipOutcome? Outcome, CharacterInventorySnapshot? Updated)> UnequipAsync(uint slotIndex, CancellationToken cancellationToken)
     {
         var current = inventoryService.Snapshot.Items.FirstOrDefault(i => i.SlotIndex == slotIndex);

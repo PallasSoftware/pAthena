@@ -951,10 +951,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // this becomes observable; not changing the status architecture as part of this PR.
     private async Task ProcessDueStatusExpirationsAsync(CancellationToken cancellationToken)
     {
-        var before = _gameplayState is null ? default : _statusEffects.RecalculateBeforeExpiration(_gameplayState.State);
+        var equipmentBonus = CurrentEquipmentParamBonus();
+        var before = _gameplayState is null ? default : _statusEffects.RecalculateBeforeExpiration(_gameplayState.State, equipmentBonus);
         var due = _statusEffects.ExpireDue(_timeProvider.GetUtcNow());
         if (due.Count == 0 || _gameplayState is null) return;
-        var after = _statusEffects.Recalculate(_gameplayState.State);
+        var after = _statusEffects.Recalculate(_gameplayState.State, equipmentBonus);
 
         foreach (var status in due)
         {
@@ -1689,8 +1690,23 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _y = movement.CurrentY;
     }
 
+    // The currently-equipped EquipmentParamBonus, for CharacterStatusEffectState's own equipment-
+    // then-status layering (IStatRules.ApplyEquipmentBonus's own doc comment). CharacterEquipmentMutationService's
+    // CanResolveAfter gate means a NEWLY-equipped state can never fail TryResolveEquipment - this can
+    // still legitimately return false for a loadout persisted before that gate existed (or restored
+    // directly in the database); that narrow, explicitly-diagnosed case falls back to
+    // EquipmentParamBonus.None (no equipment stat bonus) rather than crashing every status read, and is
+    // logged loudly exactly like TryGetCombatSnapshotAsync's own unresolved-equipment diagnostic.
+    private Athena.Net.MapServer.World.Items.EquipmentParamBonus CurrentEquipmentParamBonus()
+    {
+        if (_inventory is not { } inventory) return default;
+        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment)) return equipment.ParamBonus;
+        MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; equipment stat bonus is not applied to this status read.");
+        return default;
+    }
+
     // One consistent (gameplay state, effective stats) pair - see CharacterStatusEffectState.Capture.
-    private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State);
+    private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State, CurrentEquipmentParamBonus());
 
     private int CurrentCellDurationMs()
     {
@@ -3433,14 +3449,26 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         {
             SyncPositionToNow();
             var isWalking = _movement?.IsMoving ?? false;
-            // Hard DEF comes from the equipped armor rows; an equipped item this pass cannot account for makes the
-            // player an unresolvable target (mirrors the unresolved-weapon abort) rather than silently wearing "no DEF".
+            // Hard DEF comes from the equipped armor rows. CharacterEquipmentMutationService's
+            // CanResolveAfter gate means a NEWLY-equipped state can never reach this branch; an
+            // unsupported loadout here can only be one persisted before that gate existed (or
+            // restored directly in the database). An otherwise-valid player must never become
+            // untargetable to every monster on the map because of that narrow, pre-existing
+            // condition - fall back to EquipmentStats.default (no DEF/weapon/param contribution)
+            // rather than returning null, with a loud diagnostic so the degradation is actionable,
+            // never silent.
             if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats))
             {
-                MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; player is not a valid combat target.");
-                return null;
+                MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; combat snapshot omits equipment contribution.");
+                equipmentStats = default;
             }
-                        return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, _rules.Stats.CalculateDerivedStats(snapshot, equipmentStats).SoftDefense, equipmentStats.HardDefense);
+            // Pinned status.cpp:4096 `base_status->def += (refinedef+50)/100`: the authoritative hard
+            // DEF a live monster attack must use is CalculateDerivedStats's OWN HardDefense result
+            // (armor DEF + refine bonus, truncated once over the summed contribution), never the raw
+            // equipmentStats.HardDefense (armor DEF alone, pre-refine) - using the latter silently drops
+            // every refined armor's DEF contribution from live incoming-damage reduction.
+            var derived = _rules.Stats.CalculateDerivedStats(snapshot, equipmentStats);
+            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, derived.SoftDefense, derived.HardDefense);
         }
         finally { _movementGate.Release(); }
     }
@@ -3989,7 +4017,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // Every response field comes from ONE snapshot of the state this request committed (result.After) paired with the
         // statuses active at that instant - not from gameplayState.State, which a concurrent mutation may already have moved.
         // plus = battle_status - status.* (clif_couplestatus), so it carries job bonuses and temporary buffs alike.
-        var committed = _statusEffects.Capture(() => result.After);
+        var committed = _statusEffects.Capture(() => result.After, CurrentEquipmentParamBonus());
         var plusValue = EffectiveStatBonus(stat, committed.State, committed.Effective);
         await WriteAsync(IroStatusEffectPackets.BuildCoupleStatus(wireStatusId, result.NewValue, plusValue), cancellationToken);
 
@@ -4035,7 +4063,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var slotIndex = (uint)(request.ClientIndex - 2);
 
         if (_inventoryService is null || _gameplayState is not { } gameplayState) return;
-        var service = new CharacterEquipmentMutationService(_inventoryService);
+        var service = new CharacterEquipmentMutationService(_inventoryService, _rules.Stats);
         var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, gameplayState.State.BaseLevel, _sex, (Athena.Net.MapServer.Generated.Jobs.JobClass)gameplayState.State.JobClass, cancellationToken);
         if (outcome is not { } equipOutcome) return; // invalid slot/index - pc_equipitem sends no ack either (clif.cpp:12154-12156 early-out)
 
@@ -4067,7 +4095,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var targetItemId = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.ItemId;
         var oldEquip = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.Equip;
         if (_inventoryService is null) return;
-        var service = new CharacterEquipmentMutationService(_inventoryService);
+        var service = new CharacterEquipmentMutationService(_inventoryService, _rules.Stats);
         var (outcome, updated) = await service.UnequipAsync(slotIndex, cancellationToken);
         if (outcome is not { } unequipOutcome)
         {
@@ -4597,7 +4625,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     async Task Athena.Net.MapServer.World.Items.IItemEffectHost.ItemHealAsync(int hp, int sp, CancellationToken cancellationToken)
     {
         var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
-        var effective = _statusEffects.Capture(() => state.State).Effective;
+        var effective = _statusEffects.Capture(() => state.State, CurrentEquipmentParamBonus()).Effective;
         var incHealRate = _statusEffects.TryGet(ItemHealFormula.IncHealRateStatusId, out var incHeal) ? incHeal.Val1 : 0;
         var (healHp, healSp) = ItemHealFormula.ItemHeal(hp, sp, effective.Vitality, effective.Intelligence,
             state.Skills.CurrentLevel(SmRecovery), state.Skills.CurrentLevel(MgSpRecovery), state.Skills.CurrentLevel(AmLearningPotion), incHealRate);

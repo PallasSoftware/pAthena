@@ -1,4 +1,5 @@
 using Athena.Net.MapServer.Gameplay.Rules;
+using Athena.Net.MapServer.World.Items;
 
 namespace Athena.Net.MapServer.World;
 
@@ -198,11 +199,16 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
     // acquisition (SnapshotForRecalculate), rather than two independent TryGet calls each
     // taking/releasing the gate - otherwise a Start racing between the two lookups could let
     // one stat family observe an older dictionary state than the other.
-    public EffectiveCharacterStats Recalculate(CharacterGameplayState baseState)
+    // `equipmentBonus` MUST be the caller's currently-resolved EquipmentStats.ParamBonus (default
+    // EquipmentParamBonus.None only for a caller that genuinely has no inventory/equipment context,
+    // e.g. before the inventory service exists) - see IStatRules.ApplyEquipmentBonus's own doc
+    // comment for why this cannot be applied as an independent layer alongside status effects
+    // without silently dropping one contribution from the shared Effective result.
+    public EffectiveCharacterStats Recalculate(CharacterGameplayState baseState, EquipmentParamBonus equipmentBonus = default)
     {
         var now = _timeProvider.GetUtcNow();
         var snapshot = SnapshotForRecalculate();
-        return RecalculateFrom(baseState, id => snapshot.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
+        return RecalculateFrom(baseState, equipmentBonus, id => snapshot.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
     }
 
     // One mutually consistent (gameplay state, effective stats) pair. The two inputs have different owners
@@ -212,7 +218,7 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
     // while holding another), and accept only if the state reference is unchanged afterwards. Gameplay states are
     // versioned and never revisited, so an unchanged reference means the state was current throughout the
     // status copy - the pair is a real instant. No lock ordering exists to deadlock on.
-    public CharacterStatusSnapshot Capture(Func<CharacterGameplayState> readState)
+    public CharacterStatusSnapshot Capture(Func<CharacterGameplayState> readState, EquipmentParamBonus equipmentBonus = default)
     {
         while (true)
         {
@@ -220,7 +226,7 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
             var now = _timeProvider.GetUtcNow();
             var statuses = SnapshotForRecalculate();
             if (!ReferenceEquals(state, readState())) continue;
-            var effective = RecalculateFrom(state, id => statuses.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
+            var effective = RecalculateFrom(state, equipmentBonus, id => statuses.TryGetValue(id, out var status) && status.ExpiresAt > now ? status : null);
             return new CharacterStatusSnapshot(state, effective, now);
         }
     }
@@ -232,10 +238,10 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
     // them as inactive and produce a false "nothing changed" diff. This reads the raw stored
     // entries (still present - ExpireDue has not run yet) unconditionally instead, from the
     // same kind of single coherent snapshot Recalculate uses.
-    public EffectiveCharacterStats RecalculateBeforeExpiration(CharacterGameplayState baseState)
+    public EffectiveCharacterStats RecalculateBeforeExpiration(CharacterGameplayState baseState, EquipmentParamBonus equipmentBonus = default)
     {
         var snapshot = SnapshotForRecalculate();
-        return RecalculateFrom(baseState, id => snapshot.TryGetValue(id, out var status) ? status : null);
+        return RecalculateFrom(baseState, equipmentBonus, id => snapshot.TryGetValue(id, out var status) ? status : null);
     }
 
     private Dictionary<ushort, ActiveStatus> SnapshotForRecalculate()
@@ -244,7 +250,9 @@ public sealed class CharacterStatusEffectState(TimeProvider timeProvider, IStatu
     }
 
     // Gameplay (which stats a status changes, by how much) lives in the injected regional rules; this class owns storage,
-    // locking and the consistent snapshot only.
-    private EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, Func<ushort, ActiveStatus?> lookup) =>
-        statusRules.ApplyStatuses(statRules.BasePrimaryStats(baseState), lookup);
+    // locking and the consistent snapshot only. Pinned status_calc_pc (status.cpp:4290-4301): equipment is baked into
+    // the base stats BEFORE status_calc_bl_main applies any status delta on top (see IStatRules.ApplyEquipmentBonus's
+    // own doc comment) - ApplyEquipmentBonus runs first, status effects apply to ITS result, never to the raw base.
+    private EffectiveCharacterStats RecalculateFrom(CharacterGameplayState baseState, EquipmentParamBonus equipmentBonus, Func<ushort, ActiveStatus?> lookup) =>
+        statusRules.ApplyStatuses(statRules.ApplyEquipmentBonus(statRules.BasePrimaryStats(baseState), equipmentBonus), lookup);
 }

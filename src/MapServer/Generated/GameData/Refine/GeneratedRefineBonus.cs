@@ -183,7 +183,13 @@ internal static class GeneratedRefineBonus
 
     // Pinned RefineDatabase::findCurrentLevelInfo (status.cpp:457-463): refine == 0 has no bonus at
     // all (never looked up); refine > 0 reads the (refine-1)-th 0-based RefineLevels entry, i.e. the
-    // pinned YAML's own 1-based `Level: refine` entry directly - no further offset here.
+    // pinned YAML's own 1-based `Level: refine` entry directly - no further offset here. A miss on
+    // itemLevel genuinely means "no bonus", matching pinned util::umap_find's own null return for an
+    // item level this Group's data never tabulates (e.g. an item_db WeaponLevel/ArmorLevel value this
+    // pinned refine.yml snapshot has no Levels entry for) - NOT a generation gap to fail loudly on,
+    // since the pinned source itself returns nullptr for exactly this case rather than treating it as
+    // an error. A miss on refineLevel cannot occur for any of this table's tabulated item levels (every
+    // one covers refine 1-MAX_REFINE(20) completely - see RefineDataCompilerTests' own coverage check).
     internal static uint Bonus(string group, int itemLevel, int refine)
     {
         if (refine <= 0) return 0;

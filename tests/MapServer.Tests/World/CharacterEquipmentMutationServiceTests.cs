@@ -48,7 +48,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     {
         var operations = new InMemoryInventoryOperations(inventory);
         var service = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, inventory);
-        return (operations, service, new CharacterEquipmentMutationService(service));
+        return (operations, service, new CharacterEquipmentMutationService(service, Rules.Stats));
     }
 
     [Fact]
@@ -274,14 +274,18 @@ public sealed class CharacterEquipmentMutationServiceTests
 
     private static readonly IReadOnlyDictionary<int, ItemDefinition> RealItems = ItemCatalog.Current.ById;
     private const int Sword = 1101; // EquipLevelMin: 2, pinned db/re/item_db_equip.yml.
-    private const int SinisterViollin = 1900; // Gender: Male, EquipLevelMin: 160, pinned db/re/item_db_equip.yml.
+    // Gender: Male, EquipLevelMin: 27, Jobs: BardDancer, Script: `bonus bInt,2;` (a flat bonus
+    // EquipmentBonusResolver fully supports - Sinister_Viollin (1900) was replaced here because its
+    // real script, `bonus bBaseAtk,pow(min(getrefine(),15),2);`, is genuinely unresolvable and
+    // CharacterEquipmentMutationService's own CanResolveAfter gate correctly rejects equipping it).
+    private const int Harp = 1909;
 
     [Fact]
     public async Task EquipAsync_BelowEquipLevelMin_ReturnsFailLevel_NeverPersists()
     {
         var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]);
         var operations = new InMemoryInventoryOperations(initial);
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, initial));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, initial), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 1, characterSex: ItemMetadata.BothSexes, JobClass.Novice, CancellationToken.None);
 
@@ -294,7 +298,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     public async Task EquipAsync_AtOrAboveEquipLevelMin_Succeeds()
     {
         var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 2, characterSex: ItemMetadata.BothSexes, JobClass.Novice, CancellationToken.None);
 
@@ -305,10 +309,10 @@ public sealed class CharacterEquipmentMutationServiceTests
     [Fact]
     public async Task EquipAsync_WrongSex_ReturnsFail_NeverPersists()
     {
-        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, SinisterViollin, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Harp, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 160, characterSex: 0 /* SEX_FEMALE */, JobClass.Dancer, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 27, characterSex: 0 /* SEX_FEMALE */, JobClass.Dancer, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
         Assert.Null(updated);
@@ -318,23 +322,23 @@ public sealed class CharacterEquipmentMutationServiceTests
     [Fact]
     public async Task EquipAsync_MatchingSex_Succeeds()
     {
-        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, SinisterViollin, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Harp, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
-        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 160, characterSex: 1 /* SEX_MALE */, JobClass.Bard, CancellationToken.None);
+        var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 27, characterSex: 1 /* SEX_MALE */, JobClass.Bard, CancellationToken.None);
 
         Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
         Assert.NotNull(updated);
     }
 
     // Pinned pc_job_can_use_item (pc.cpp:1771-1790, called from pc_equipitem:1961-1962): a job not
-    // listed in the item's pinned Jobs block is rejected. Sinister_Viollin (id 1900) only lists
-    // BardDancer: true - a Novice, who can equip the plain Sword (1101) just fine, cannot equip it.
+    // listed in the item's pinned Jobs block is rejected. Harp (id 1909) only lists BardDancer: true -
+    // a Novice, who can equip the plain Sword (1101) just fine, cannot equip it.
     [Fact]
     public async Task EquipAsync_JobNotInItemsJobsBlock_ReturnsFail_NeverPersists()
     {
-        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, SinisterViollin, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Harp, 1, 0, true, 0, 0, 0)]));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 160, characterSex: 1 /* SEX_MALE */, JobClass.Novice, CancellationToken.None);
 
@@ -350,7 +354,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     public async Task EquipAsync_SecondJobListedInItemsJobsBlock_Succeeds()
     {
         var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 2, characterSex: ItemMetadata.BothSexes, JobClass.Knight, CancellationToken.None);
 
@@ -364,7 +368,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     public async Task EquipAsync_JobEntirelyUnlistedInItemsJobsBlock_ReturnsFail_NeverPersists()
     {
         var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 2, characterSex: ItemMetadata.BothSexes, JobClass.Mage, CancellationToken.None);
 
@@ -381,7 +385,7 @@ public sealed class CharacterEquipmentMutationServiceTests
     public async Task EquipAsync_GenderVariantJobWithNoEquipClassEntry_ReturnsFail_NeverPersists()
     {
         var operations = new InMemoryInventoryOperations(new([new CharacterInventoryItem(1, 0, Sword, 1, 0, true, 0, 0, 0)]));
-        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)));
+        var service = new CharacterEquipmentMutationService(global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, operations, CharacterInventorySnapshot.FromRows(operations.Rows)), Rules.Stats);
 
         var (outcome, updated) = await service.EquipAsync(0, requestedPosition: 0x000002, RealItems, characterBaseLevel: 2, characterSex: ItemMetadata.BothSexes, JobClass.Knight2, CancellationToken.None);
 

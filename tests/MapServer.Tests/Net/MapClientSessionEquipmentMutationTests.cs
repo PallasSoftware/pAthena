@@ -165,10 +165,10 @@ public sealed class MapClientSessionEquipmentMutationTests
     }
 
     // S4 job-class equipment eligibility (pinned pc_job_can_use_item, pc.cpp:1771-1790): a real
-    // generated item (1900 Sinister_Viollin, Jobs: BardDancer only, Gender: Male) requested by a
-    // Novice job class must be rejected with the plain Fail ack (0x0999 result byte 2 - not
-    // FailLevel, since job-class and level are independent pinned gates), never persisted -
-    // proven through the REAL 0x0998 wire path, not just the service layer.
+    // generated item (530040 1LvJavelin, Jobs: Crusader/Knight/Swordman only) requested by a Novice
+    // job class must be rejected with the plain Fail ack (0x0999 result byte 2 - not FailLevel,
+    // since job-class and level are independent pinned gates), never persisted - proven through the
+    // REAL 0x0998 wire path, not just the service layer.
     [Fact]
     public async Task EquipRealItemWithIneligibleJobClass_SendsFailAck_NeverPersists()
     {
@@ -185,6 +185,95 @@ public sealed class MapClientSessionEquipmentMutationTests
 
         Assert.Empty(persistence.EquipUpdates);
         Assert.Null(session.Equipment!.RightHandItemId);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Defect 4 regression: live monster-vs-player combat must reflect a REFINED armor's DEF
+    // contribution, not just its plain Defense field. Pinned status.cpp:4096
+    // `base_status->def += (refinedef+50)/100` - PlayerCombatSnapshot.HardDefense must be
+    // IStatRules.CalculateDerivedStats's OWN HardDefense result (which includes this), never
+    // EquipmentStats.HardDefense directly (armor DEF alone, pre-refine). Real pinned item
+    // Cotton_Shirt (2301, Defense: 10, ArmorLevel: 1) refined to +3: pinned Armor Level 1 Refine 3
+    // Bonus=300 (direct inspection of db/re/refine.yml), so HardDefense must be 10 + (300+50)/100 =
+    // 10+3 = 13, proven through the REAL TryGetCombatSnapshotAsync path the monster-attack pipeline
+    // actually calls - not just CalculateDerivedStats in isolation.
+    [Fact]
+    public async Task RefinedArmor_IncreasesLiveCombatSnapshotHardDefense()
+    {
+        const int cottonShirt = 2301; // Defense: 10, ArmorLevel: 1, Refineable (no explicit field, defaults true).
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, cottonShirt, 1, 0, true, Refine: 3, 0, 0)]);
+        var (client, stream, session, run, _) = await SetupAsync(initial);
+        using var _2 = client;
+
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000010)); // EQP_ARMOR.
+        var ack = await ReadExact(stream, 11);
+        Assert.Equal(PacketConstants.EquipAckResultOk, ack[10]);
+        var appearance = await ReadExact(stream, 15);
+        Assert.Equal((short)0x01d7, BinaryPrimitives.ReadInt16LittleEndian(appearance));
+
+        var snapshot = await session.TryGetCombatSnapshotAsync(CancellationToken.None);
+
+        // Pinned Armor Level 1 Refine 3 Bonus=300 (direct inspection of db/re/refine.yml, not
+        // re-derived from the generated table under test): HardDefense = 10 + (300+50)/100 = 13.
+        // Before the Defect 4 fix this read equipmentStats.HardDefense directly (= 10, the refine
+        // bonus silently dropped from the live monster-vs-player damage path).
+        Assert.NotNull(snapshot);
+        Assert.Equal(10 + (300 + 50) / 100, snapshot!.Value.HardDefense);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Defect 3 regression: an item whose script TryResolveEquipment cannot fully account for must
+    // be rejected AT EQUIP TIME (CharacterEquipmentMutationService.CanResolveAfter), never persisted
+    // as a "successful" equip that later makes the player untargetable to every monster. Spear Of
+    // Excellent (1427, Jobs: Crusader/Knight/Swordman, no EquipLevelMin) mixes a modeled flat bonus
+    // (bonus bStr,2;) with an unmodeled bonus2 (bSkillAtk) - a Knight who legitimately meets every
+    // OTHER eligibility gate (level, sex, job-class) must still be refused this specific item.
+    [Fact]
+    public async Task EquipRealItemWithUnresolvableScript_SendsFailAck_NeverPersists()
+    {
+        const int spearOfExcellent = 1427;
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, spearOfExcellent, 1, 0, true, 0, 0, 0)]);
+        var (client, stream, session, run, persistence) = await SetupAsync(initial, jobClass: 7 /* JOB_KNIGHT */);
+        using var _ = client;
+
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000002));
+
+        var ack = await ReadExact(stream, 11);
+        Assert.Equal((short)0x0999, BinaryPrimitives.ReadInt16LittleEndian(ack));
+        Assert.Equal(PacketConstants.EquipAckResultFail, ack[10]);
+
+        Assert.Empty(persistence.EquipUpdates);
+        Assert.Null(session.Equipment!.RightHandItemId);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // Defect 3 invariant: an otherwise-valid player must never become untargetable to every monster
+    // because of a PRE-EXISTING unsupported equip state (one persisted before CanResolveAfter
+    // existed, or restored directly in the database - CanResolveAfter makes this unreachable for any
+    // NEW equip going forward, but cannot retroactively fix already-persisted data).
+    // TryGetCombatSnapshotAsync must degrade gracefully (no equipment DEF/weapon contribution, loudly
+    // diagnosed) rather than returning null and silently excluding the player from every monster's
+    // valid-target set forever.
+    [Fact]
+    public async Task PreExistingUnresolvableEquippedItem_StillProducesATargetableCombatSnapshot()
+    {
+        const int spearOfExcellent = 1427; // Jobs: Crusader/Knight/Swordman; unresolvable script (bonus2 bSkillAtk).
+        // Equip bits set directly in the INITIAL snapshot, bypassing CharacterEquipmentMutationService
+        // entirely - simulating data that was already equipped before the CanResolveAfter gate existed.
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, spearOfExcellent, 1, 0x000002, true, 0, 0, 0)]);
+        var (client, stream, session, run, _) = await SetupAsync(initial);
+        using var _2 = client;
+
+        var snapshot = await session.TryGetCombatSnapshotAsync(CancellationToken.None);
+
+        Assert.NotNull(snapshot); // never untargetable because of this pre-existing condition.
+        Assert.Equal(0, snapshot!.Value.HardDefense); // degraded: no equipment contribution, not fabricated either.
 
         await client.GetStream().DisposeAsync();
         await run.WaitAsync(TimeSpan.FromSeconds(5));

@@ -110,6 +110,36 @@ public sealed class RefineDataCompilerTests
         Assert.Equal(200u, table["Armor"][1][2]);
     }
 
+    // Confirms a lookup miss on refineLevel can never legitimately occur for any tabulated item
+    // level in the real pinned data (see GeneratedRefineBonus.Bonus's own doc comment): every
+    // Weapon level 1-5 and Armor level 1-2 fully covers refine 1-20 with no gaps.
+    [Fact]
+    public void RealPinnedData_EveryTabulatedLevelCoversAllRefineLevelsOneToTwenty()
+    {
+        var root = FindRepositoryRoot();
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
+        foreach (var (group, levels) in table)
+            foreach (var (level, refineLevels) in levels)
+                for (var refine = 1; refine <= 20; refine++)
+                    Assert.True(refineLevels.ContainsKey(refine), $"{group} level {level} is missing RefineLevel {refine}.");
+    }
+
+    [Fact]
+    public void RealPinnedData_WeaponLevelsAreExactlyOneThroughFive()
+    {
+        var root = FindRepositoryRoot();
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
+        Assert.Equal([1, 2, 3, 4, 5], table["Weapon"].Keys.OrderBy(k => k));
+    }
+
+    [Fact]
+    public void RealPinnedData_ArmorLevelsAreExactlyOneAndTwo()
+    {
+        var root = FindRepositoryRoot();
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
+        Assert.Equal([1, 2], table["Armor"].Keys.OrderBy(k => k));
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

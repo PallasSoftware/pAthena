@@ -17,8 +17,10 @@ namespace Athena.Net.MapServer.World;
 // lets the mob-attacks-player path apply the identical pinned rule keyed on the PLAYER's own
 // current walking state, rather than assuming the two directions share one rule without tracing it.
 // `SoftDefense` is the authoritative def2 from DerivedStatCalculator (reference-verified, fixtures VF-01/02/07/08),
-// computed from the same captured snapshot as Vitality/Agility - consumers must not re-derive it. `HardDefense` is the
-// summed equipped-armor DEF (EquipmentStats).
+// computed from the same captured snapshot as Vitality/Agility - consumers must not re-derive it. `HardDefense` is
+// IStatRules.CalculateDerivedStats's OWN HardDefense result (summed equipped-armor DEF PLUS the refine bonus,
+// status.cpp:4096 `(refinedef+50)/100`) - never EquipmentStats.HardDefense directly, which is the pre-refine armor
+// DEF sum alone and would silently drop every refined armor's contribution from live incoming-damage reduction.
 // `Agility` is the player's EFFECTIVE (base + active status bonuses) AGI, needed by the RENEWAL
 // player def2 formula (status.cpp:2649-2656: floor((BaseLevel+VIT)/2 + AGI/5)) - see
 // MobBasicAttackCalculator's own doc comment for the full trace.

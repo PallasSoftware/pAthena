@@ -37,7 +37,7 @@ public sealed class KroStatRules : IStatRules
 
     // status.cpp:4291-4301: base + status + param_bonus (equip flat bonuses) + param_equip, each capped to 0..USHRT_MAX
     // independently before any derived stat reads it. param_equip (bonus2-5/card/combo territory) is not modeled yet.
-    private static PrimaryStats ApplyParamBonus(PrimaryStats s, EquipmentParamBonus bonus) => new(
+    public PrimaryStats ApplyEquipmentBonus(PrimaryStats s, EquipmentParamBonus bonus) => new(
         Cap(s.Strength + bonus.Strength), Cap(s.Agility + bonus.Agility), Cap(s.Vitality + bonus.Vitality),
         Cap(s.Intelligence + bonus.Intelligence), Cap(s.Dexterity + bonus.Dexterity), Cap(s.Luck + bonus.Luck));
 
@@ -46,7 +46,7 @@ public sealed class KroStatRules : IStatRules
     public DerivedStats CalculateDerivedStats(CharacterStatusSnapshot snapshot, EquipmentStats equipment = default)
     {
         var level = snapshot.State.BaseLevel;
-        var b = ApplyParamBonus(BasePrimaryStats(snapshot.State), equipment.ParamBonus);
+        var b = ApplyEquipmentBonus(BasePrimaryStats(snapshot.State), equipment.ParamBonus);
         var e = snapshot.Effective;
         var baseDerived = BaseDerived(level, b);
 
@@ -79,10 +79,16 @@ public sealed class KroStatRules : IStatRules
         // cap_value(def, SHRT_MIN, SHRT_MAX).
         var hardDef = Math.Clamp(equipment.HardDefense + (equipment.ArmorRefineDefense + 50) / 100, short.MinValue, ShortMax);
 
-        // RENEWAL MATK from the EFFECTIVE stats; weapon MATK, %, pseudo-buffs and equipment MATK are not modeled, so a
-        // weapon with MagicAttack is rejected rather than ignored.
+        // RENEWAL status_base_matk_min/max for BL_PC (status.cpp:2559-2591): for a player these are the
+        // IDENTICAL stat-only formula - there is NO min/max variance and NO weapon-matk term at all for
+        // BL_PC (the `status->rhw.matk * 70/100`..`130/100` variance only applies to BL_PET/MOB/MER/ELEM).
+        // EquipmentStats.WeaponRefineAtk/WeaponRefineMatk/weapon-script MagicAttack therefore do NOT feed
+        // this calculation - they are a skill-formula-specific term (consumed directly from rhw.matk by
+        // specific magic skills, skill.cpp) that belongs to Feature 17/18's combat formulas, not this
+        // general player status calculation. Rejecting rather than silently dropping a weapon with
+        // MagicAttack keeps that boundary explicit until a skill-formula consumer exists.
         if ((equipment.Weapon?.MagicAttack ?? 0) != 0) throw new NotSupportedException("Weapon MATK is not modeled.");
-        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4 + equipment.WeaponRefineMatk, 0, ushort.MaxValue);
+        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4, 0, ushort.MaxValue);
 
         // CRI and perfect FLEE have no overlay from the supported statuses (LUK is unchanged by them).
         return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef, MagicAttackMin = matk, MagicAttackMax = matk };
@@ -161,7 +167,11 @@ public sealed class KroStatRules : IStatRules
                     weapon = w;
                     if (definition.Meta is { Refineable: true })
                     {
-                        var bonus = (int)GeneratedRefineBonus.Bonus("Weapon", w.WeaponLevel, row.Refine);
+                        // Pinned status.cpp:3957,3977: `wa->atk2 += info->bonus/100` and (non-bow)
+                        // `wa->matk += info->bonus/100` - GeneratedRefineBonus.Bonus is the RAW
+                        // pinned value (e.g. 1000 for a level-1 weapon at +5), divided by 100 BEFORE
+                        // accumulating, never accumulated raw.
+                        var bonus = (int)GeneratedRefineBonus.Bonus("Weapon", w.WeaponLevel, row.Refine) / 100;
                         weaponRefineAtk += bonus;
                         if (w.WeaponType != WeaponType.Bow) weaponRefineMatk += bonus;
                     }
