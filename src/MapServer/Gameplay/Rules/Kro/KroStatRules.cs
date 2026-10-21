@@ -79,19 +79,44 @@ public sealed class KroStatRules : IStatRules
         // cap_value(def, SHRT_MIN, SHRT_MAX).
         var hardDef = Math.Clamp(equipment.HardDefense + (equipment.ArmorRefineDefense + 50) / 100, short.MinValue, ShortMax);
 
-        // RENEWAL status_base_matk_min/max for BL_PC (status.cpp:2559-2591): for a player these are the
-        // IDENTICAL stat-only formula - there is NO min/max variance and NO weapon-matk term at all for
-        // BL_PC (the `status->rhw.matk * 70/100`..`130/100` variance only applies to BL_PET/MOB/MER/ELEM).
-        // EquipmentStats.WeaponRefineAtk/WeaponRefineMatk/weapon-script MagicAttack therefore do NOT feed
-        // this calculation - they are a skill-formula-specific term (consumed directly from rhw.matk by
-        // specific magic skills, skill.cpp) that belongs to Feature 17/18's combat formulas, not this
-        // general player status calculation. Rejecting rather than silently dropping a weapon with
-        // MagicAttack keeps that boundary explicit until a skill-formula consumer exists.
-        if ((equipment.Weapon?.MagicAttack ?? 0) != 0) throw new NotSupportedException("Weapon MATK is not modeled.");
-        var matk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4, 0, ushort.MaxValue);
+        // RENEWAL status_calc_bl_main MATK for BL_PC (status.cpp:6283-6361), NOT status_base_matk_min/max
+        // alone (that function is only the StatusMATK term - 2559-2591). The live player formula is
+        // StatusMATK + WeaponMATK +/- variance, then an overrefine widening:
+        //   wMatk = rhw.matk, variance = rhw.matk * rhw.wlv / 10
+        //   matk_min = StatusMATK + wMatk - variance, matk_max = StatusMATK + wMatk + variance
+        //   if (overrefine > 0) { matk_min++; matk_max += overrefine - 1; }           (status.cpp:6325-6327)
+        // rhw.matk itself is the weapon's static MagicAttack plus the refine bonus for non-bow weapons
+        // (wa->matk += info->bonus/100, status.cpp:3973-3977) - exactly EquipmentStats.WeaponRefineMatk.
+        // wlv is the weapon's level capped at MAX_WEAPON_LEVEL (5, status.cpp:3945-3946). overrefine is
+        // EquipmentStats.WeaponOverrefine (wd->overrefine = info->randombonus_max/100, status.cpp:3986) -
+        // despite the pinned YAML field's name "RandomBonus" this is a deterministic per-(weapon level,
+        // refine level) value, not an RNG roll (see EquipmentStats's own doc comment). No left-hand/
+        // dual-wield weapon is modeled in this project (see BasicAttackRangeResolver's own doc comment),
+        // so only the right-hand (EquipmentStats.Weapon) term applies.
+        var statusMatk = Math.Clamp(e.Intelligence + e.Intelligence / 2 + e.Dexterity / 5 + e.Luck / 3 + level / 4, 0, ushort.MaxValue);
+        var matkMin = statusMatk;
+        var matkMax = statusMatk;
+        if (equipment.Weapon is { } weapon)
+        {
+            var wMatk = weapon.MagicAttack + equipment.WeaponRefineMatk;
+            if (wMatk > 0)
+            {
+                var wlv = Math.Min(weapon.WeaponLevel, 5);
+                var variance = wMatk * wlv / 10;
+                matkMin += wMatk - variance;
+                matkMax += wMatk + variance;
+            }
+            if (equipment.WeaponOverrefine > 0)
+            {
+                matkMin++;
+                matkMax += equipment.WeaponOverrefine - 1;
+            }
+        }
+        matkMin = Math.Clamp(matkMin, 0, ushort.MaxValue);
+        matkMax = Math.Clamp(matkMax, 0, ushort.MaxValue);
 
         // CRI and perfect FLEE have no overlay from the supported statuses (LUK is unchanged by them).
-        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef, MagicAttackMin = matk, MagicAttackMax = matk };
+        return baseDerived with { BaseAttack = batk, Hit = hit, Flee = flee, SoftDefense = def2, SoftMagicDefense = mdef2, HardDefense = hardDef, MagicAttackMin = matkMin, MagicAttackMax = matkMax };
     }
 
     // status_calc_misc, RENEWAL, BL_PC (status.cpp:2638-2745).
@@ -143,6 +168,17 @@ public sealed class KroStatRules : IStatRules
     // so a graded item (EnchantGrade > 0) is rejected rather than silently applying refine-only.
     // Shadow gear refine (a third GeneratedRefineBonus group this project never generates) and the
     // weapon-level-5 pAtk/sMatk bonus are likewise out of this slice's scope.
+    //
+    // A4: a KNOWN, modeled item category this method does not yet compute a stat contribution for
+    // (left-hand/dual-wield weapon ATK, ammo ATK, shadow gear refine) is recognized and SKIPPED - it
+    // contributes zero, exactly like an unequipped slot would - rather than failing resolution for the
+    // WHOLE character. Only a genuinely UNRECOGNIZED item (not in `items` at all, or an enchant-graded
+    // item whose multiplier is unmodeled) makes TryResolveEquipment return false, which is the only
+    // case that should ever degrade an otherwise-valid player's entire equipment contribution to
+    // EquipmentStats.default (see TryGetCombatSnapshotAsync's own doc comment on that fallback). Before
+    // this distinction, equipping a single ammo/shadow-gear/left-hand-weapon row - all routine, common
+    // gameplay states reachable through CharacterEquipmentMutationService's existing equip paths -
+    // silently discarded every OTHER equipped item's DEF/refine/param-bonus contribution too.
     public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment)
     {
         var hardDefense = 0;
@@ -151,6 +187,7 @@ public sealed class KroStatRules : IStatRules
         var weaponRefineAtk = 0;
         var weaponRefineMatk = 0;
         var armorRefineDefense = 0;
+        var weaponOverrefine = 0;
         foreach (var row in inventory.Items)
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
@@ -174,7 +211,30 @@ public sealed class KroStatRules : IStatRules
                         var bonus = (int)GeneratedRefineBonus.Bonus("Weapon", w.WeaponLevel, row.Refine) / 100;
                         weaponRefineAtk += bonus;
                         if (w.WeaponType != WeaponType.Bow) weaponRefineMatk += bonus;
+                        // Pinned status.cpp:3986: wd->overrefine = info->randombonus_max/100 - a single flat value
+                        // for the right-hand weapon (not accumulated/summed like atk2/matk across rows, since there
+                        // is only ever one right-hand weapon).
+                        weaponOverrefine = (int)GeneratedRefineBonus.OverrefineBonus("Weapon", w.WeaponLevel, row.Refine) / 100;
                     }
+                    break;
+                // A left-hand weapon (dual-wield, reachable via CharacterEquipmentMutationService's own EQP_ARMS
+                // logic) is a real, currently-equippable state this project does not model the combat
+                // contribution of (see BasicAttackRangeResolver's own "no left-hand/dual-wield weapon modeled"
+                // doc comment) - but it must not make every OTHER equipped item's contribution vanish. Recognized
+                // and skipped, not rejected.
+                case WeaponItemDefinition:
+                    break;
+                // Shadow gear's Defense is modeled data (feeds hard DEF exactly like armor, per its own doc
+                // comment) - only its refine bonus is out of scope (RefineDataCompiler only generates the Weapon
+                // and Armor groups; see this method's own doc comment).
+                case ShadowGearItemDefinition shadow:
+                    hardDefense += shadow.Defense;
+                    break;
+                // Ammo (arrows/bullets/kunai/...) is routine, common equipment for several classes - its own
+                // ATK contribution belongs to the live combat formula (Feature 17), not this general player
+                // status calculation, but an equipped ammo row must not invalidate every other item's
+                // contribution either. Recognized and skipped, not rejected.
+                case AmmoItemDefinition:
                     break;
                 default:
                     equipment = default;
@@ -185,7 +245,7 @@ public sealed class KroStatRules : IStatRules
             try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
-        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense);
+        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine);
         return true;
     }
 

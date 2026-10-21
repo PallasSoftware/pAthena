@@ -9,6 +9,12 @@ namespace Athena.Net.MapServer.World;
 // generated). Plain data - how it is resolved from the inventory is a regional rule (IStatRules.TryResolveEquipment),
 // which rejects an equipped item it cannot account for instead of assuming "no effect".
 //
+// WeaponOverrefine is GeneratedRefineBonus.OverrefineBonus/100 (pinned wd->overrefine = info->randombonus_max/100,
+// status.cpp:3986) - despite the pinned YAML field's name "RandomBonus", this is a deterministic per-(weapon level,
+// refine level) value, never an RNG roll at refine time. It widens the live player Renewal MATK range asymmetrically
+// (matk_min++, matk_max += overrefine-1, status.cpp:6325-6327) on top of the wMatk/variance term - see
+// IStatRules.CalculateDerivedStats's own doc comment for the full formula.
+//
 // OWNERSHIP BOUNDARY (Feature 16 vs Feature 17): WeaponRefineAtk/WeaponRefineMatk are typed, correctly-
 // computed Feature 16 data, but the LIVE player-vs-monster damage formula (IroCombatRules/
 // KroCombatRules.CalculatePlayerBasicAttack, via EquippedWeaponResolver) reads WeaponItemDefinition.Attack
@@ -19,7 +25,7 @@ namespace Athena.Net.MapServer.World;
 // explicit, not silently "working".
 public readonly record struct EquipmentStats(
     int HardDefense, WeaponItemDefinition? Weapon, EquipmentParamBonus ParamBonus = default,
-    int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0)
+    int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0)
 {
     // The CORRECT total static+refine ATK per pinned wa->atk + wa->atk2 (status.cpp:3952,3957) - ready for
     // Feature 17 to consume once CalculatePlayerBasicAttack is updated to take EquipmentStats/this value

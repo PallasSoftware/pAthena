@@ -16,6 +16,7 @@ public sealed class RefineDataCompilerTests
                     Bonus: 200
                   - Level: 2
                     Bonus: 400
+                    RandomBonus: 300
               - Level: 2
                 RefineLevels:
                   - Level: 1
@@ -38,10 +39,18 @@ public sealed class RefineDataCompilerTests
     public void BuildTable_ParsesWeaponAndArmorBonusValues()
     {
         var table = RefineDataCompiler.BuildTable(_ => Fixture);
-        Assert.Equal(200u, table["Weapon"][1][1]);
-        Assert.Equal(400u, table["Weapon"][1][2]);
-        Assert.Equal(100u, table["Weapon"][2][1]);
-        Assert.Equal(100u, table["Armor"][1][1]);
+        Assert.Equal(200u, table["Weapon"][1][1].Bonus);
+        Assert.Equal(400u, table["Weapon"][1][2].Bonus);
+        Assert.Equal(100u, table["Weapon"][2][1].Bonus);
+        Assert.Equal(100u, table["Armor"][1][1].Bonus);
+    }
+
+    [Fact]
+    public void BuildTable_ParsesRandomBonusMaxValue_DefaultsToZeroWhenAbsent()
+    {
+        var table = RefineDataCompiler.BuildTable(_ => Fixture);
+        Assert.Equal(0u, table["Weapon"][1][1].RandomBonusMax);
+        Assert.Equal(300u, table["Weapon"][1][2].RandomBonusMax);
     }
 
     [Fact]
@@ -86,8 +95,8 @@ public sealed class RefineDataCompilerTests
         Assert.Contains("[\"Weapon\"]", generated);
         Assert.Contains("[\"Armor\"]", generated);
         Assert.DoesNotContain("Shadow_Weapon", generated);
-        Assert.Contains("[1] = 200,", generated);
-        Assert.Contains("[2] = 400,", generated);
+        Assert.Contains("[1] = (200, 0),", generated);
+        Assert.Contains("[2] = (400, 300),", generated);
     }
 
     [Fact]
@@ -96,8 +105,8 @@ public sealed class RefineDataCompilerTests
         // Pinned db/re/refine.yml Group: Weapon, Levels[Level: 1].RefineLevels[Level: 1].Bonus: 200.
         var root = FindRepositoryRoot();
         var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
-        Assert.Equal(200u, table["Weapon"][1][1]);
-        Assert.Equal(400u, table["Weapon"][1][2]);
+        Assert.Equal(200u, table["Weapon"][1][1].Bonus);
+        Assert.Equal(400u, table["Weapon"][1][2].Bonus);
     }
 
     [Fact]
@@ -106,8 +115,23 @@ public sealed class RefineDataCompilerTests
         // Pinned db/re/refine.yml Group: Armor, Levels[Level: 1].RefineLevels[Level: 1].Bonus: 100.
         var root = FindRepositoryRoot();
         var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
-        Assert.Equal(100u, table["Armor"][1][1]);
-        Assert.Equal(200u, table["Armor"][1][2]);
+        Assert.Equal(100u, table["Armor"][1][1].Bonus);
+        Assert.Equal(200u, table["Armor"][1][2].Bonus);
+    }
+
+    // Pinned db/re/refine.yml Group: Weapon, Level: 1 (Sword's WeaponLevel): RandomBonus first appears
+    // at RefineLevels[Level: 8] (300), rising through refine 20. Below refine 8 it is absent/zero -
+    // the live player MATK overrefine widening (status.cpp:6325-6327) only applies from refine 8 up for
+    // a level-1 weapon, which is why VF-23's refine-5 case shows no overrefine term but refine-10 does.
+    [Fact]
+    public void RealPinnedData_WeaponLevel1_RandomBonusIsZeroBeforeRefineEightThenRises()
+    {
+        var root = FindRepositoryRoot();
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, "legacy/rathena", relative)));
+        var level1 = table["Weapon"][1];
+        for (var refine = 1; refine <= 7; refine++) Assert.Equal(0u, level1[refine].RandomBonusMax);
+        Assert.Equal(300u, level1[8].RandomBonusMax);
+        Assert.Equal(900u, level1[10].RandomBonusMax);
     }
 
     // Confirms a lookup miss on refineLevel can never legitimately occur for any tabulated item

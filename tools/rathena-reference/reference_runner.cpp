@@ -46,7 +46,8 @@ static void dump_status(const char* name, const struct status_data& s) {
 }
 
 // `job` stays last: vf02 builds specs with positional aggregate initializers (base_level, job_level, six stats).
-struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; int job = JOB_NOVICE; };
+// item_refines is parallel to items (index-matched); missing entries default to refine 0 (unrefined).
+struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; int job = JOB_NOVICE; std::vector<int> item_refines; };
 
 static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec()) {
 	map_session_data* sd = new map_session_data();
@@ -70,6 +71,7 @@ static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec
 		struct item& row = sd->inventory.u.items_inventory[slot];
 		memset(&row, 0, sizeof(row));
 		row.nameid = nameid; row.amount = 1; row.identify = 1; row.equip = data->equip;
+		row.refine = slot < (int)n.item_refines.size() ? n.item_refines[slot] : 0;
 		sd->inventory_data[slot] = data;
 		slot++;
 	}
@@ -171,6 +173,29 @@ static void vf05() {
 		std::fprintf(out, "%s{\"items\":[", i ? "," : "");
 		for (size_t k = 0; k < n.items.size(); k++) std::fprintf(out, "%s%d", k ? "," : "", n.items[k]);
 		std::fprintf(out, "],");
+		dump_status("base_status", sd->base_status);
+		std::fprintf(out, ",");
+		dump_status("battle_status", sd->battle_status);
+		std::fprintf(out, "}");
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-23: refined Sword (1101, weapon_level 1, matk 0 in item_db) at refine 0/5/10 through the real equipment pass of
+// status_calc_pc, then the real status_calc_bl_main MATK path (status.cpp ~6283-6361): status->matk_min/max include
+// WeaponMATK = (lhw.matk + rhw.matk) +/- variance, where rhw.matk itself already carries the refine bonus (wa->matk +=
+// info->bonus/100, non-bow only, status.cpp:3977) on top of the item's static matk. Demonstrates refine DOES move a
+// player's live matk_min/matk_max, contrary to an earlier (incorrect) conclusion that only status_base_matk_min/max
+// (the StatusMATK term alone) governs player MATK.
+static void vf23() {
+	const int refines[] = {0, 5, 10};
+	NoviceSpec base; base.base_level = 10; base.job_level = 5; base.str = 20; base.agi = 15; base.vit = 12; base.int_ = 5; base.dex = 18; base.luk = 7; base.items = {1101};
+	std::fprintf(out, "{\"id\":\"VF-23\",\"input\":{\"job\":\"Novice\",\"base_level\":10,\"job_level\":5,\"str\":20,\"agi\":15,\"vit\":12,\"int\":5,\"dex\":18,\"luk\":7,\"item\":1101},\"output\":{\"refines\":[");
+	uint32 id = 2000400;
+	for (size_t i = 0; i < 3; i++) {
+		NoviceSpec n = base; n.item_refines = {refines[i]};
+		map_session_data* sd = make_novice(id++, n);
+		std::fprintf(out, "%s{\"refine\":%d,", i ? "," : "", refines[i]);
 		dump_status("base_status", sd->base_status);
 		std::fprintf(out, ",");
 		dump_status("battle_status", sd->battle_status);
@@ -612,6 +637,8 @@ void ra_reference_run() {
 	vf11();
 	std::fprintf(out, ",");
 	vf05();
+	std::fprintf(out, ",");
+	vf23();
 	std::fprintf(out, ",");
 	vf06();
 	std::fprintf(out, ",");

@@ -56,6 +56,7 @@ cat /out/reference.json
         'VF-21' = 'Feature 16: real pc_additem decisions for 22 cases - empty add, merge, non-stackable, MAX_AMOUNT and Stack.Amount limits, weight, slot capacity, bound/rental/card mismatch, unique id assignment, slot beyond the permitted inventory size - with the resulting rows, weight and free slots.'
         'VF-22' = 'Feature 16: pc_updateweightstatus thresholds and hysteresis (SC_WEIGHT50 / SC_WEIGHT90, regen overweight) over the weight sequence 0,699,700,701,899,900,1000,899,699,0 at max_weight 1000.'
         'VF-14' = 'Loader values for mob 1002, plus mobs 1002/1031/1013 spawned (SZ_SMALL) and attacking the VF-01 Novice through real battle_calc_attack: 2000 seeded samples each (std::mt19937 reseeded 1..2000), histogram of non-zero damage, zero/miss count. Covers roll bounds, batk and def2 for ordinary non-skill attacks; hit/flee outcome is recorded but not compared.'
+        'VF-23' = 'Novice (Lv10/J5, mixed stats) wearing Sword (1101, weapon_level 1, matk 0 in item_db) at refine 0/5/10 through the real equipment pass of status_calc_pc and the real status_calc_bl_main MATK path: full base_status and battle_status, demonstrating refine''s effect on live player matk_min/matk_max via WeaponMATK.'
     }
     $fixture = [ordered]@{
         schema = 1

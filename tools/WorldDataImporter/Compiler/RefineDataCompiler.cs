@@ -16,36 +16,47 @@ internal static class RefineDataCompiler
 {
     private static readonly string[] Groups = ["Weapon", "Armor"];
 
-    // [group][level][refineLevel] -> Bonus. level/refineLevel are both the pinned YAML's own
-    // 1-based numbering (WeaponLevel/ArmorLevel 1-5, RefineLevels[].Level 1-20) - callers subtract
-    // 1 themselves to match this project's own 0-based arrays elsewhere, exactly like the pinned
-    // loader's own "Database is 1 based, code is 0 based" comment (status.cpp:188-189).
-    internal static IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, uint>>> BuildTable(Func<string, string> readFile, string basePath = "db/re/refine.yml")
+    // Both fields this project's formulas consume from a (Group, Level, RefineLevel) row: Bonus (flat
+    // ATK2/MATK/DEF refine term, status.cpp:3953/3977/4014) and RandomBonus - despite its name, NOT an
+    // RNG roll: status_calc_pc always reads it as a fixed per-(level,refine) maximum, stored as
+    // wd->overrefine = info->randombonus_max/100 (status.cpp:3986) and applied deterministically in the
+    // live player MATK formula as `matk_min++; matk_max += overrefine - 1;` (status.cpp:6325-6327) -
+    // i.e. an extra, asymmetric MATK-range widening on top of the wMatk/variance term, present only from
+    // the refine level where the pinned table starts tabulating a nonzero RandomBonus (weapon level 1
+    // starts at refine 9; see RealPinnedData_WeaponLevel1_RandomBonusIsZeroBeforeRefineNineThenRises).
+    internal readonly record struct RefineLevelBonus(uint Bonus, uint RandomBonusMax);
+
+    // [group][level][refineLevel] -> (Bonus, RandomBonusMax). level/refineLevel are both the pinned
+    // YAML's own 1-based numbering (WeaponLevel/ArmorLevel 1-5, RefineLevels[].Level 1-20) - callers
+    // subtract 1 themselves to match this project's own 0-based arrays elsewhere, exactly like the
+    // pinned loader's own "Database is 1 based, code is 0 based" comment (status.cpp:188-189).
+    internal static IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, RefineLevelBonus>>> BuildTable(Func<string, string> readFile, string basePath = "db/re/refine.yml")
     {
         var yaml = readFile(basePath);
         var root = SimpleYaml.Parse(yaml, basePath);
         var body = root.Required("Body", basePath).Sequence($"{basePath} Body");
 
-        var table = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, uint>>>(StringComparer.Ordinal);
+        var table = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, RefineLevelBonus>>>(StringComparer.Ordinal);
         foreach (var (node, groupIndex) in body.Items.Select((n, i) => (n, i)))
         {
             var groupEntry = node.Map($"{basePath} Body[{groupIndex}]");
             var groupName = groupEntry.Required("Group", $"{basePath} Body[{groupIndex}]").Scalar("Group");
             if (!Groups.Contains(groupName, StringComparer.Ordinal)) continue; // Shadow_Armor/Shadow_Weapon: not modeled (see this file's own doc comment).
 
-            var levels = new Dictionary<int, IReadOnlyDictionary<int, uint>>();
+            var levels = new Dictionary<int, IReadOnlyDictionary<int, RefineLevelBonus>>();
             foreach (var levelNode in groupEntry.Required("Levels", groupName).Sequence($"{groupName} Levels").Items)
             {
                 var levelEntry = levelNode.Map($"{groupName} Levels[]");
                 var level = (int)levelEntry.Required("Level", groupName).UShort($"{groupName} Level");
 
-                var refineLevels = new Dictionary<int, uint>();
+                var refineLevels = new Dictionary<int, RefineLevelBonus>();
                 foreach (var refineLevelNode in levelEntry.Required("RefineLevels", $"{groupName} Level {level}").Sequence($"{groupName} Level {level} RefineLevels").Items)
                 {
                     var refineLevelEntry = refineLevelNode.Map($"{groupName} Level {level} RefineLevels[]");
                     var refineLevel = (int)refineLevelEntry.Required("Level", $"{groupName} Level {level}").UShort($"{groupName} Level {level} RefineLevels[].Level");
                     var bonus = refineLevelEntry.Optional("Bonus") is { } bonusNode ? (uint)bonusNode.UShort($"{groupName} Level {level} RefineLevel {refineLevel} Bonus") : 0u;
-                    refineLevels[refineLevel] = bonus;
+                    var randomBonus = refineLevelEntry.Optional("RandomBonus") is { } randomBonusNode ? (uint)randomBonusNode.UShort($"{groupName} Level {level} RefineLevel {refineLevel} RandomBonus") : 0u;
+                    refineLevels[refineLevel] = new RefineLevelBonus(bonus, randomBonus);
                 }
                 levels[level] = refineLevels;
             }
@@ -57,7 +68,7 @@ internal static class RefineDataCompiler
         return table;
     }
 
-    internal static string Generate(IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, uint>>> table, string commit)
+    internal static string Generate(IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, RefineLevelBonus>>> table, string commit)
     {
         var builder = new StringBuilder()
             .AppendLine("// <auto-generated>")
@@ -70,20 +81,20 @@ internal static class RefineDataCompiler
             .AppendLine()
             .AppendLine("internal static class GeneratedRefineBonus")
             .AppendLine("{")
-            .AppendLine("    // [group][level][refineLevel] -> Bonus (ATK/DEF x100, pinned s_refine_level_info.bonus). All keys are")
-            .AppendLine("    // the pinned YAML's own 1-based WeaponLevel/ArmorLevel/RefineLevels[].Level numbering.")
-            .AppendLine("    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, uint>>> Table = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, uint>>>")
+            .AppendLine("    // [group][level][refineLevel] -> (Bonus, RandomBonusMax), both x100 (pinned s_refine_level_info.bonus")
+            .AppendLine("    // / randombonus_max). All keys are the pinned YAML's own 1-based WeaponLevel/ArmorLevel/RefineLevels[].Level numbering.")
+            .AppendLine("    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, (uint Bonus, uint RandomBonusMax)>>> Table = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, (uint, uint)>>>")
             .AppendLine("    {");
         foreach (var (group, levels) in table.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
-            builder.Append("        [\"").Append(group).AppendLine("\"] = new Dictionary<int, IReadOnlyDictionary<int, uint>>");
+            builder.Append("        [\"").Append(group).AppendLine("\"] = new Dictionary<int, IReadOnlyDictionary<int, (uint, uint)>>");
             builder.AppendLine("        {");
             foreach (var (level, refineLevels) in levels.OrderBy(pair => pair.Key))
             {
-                builder.Append("            [").Append(level).AppendLine("] = new Dictionary<int, uint>");
+                builder.Append("            [").Append(level).AppendLine("] = new Dictionary<int, (uint, uint)>");
                 builder.AppendLine("            {");
-                foreach (var (refineLevel, bonus) in refineLevels.OrderBy(pair => pair.Key))
-                    builder.Append("                [").Append(refineLevel).Append("] = ").Append(bonus).AppendLine(",");
+                foreach (var (refineLevel, value) in refineLevels.OrderBy(pair => pair.Key))
+                    builder.Append("                [").Append(refineLevel).Append("] = (").Append(value.Bonus).Append(", ").Append(value.RandomBonusMax).AppendLine("),");
                 builder.AppendLine("            },");
             }
             builder.AppendLine("        },");
@@ -102,7 +113,18 @@ internal static class RefineDataCompiler
         builder.AppendLine("    internal static uint Bonus(string group, int itemLevel, int refine)");
         builder.AppendLine("    {");
         builder.AppendLine("        if (refine <= 0) return 0;");
-        builder.AppendLine("        return Table.TryGetValue(group, out var levels) && levels.TryGetValue(itemLevel, out var refineLevels) && refineLevels.TryGetValue(refine, out var bonus) ? bonus : 0;");
+        builder.AppendLine("        return Table.TryGetValue(group, out var levels) && levels.TryGetValue(itemLevel, out var refineLevels) && refineLevels.TryGetValue(refine, out var value) ? value.Bonus : 0;");
+        builder.AppendLine("    }");
+        builder.AppendLine();
+        builder.AppendLine("    // wd->overrefine = info->randombonus_max / 100 (status.cpp:3986) - a deterministic per-(group,level,refine)");
+        builder.AppendLine("    // maximum, NOT an RNG roll at refine time despite the pinned YAML field's name (see RefineDataCompiler's");
+        builder.AppendLine("    // own doc comment on RefineLevelBonus). Consumed by the live player Renewal MATK formula as an extra,");
+        builder.AppendLine("    // asymmetric matk_min/matk_max widening (status.cpp:6325-6327): matk_min++, matk_max += overrefine-1,");
+        builder.AppendLine("    // applied only when this value is > 0.");
+        builder.AppendLine("    internal static uint OverrefineBonus(string group, int itemLevel, int refine)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        if (refine <= 0) return 0;");
+        builder.AppendLine("        return Table.TryGetValue(group, out var levels) && levels.TryGetValue(itemLevel, out var refineLevels) && refineLevels.TryGetValue(refine, out var value) ? value.RandomBonusMax : 0;");
         builder.AppendLine("    }");
         return builder.AppendLine("}").ToString();
     }

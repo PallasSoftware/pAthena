@@ -406,44 +406,96 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(25 + expectedRefineAtk, equipment.WeaponAttack);
     }
 
-    // Defect 6 regression: pinned status_base_matk_min/max for BL_PC (status.cpp:2559-2591) are the
-    // IDENTICAL stat-only formula for a player - there is NO min/max variance and NO weapon-matk term
-    // at all (the rhw.matk*70/100..130/100 variance only applies to BL_PET/MOB/MER/ELEM). A refined
-    // weapon with zero original MagicAttack (Sword, 1101) must therefore NOT change
-    // MagicAttackMin/MagicAttackMax at all - WeaponRefineMatk is correctly computed (Defect 2) but
-    // must NOT be added to this general player status calculation; it is a typed contract for a
-    // future skill-formula consumer (Feature 17/18), never applied here.
-    [Fact]
-    public void CalculateDerivedStats_RefinedWeaponWithZeroMagicAttack_DoesNotChangePlayerMatkMinOrMax()
+    // A1 correction (supersedes the former "Defect 6" test, which was WRONG): the earlier conclusion
+    // read status_base_matk_min/max (status.cpp:2559-2591, the StatusMATK term alone) in isolation and
+    // missed that status_calc_bl_main's own RENEWAL MATK block (status.cpp:6283-6361) adds WeaponMATK
+    // and weapon-level variance on top for BL_PC: matk_min = StatusMATK + wMatk - variance, matk_max =
+    // StatusMATK + wMatk + variance, wMatk = rhw.matk (static MagicAttack + refine bonus, non-bow only),
+    // variance = rhw.matk * rhw.wlv / 10, PLUS an overrefine widening (matk_min++, matk_max +=
+    // overrefine-1) when the weapon's pinned RandomBonus (a deterministic per-level/refine maximum,
+    // never an RNG roll - see EquipmentStats's own doc comment) is nonzero. A refined weapon with zero
+    // static MagicAttack (Sword 1101) THEREFORE DOES change live player MagicAttackMin/MagicAttackMax -
+    // confirmed against VF-23, an independent executable-rAthena scenario (equips this exact Sword at
+    // refine 0/5/10 through the real equipment pass of status_calc_pc and the real status_calc_bl_main
+    // MATK path, not re-derived from the implementation under test).
+    [Theory]
+    [InlineData(0, 14, 14)]
+    [InlineData(5, 23, 25)]
+    [InlineData(10, 33, 44)] // includes the overrefine widening: refine 10's RandomBonus=900 -> overrefine 9.
+    public void CalculateDerivedStats_RefinedWeapon_MatchesVf23ReferenceMatkMinMax(int refine, int expectedMin, int expectedMax)
     {
         const int sword = 1101; // WeaponLevel: 1, Attack: 25, MagicAttack: 0 (no explicit field).
-        var unrefined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 0, 0, 0)]);
-        var refined = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 10, 0, 0)]);
-        Assert.True(Rules.Stats.TryResolveEquipment(unrefined, GeneratedItems.ById, out var unrefinedEquipment));
-        Assert.True(Rules.Stats.TryResolveEquipment(refined, GeneratedItems.ById, out var refinedEquipment));
-        Assert.Equal(0, unrefinedEquipment.WeaponRefineMatk);
-        Assert.Equal(20, refinedEquipment.WeaponRefineMatk); // computed correctly (Defect 2's /100 scaling), just not applied below.
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: (byte)refine, 0, 0)]);
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-23"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(expectedMin, derived.MagicAttackMin);
+        Assert.Equal(expectedMax, derived.MagicAttackMax);
+    }
+
+    // Equipping nothing at all must still reproduce VF-23's own refine-0 StatusMATK-only baseline
+    // (no weapon term applies when EquipmentStats.Weapon is null), confirming the wMatk/variance/
+    // overrefine block above is correctly gated on an actual equipped weapon being present.
+    [Fact]
+    public void CalculateDerivedStats_NoWeaponEquipped_MatchesVf23StatusMatkBaseline()
+    {
+        var inventory = new CharacterInventorySnapshot([]);
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Null(equipment.Weapon);
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-23"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(14, derived.MagicAttackMin);
+        Assert.Equal(14, derived.MagicAttackMax);
+    }
+
+    // Discriminating rounding-order test (A3): Armor Level 1 Refine {3,7} (300/1000, both already
+    // multiples of 100) cannot actually distinguish "round once after summing" from "round per row and
+    // sum" - both land on 13 for those two numbers, as the test below this one's own comment already
+    // acknowledges. No real pinned item combines a resolvable (plain bStr/bAgi/bVit/bInt/bDex/bLuk-only,
+    // non-Gradable) equip script with ArmorLevel 2 at two refine levels whose Bonus values actually
+    // diverge under the two rounding orders - item_db_equip.yml's ArmorLevel-2 entries are either
+    // Gradable (rejected outright, enchant-grade multiplier unmodeled) or carry unsupported bonus script
+    // forms (bSMatk/bCon/skill-indexed bonus2, etc., none of which EquipmentBonusResolver parses). 2LvHat
+    // (400360: ArmorLevel 2, Refineable, no Jobs restriction, NO Script at all - resolves trivially with
+    // zero ParamBonus) is the real pinned item used here instead, carrying two rows at refine levels
+    // whose REAL pinned Armor Level 2 Bonus values (direct inspection of db/re/refine.yml, not re-derived
+    // from the table under test) genuinely diverge under the two rounding orders: Refine 1 Bonus=120,
+    // Refine 2 Bonus=240. Per-row: (120+50)/100 + (240+50)/100 = 1+2 = 3. Pinned (sum-then-round):
+    // (120+240+50)/100 = 410/100 = 4. These differ, so this test fails immediately if the implementation
+    // ever regresses to per-row rounding.
+    [Fact]
+    public void EquipmentStats_MultiPieceArmorRefineDefense_RealDivergingBonusValues_RoundsOnceAfterSummingAllRows()
+    {
+        const int hat = 400360; // 2LvHat: ArmorLevel 2, Defense 0 (unset), Refineable, no Jobs, no Script.
+        var row1 = new CharacterInventoryItem(1, 0, hat, 1, 0x000100, true, Refine: 1, 0, 0);
+        var row2 = new CharacterInventoryItem(2, 1, hat, 1, 0x000100, true, Refine: 2, 0, 0);
+        var inventory = new CharacterInventorySnapshot([row1, row2]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(120 + 240, equipment.ArmorRefineDefense);
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus); // no script on this item - confirms it contributes nothing else.
 
         var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
         var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
-        var derivedUnrefined = Rules.Stats.CalculateDerivedStats(snapshot, unrefinedEquipment);
-        var derivedRefined = Rules.Stats.CalculateDerivedStats(snapshot, refinedEquipment);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
 
-        Assert.Equal(derivedUnrefined.MagicAttackMin, derivedRefined.MagicAttackMin);
-        Assert.Equal(derivedUnrefined.MagicAttackMax, derivedRefined.MagicAttackMax);
-        Assert.Equal(derivedRefined.MagicAttackMin, derivedRefined.MagicAttackMax); // no min/max variance for BL_PC at all.
+        // Defense is unset on this item (defaults to 0 x2 rows = 0) plus the ONCE-rounded refine sum:
+        // (120+240+50)/100 = 4. A per-row-rounded regression would instead compute 0 + (1+2) = 3.
+        Assert.Equal(0 + (120 + 240 + 50) / 100, derived.HardDefense);
     }
 
-    // Armor refine DEF rounds AFTER accumulating every equipped armor row's own raw Bonus, not
-    // per-row (pinned status.cpp:4014,4096: `refinedef += info->bonus;` ... `(refinedef+50)/100`
-    // applied ONCE to the sum). Cotton_Shirt_ (2302, ArmorLevel default 1, Defense: 10) worn on two
-    // slots at different refine levels: pinned Armor Level 1 Refine 3 Bonus=300, Refine 7 Bonus=1000
-    // (direct inspection of db/re/refine.yml, not re-derived from the generated table under test).
-    // Rounding once over the sum ((300+1000+50)/100=13) differs from summing two independently-
-    // rounded per-row values ((300+50)/100+(1000+50)/100=3+10=13) only by coincidence at these exact
-    // numbers - the assertion below checks the SUM intermediate explicitly so a future accumulation-
-    // order regression (rounding per row instead of once) would still be caught by ArmorRefineDefense
-    // itself even if HardDefense's particular numbers happened to still match.
+    // Retained as a basic multi-row-accumulation regression even though 300/1000 cannot discriminate the
+    // two rounding orders (see the discriminating test immediately above, which uses real pinned values
+    // that do diverge): this still exercises summing across distinct inventory rows of the SAME item id,
+    // independent of slot-exclusivity, which the test above does not (its two rows occupy the same
+    // Head_Top bit so would conflict at actual equip time - TryResolveEquipment itself does not enforce
+    // slot exclusivity, that is CharacterEquipmentMutationService's own concern).
     [Fact]
     public void EquipmentStats_MultiPieceArmorRefineDefense_RoundsOnceAfterSummingAllRows()
     {
@@ -468,6 +520,31 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(20 + (300 + 1000 + 50) / 100, derived.HardDefense);
     }
 
+    // A3 "legitimately equippable combination across distinct slots": Cotton_Shirt (2301, Armor slot,
+    // Defense 10, ArmorLevel 1, no script) and Sandals (2401, Shoes slot, Defense 5, ArmorLevel 1, no
+    // script) worn together, each refined differently - a combination an actual character could equip
+    // simultaneously (distinct EquipLocation bits, no slot conflict), unlike the two rounding tests
+    // above which deliberately double up the SAME slot to isolate the accumulation math.
+    [Fact]
+    public void EquipmentStats_CottonShirtAndSandalsOnDistinctSlots_SumsBothRowsHardDefense()
+    {
+        const int cottonShirt = 2301;
+        const int sandals = 2401;
+        var armorRow = new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, Refine: 4, 0, 0); // Armor slot, Bonus 400.
+        var shoesRow = new CharacterInventoryItem(2, 1, sandals, 1, 0x000040, true, Refine: 6, 0, 0); // Shoes slot, Bonus 800.
+        var inventory = new CharacterInventorySnapshot([armorRow, shoesRow]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10 + 5, equipment.HardDefense); // Cotton_Shirt Defense 10 + Sandals Defense 5.
+        Assert.Equal(400 + 800, equipment.ArmorRefineDefense); // pinned Armor Level 1 Refine 4=400, Refine 6=800.
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(15 + (400 + 800 + 50) / 100, derived.HardDefense);
+    }
+
     // S6 refine bonus: a graded item (EnchantGrade > 0) is explicitly rejected rather than silently applying
     // the refine-only half, since the enchant-grade multiplier is not modeled yet (enchantgrade_db is not
     // generated) - matching this project's own fail-clearly convention for an unmodeled bonus category.
@@ -480,6 +557,60 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
 
         Assert.False(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
         Assert.Equal(default, equipment);
+    }
+
+    // A4: equipped ammo (routine, common gameplay for several classes - archers equip arrows constantly) must
+    // NOT discard every other equipped item's contribution. Real pinned Arrow (1750, Type: Ammo, no script) worn
+    // alongside a refined Cotton_Shirt proves the armor's hard DEF/refine bonus still resolves correctly with
+    // ammo equipped - before this fix, TryResolveEquipment's switch had no AmmoItemDefinition case at all, so it
+    // fell to `default: return false`, zeroing the Cotton_Shirt's contribution too.
+    [Fact]
+    public void EquipmentStats_AmmoEquippedAlongsideArmor_DoesNotDiscardArmorContribution()
+    {
+        const int arrow = 1750;
+        const int cottonShirt = 2301;
+        var armorRow = new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, Refine: 4, 0, 0);
+        var ammoRow = new CharacterInventoryItem(2, 1, arrow, 1, 0x008000, true, 0, 0, 0);
+        var inventory = new CharacterInventorySnapshot([armorRow, ammoRow]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10, equipment.HardDefense); // Cotton_Shirt's Defense still counted.
+        Assert.Equal(400, equipment.ArmorRefineDefense); // pinned Armor Level 1 Refine 4=400.
+    }
+
+    // A4: a left-hand (dual-wield) weapon - a real, currently-reachable state via
+    // CharacterEquipmentMutationService's own EQP_ARMS logic - is a known, unmodeled contribution (no
+    // left-hand/dual-wield combat support in this project yet, see BasicAttackRangeResolver's own doc comment),
+    // not an unresolvable one. It must not discard the right-hand weapon's own refine contribution.
+    [Fact]
+    public void EquipmentStats_LeftHandWeaponAlongsideRightHandWeapon_DoesNotDiscardRightHandContribution()
+    {
+        const int sword = 1101;
+        var rightHand = new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0);
+        var leftHand = new CharacterInventoryItem(2, 1, sword, 1, 0x000020, true, 0, 0, 0); // EQI_HAND_L bit only.
+        var inventory = new CharacterInventorySnapshot([rightHand, leftHand]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.NotNull(equipment.Weapon); // the right-hand sword still resolves as THE weapon.
+        Assert.Equal(1000, equipment.WeaponRefineAtk * 100); // pinned Weapon Level 1 Refine 5 Bonus=1000, still counted.
+    }
+
+    // A4: shadow gear's static Defense is modeled data (ShadowGearItemDefinition.Defense, documented to feed hard
+    // DEF like armor) that TryResolveEquipment's switch previously had no case for at all, discarding it AND every
+    // other equipped item's contribution. No real pinned ShadowGear item has a resolvable equip script (every one
+    // in db/re/item_db_equip.yml uses bMaxHP/bSkillAtk/bSkillUseSPrate forms EquipmentBonusResolver does not
+    // parse), so this one assertion uses a minimal synthetic fixture - documented here, not fabricated to dodge a
+    // real counterexample that does not exist in the pinned data.
+    [Fact]
+    public void EquipmentStats_ShadowGearDefense_CountsTowardHardDefense_SyntheticFixture()
+    {
+        var shadowGear = new ShadowGearItemDefinition(90001, "Synthetic_Shadow_Armor", "Synthetic Shadow Armor",
+            Stackable: false, ClientViewId: 0, new WorldSourceInfo("synthetic", "n/a", "n/a", 0), Defense: 7, EquipLocation: 0x000010);
+        var items = new Dictionary<int, ItemDefinition>(GeneratedItems.ById) { [shadowGear.Id] = shadowGear };
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, shadowGear.Id, 1, 0x000010, true, 0, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, items, out var equipment));
+        Assert.Equal(7, equipment.HardDefense);
     }
 
     public static TheoryData<int> KnifeTargets => [0, 1, 2];
@@ -644,7 +775,7 @@ public sealed class RathenaReferenceFixtureValidationTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22", "VF-23"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
     [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());

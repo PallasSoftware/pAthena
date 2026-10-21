@@ -93,6 +93,15 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // and silently drop the player from every monster's valid-target set. A row the resolver
     // cannot account for (bonus2-5, autobonus, deferred scripts, an unmodeled enchant grade, ...)
     // is rejected outright (EquipMutationResult.Fail / UnequipOutcome(false, 0)), never persisted.
+    // Validates both that the resulting inventory resolves (TryResolveEquipment) AND that the full
+    // downstream status calculation the equip-time gate exists to protect - CalculateDerivedStats, the
+    // same call TryGetCombatSnapshotAsync and every status-effect recalculation will make against this
+    // exact EquipmentStats later - completes without throwing. TryResolveEquipment returning true is a
+    // necessary but not sufficient condition for an equip to be safe: a resolvable EquipmentStats can
+    // still be one CalculateDerivedStats cannot finish (e.g. a not-yet-modeled stat combination), and an
+    // equip that fails only there would otherwise persist, then crash the very next status read instead
+    // of this equip ack. Any such exception is treated identically to an unresolvable equip - reject,
+    // never persist - rather than letting it propagate out of the equip-time validation.
     private bool CanResolveAfter(CharacterInventorySnapshot inventory, IReadOnlyList<InventoryMutation> mutations, IReadOnlyDictionary<int, ItemDefinition> items)
     {
         var rows = inventory.Items.ToDictionary(i => i.DurableId);
@@ -100,7 +109,20 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if (mutation is UpdateRowMutation { Container: InventoryContainer.Inventory } update && rows.TryGetValue(update.DurableId, out var existing))
                 rows[update.DurableId] = CharacterInventoryItem.FromRow(update.NewRow, existing.SlotIndex);
         var simulated = new CharacterInventorySnapshot([.. rows.Values]);
-        return statRules.TryResolveEquipment(simulated, items, out _);
+        if (!statRules.TryResolveEquipment(simulated, items, out var equipment)) return false;
+        try
+        {
+            var probeState = new CharacterGameplayState(CharacterId: 0, Version: 0, JobClass: 0, BaseLevel: 1, JobLevel: 1,
+                BaseExperience: 0, JobExperience: 0, CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0,
+                Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
+            var probeSnapshot = new CharacterStatusSnapshot(probeState, new EffectiveCharacterStats(1, 1, 1, 1, 1, 1, 0, 0), DateTimeOffset.UnixEpoch);
+            statRules.CalculateDerivedStats(probeSnapshot, equipment);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // Pinned pc_equipitem (pc.cpp:12015-12172), restricted to this service's modeled checks:

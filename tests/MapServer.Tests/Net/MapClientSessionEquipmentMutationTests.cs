@@ -226,6 +226,35 @@ public sealed class MapClientSessionEquipmentMutationTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    // A2 end-to-end regression: before the A1 MATK fix, CalculateDerivedStats threw NotSupportedException
+    // for ANY equipped weapon with nonzero MagicAttack (the old - wrong - "players have no weapon-matk
+    // term" conclusion treated a real stat as unmodeled). CanResolveAfter validated only
+    // TryResolveEquipment, which does NOT inspect MagicAttack at all, so such a weapon could equip
+    // successfully (ack OK, persisted) and then crash the very next TryGetCombatSnapshotAsync call - the
+    // exact "successful resolution but unsafe downstream calculation" gap the correctness review raised.
+    // Real pinned item Rod (1601: Novice-equippable, EquipLevelMin 1, no script, Attack 15, MagicAttack
+    // 30, Refineable) proves both that the equip now succeeds AND that the full live combat-snapshot
+    // path completes without throwing.
+    [Fact]
+    public async Task EquipWeaponWithNonzeroMagicAttack_SucceedsAndCombatSnapshotDoesNotThrow()
+    {
+        const int rod = 1601;
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, rod, 1, 0, true, Refine: 0, 0, 0)]);
+        var (client, stream, session, run, _) = await SetupAsync(initial);
+        using var _2 = client;
+
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000002)); // EQP_HAND_R.
+        var ack = await ReadExact(stream, 11);
+        Assert.Equal(PacketConstants.EquipAckResultOk, ack[10]);
+        await ReadExact(stream, 15); // 0x01D7 self weapon-look appearance update (equipping a weapon slot).
+
+        var exception = await Record.ExceptionAsync(() => session.TryGetCombatSnapshotAsync(CancellationToken.None));
+        Assert.Null(exception);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     // Defect 3 regression: an item whose script TryResolveEquipment cannot fully account for must
     // be rejected AT EQUIP TIME (CharacterEquipmentMutationService.CanResolveAfter), never persisted
     // as a "successful" equip that later makes the player untargetable to every monster. Spear Of
