@@ -43,3 +43,26 @@ Ground item: pickup request (0x0362) and removal ack (0x00A1) are VERIFIED (G108
 
 ## Spike results (S0)
 Recorded in the S1 commit message and this section once measured.
+
+## S7 equipment-bonus script coverage (measured against commit e593fb6, EquipmentBonusCoverageTests.cs)
+Scope: only scripts `IStatRules.TryResolveEquipment` can actually reach - every Weapon/Armor/Card item's own `Script`,
+every `item_randomopt_db.yml` entry, every `item_combos.yml` entry's shared script. Deliberately excludes the ~21k
+other distinct scripts in the pack (Usable/Healing/consumable on-use scripts), which are not equipment-bonus scripts
+and would make the percentage misleading.
+
+| Population | Eligible | Resolved (flat `bonus` + `bonus2`/`bonus3` extended) | Gap |
+|---|---|---|---|
+| Weapon/Armor/Card item scripts | 17,353 | 6,182 (35.6%) | real SP_* params beyond the current vocabulary (see below) |
+| Random options (`item_randomopt_db.yml`) | 249 | 189 (75.9%) | same SP_* gap, plus the `bAtkEle`-style non-delta single-constant form |
+| Combos (`item_combos.yml`) | 5,114 | 515 (10.1%) | same SP_* gap on the combo's OWN shared script (activation logic itself is correct for every combo - this measures only whether the combo's bonus payload resolves) |
+
+**The gap is NOT a defect in S7's card/combo/random-option wiring.** `EquipmentBonusResolver` currently recognizes: the
+6 primary stats (bStr/bAgi/bVit/bInt/bDex/bLuk), 6 HP/SP-family params (bMaxHP/bMaxSP/bMaxHPrate/bMaxSPrate/
+bHPrecovRate/bSPrecovRate), and `bonus2`/`bonus3` accumulated generically into `EquipmentExtendedBonus` (uninterpreted,
+Feature 17's job to consume). Pinned `pc.cpp` has **506** distinct `case SP_*` entries across `pc_bonus`/`pc_bonus2`/
+`pc_bonus3`/`pc_bonus4`/`pc_bonus5` - this resolver implements a small fraction. The most common unmodeled params seen
+in the real data: `bFlee`(47), `bBaseAtk`(1014), `bLongAtkRate`(2012), `bMatk`(2046), `bMatkRate`(1025), `bAtkRate`(1028),
+`bAllStats`(1073), `bAspdRate`(1015), `bDelayrate`(1083) - almost all genuinely combat-formula territory (Feature 17's
+"cardfix, elements... formula branches" per the ownership table), not primary character stats. Widening this vocabulary
+is real, substantial, separately-scoped future work - see `feature16-s7-cards-combos-randomopts-scope.md` memory.
+`EquipmentBonusCoverageTests` locks in these counts as a floor (regression-only, never silently lowered).
