@@ -150,13 +150,20 @@ public sealed record PackItemGroup(uint GroupId, string Name, IReadOnlyList<Pack
 // script lowers into (reuses the existing WriteNode/ReadNode IrNode serialization - no second script table).
 public sealed record PackRandomOption(uint Id, string OptionName, int ScriptIndex);
 
+// One db/re/item_combos.yml top-level entry (pinned s_item_combo_db): Alternatives holds every independent
+// item-id SET that activates this SAME shared script (one `Combos:` entry can list several alternative
+// `Combo:` sets, e.g. Dragon_Slayer+Dragon_Breath OR Dragon_Slayer_+Dragon_Breath - either equipped set grants
+// the identical bonus). ScriptIndex indexes the SAME shared pack.Scripts list every item/random-option script
+// lowers into - no second script table.
+public sealed record PackCombo(IReadOnlyList<IReadOnlyList<uint>> Alternatives, int ScriptIndex);
+
 public sealed record ItemPack(
     string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts,
-    IReadOnlyList<PackItemGroup> Groups, IReadOnlyList<PackRandomOption> RandomOptions);
+    IReadOnlyList<PackItemGroup> Groups, IReadOnlyList<PackRandomOption> RandomOptions, IReadOnlyList<PackCombo> Combos);
 
 public static class ItemPackFormat
 {
-    public const ushort Version = 4;
+    public const ushort Version = 5;
     private static readonly byte[] Magic = "AIP1"u8.ToArray();
 
     public static byte[] Write(ItemPack pack)
@@ -220,6 +227,18 @@ public static class ItemPackFormat
             foreach (var option in pack.RandomOptions)
             {
                 w.Write(option.Id); w.Write(Intern(option.OptionName)); w.Write(option.ScriptIndex);
+            }
+
+            w.Write(pack.Combos.Count);
+            foreach (var combo in pack.Combos)
+            {
+                w.Write(combo.Alternatives.Count);
+                foreach (var alternative in combo.Alternatives)
+                {
+                    w.Write(alternative.Count);
+                    foreach (var itemId in alternative) w.Write(itemId);
+                }
+                w.Write(combo.ScriptIndex);
             }
         }
 
@@ -301,7 +320,20 @@ public static class ItemPackFormat
         for (var i = 0; i < randomOptionRows.Length; i++)
             randomOptionRows[i] = new PackRandomOption(r.ReadUInt32(), strings[r.ReadInt32()], r.ReadInt32());
 
-        return new ItemPack(commit, items, scripts, groups, randomOptionRows);
+        var combos = new PackCombo[r.ReadInt32()];
+        for (var i = 0; i < combos.Length; i++)
+        {
+            var alternatives = new IReadOnlyList<uint>[r.ReadInt32()];
+            for (var a = 0; a < alternatives.Length; a++)
+            {
+                var itemIds = new uint[r.ReadInt32()];
+                for (var k = 0; k < itemIds.Length; k++) itemIds[k] = r.ReadUInt32();
+                alternatives[a] = itemIds;
+            }
+            combos[i] = new PackCombo(alternatives, r.ReadInt32());
+        }
+
+        return new ItemPack(commit, items, scripts, groups, randomOptionRows, combos);
     }
 
     private static void WriteNode(BinaryWriter w, IrNode node, Func<string, int> intern)

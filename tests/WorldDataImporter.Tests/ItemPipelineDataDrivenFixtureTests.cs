@@ -124,6 +124,20 @@ public sealed class ItemPipelineDataDrivenFixtureTests
                 Script: |
                   bonus bMaxHP,getrandomoptinfo(ROA_VALUE);
             """);
+        // ComboLoader.Load needs this file to exist too - a combo referencing the two real placeholder items
+        // above (so the AegisName resolver has something real to resolve, same convention as item_group_db.yml).
+        File.WriteAllText(Path.Combine(root, "db", "re", "item_combos.yml"), """
+            Header:
+              Type: COMBO_DB
+              Version: 1
+            Body:
+              - Combos:
+                  - Combo:
+                      - Test_Fixture_Placeholder_Equip
+                      - Test_Fixture_Placeholder_Etc
+                Script: |
+                  bonus bStr,1;
+            """);
         // RathenaBuiltins.Names only needs real script builtin names; reuse the real pinned file rather than faking one.
         File.Copy(Path.Combine(Root(), "legacy/rathena/src/map/script.cpp"), Path.Combine(root, "src", "map", "script.cpp"));
 

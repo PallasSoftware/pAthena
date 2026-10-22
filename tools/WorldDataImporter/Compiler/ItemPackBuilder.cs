@@ -47,8 +47,12 @@ internal static class ItemPackBuilder
         var itemsByAegisName = items.ToDictionary(item => item.AegisName.ToLowerInvariant());
         var groups = ItemGroupLoader.Load(readFile, constants, itemsByAegisName);
         var randomOptions = RandomOptionLoader.Load(readFile, Index);
-        return new(new ItemPack(commit, items, scripts, groups, randomOptions),
-            Report(items, scripts, groups, randomOptions, loaded.Warnings.Count + noEquipWarnings.Count));
+        int ResolveComboItemId(string aegisName) => itemsByAegisName.TryGetValue(aegisName.ToLowerInvariant(), out var item)
+            ? (int)item.Id
+            : throw new ArgumentException($"Combo item AegisName '{aegisName}' was not found in any pinned item_db_*.yml.");
+        var combos = ComboLoader.Load(readFile, ResolveComboItemId, Index);
+        return new(new ItemPack(commit, items, scripts, groups, randomOptions, combos),
+            Report(items, scripts, groups, randomOptions, combos, loaded.Warnings.Count + noEquipWarnings.Count));
     }
 
     // Named accessors used by hand-written code and tests. The items themselves live in the data pack; this file only gives a
@@ -87,7 +91,8 @@ internal static class ItemPackBuilder
         return builder.AppendLine("}").ToString();
     }
 
-    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, IReadOnlyList<PackItemGroup> groups, IReadOnlyList<PackRandomOption> randomOptions, int loaderWarnings)
+    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, IReadOnlyList<PackItemGroup> groups,
+        IReadOnlyList<PackRandomOption> randomOptions, IReadOnlyList<PackCombo> combos, int loaderWarnings)
     {
         var report = new StringBuilder();
         report.AppendLine($"items: {items.Count}");
@@ -95,6 +100,7 @@ internal static class ItemPackBuilder
         foreach (var group in items.GroupBy(item => item.Type).OrderBy(group => group.Key)) report.AppendLine($"  type {group.Key,2}: {group.Count()}");
         report.AppendLine($"item groups: {groups.Count} ({groups.Sum(group => group.SubGroups.Count)} sub groups, {groups.Sum(group => group.SubGroups.Sum(sub => sub.Entries.Count))} entries)");
         report.AppendLine($"random options: {randomOptions.Count}");
+        report.AppendLine($"combos: {combos.Count} ({combos.Sum(combo => combo.Alternatives.Count)} alternative item sets)");
         report.AppendLine($"distinct scripts: {scripts.Count}");
         report.AppendLine($"  lowered: {scripts.Count(script => script.Support == PackScriptSupport.Lowered)}");
         report.AppendLine($"  deferred: {scripts.Count(script => script.Support == PackScriptSupport.Deferred)}");

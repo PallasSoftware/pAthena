@@ -739,6 +739,70 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal([new EquipmentExtendedBonus(spSubRace, rcFormless, null, 15)], equipment.ExtendedBonusesOrEmpty);
     }
 
+    // S7 combos: item_combos.yml's real Ear_Of_Devil's_Wing(5068, Equip=0x200, own script `bonus bStr,1;`) +
+    // Darkness_Helm_J(5653, Equip=0x100, no script) combo (`bonus bStr,1; bonus2 bAddClass,Class_All,5;`) - two
+    // distinct, independently equippable slots, proving ComboResolver.ActiveCombos fires when BOTH
+    // alternative-set items are equipped, the combo's own shared script sums into the SAME param_bonus/
+    // extendedBonuses accumulators as any equip/card script (bStr: 1 own + 1 combo = 2), and a combo mixing
+    // plain `bonus` with `bonus2` resolves both parts correctly.
+    [Fact]
+    public void EquipmentStats_RealTwoItemCombo_BothSlotsEquipped_ActivatesAndAddsItsBonus()
+    {
+        const int earOfDevilsWing = 5068;
+        const int darknessHelmJ = 5653;
+        const long spAddClass = 2064;
+        const long classAll = 6;
+        var combo = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, earOfDevilsWing, 1, 0x200, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+            new CharacterInventoryItem(2, 1, darknessHelmJ, 1, 0x100, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(combo, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 2, 0, 0, 0, 0, 0), equipment.ParamBonus);
+        Assert.Equal([new EquipmentExtendedBonus(spAddClass, classAll, null, 5)], equipment.ExtendedBonusesOrEmpty);
+    }
+
+    // The SAME combo, only ONE of its two items equipped - the combo must NOT activate (only the item's OWN
+    // bStr,1 bonus applies, never the combo's extra +1/bonus2), proving ActiveCombos genuinely requires every
+    // alternative-set member present, not just one.
+    [Fact]
+    public void EquipmentStats_RealTwoItemCombo_OnlyOneSlotEquipped_DoesNotActivate()
+    {
+        const int earOfDevilsWing = 5068;
+        var single = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, earOfDevilsWing, 1, 0x200, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(single, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 1, 0, 0, 0, 0, 0), equipment.ParamBonus);
+        Assert.Empty(equipment.ExtendedBonusesOrEmpty);
+    }
+
+    // S7 combos via CARD slots: Succubus_Card(4218, own script `bonus bVit,-3; bonus bHPrecovRate,-20; bonus
+    // bMaxHP,1000;`) + Incubus_Card(4269, own script `bonus bInt,-3; bonus bSPrecovRate,-20; bonus bMaxSP,150;`),
+    // combo script `bonus bHPrecovRate,30; bonus bSPrecovRate,30; bonus bVit,4; bonus bInt,4;` - neither card is
+    // an equip-slot item itself (both pinned Card type), so this combo can ONLY activate through two cards
+    // inserted into (possibly different) equipped rows' card slots - proving ComboResolver's combined id pool
+    // genuinely includes card ids, not just each row's own ItemId (pinned pc_checkcombo's own card branch,
+    // pc.cpp:11873-11900). Exact math: Vit 4-3=1, Int 4-3=1, HpRecovRate 30-20=10, SpRecovRate 30-20=10,
+    // MaxHp 1000 (Succubus_Card only), MaxSp 150 (Incubus_Card only) - independently verified against the real
+    // generated pack before writing this assertion, not re-derived from the implementation under test.
+    [Fact]
+    public void EquipmentStats_RealCardOnlyCombo_BothCardsInserted_Activates()
+    {
+        const int cottonShirt = 2301;
+        const int cottonShirtSlotted = 2302;
+        const int succubusCard = 4218;
+        const int incubusCard = 4269;
+        var carded = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Card0 = succubusCard, Revision = 0 }),
+            new CharacterInventoryItem(2, 1, cottonShirtSlotted, 1, 0x000010, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Card0 = incubusCard, Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, 0, Vitality: 1, Intelligence: 1, 0, 0, MaxHp: 1000, MaxSp: 150, HpRecovRate: 10, SpRecovRate: 10), equipment.ParamBonus);
+    }
+
     // A card id persisted in a card slot that does not actually resolve to a CardItemDefinition (a data/
     // generation invariant violation - never a legitimate gameplay state) is rejected explicitly, matching
     // every other "cannot fully account for this equipped state" rejection in this method.

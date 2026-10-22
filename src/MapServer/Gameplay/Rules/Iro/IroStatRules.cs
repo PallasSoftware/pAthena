@@ -191,6 +191,9 @@ public sealed class IroStatRules : IStatRules
         var armorRefineDefense = 0;
         var weaponOverrefine = 0;
         var extendedBonuses = new List<EquipmentExtendedBonus>();
+        // Combined id pool for ComboResolver.ActiveCombos (pinned pc_checkcombo, pc.cpp:11803-11900): each
+        // equipped row's own ItemId once, plus every nonzero Card0-3 - cards are real, common combo members.
+        var presentItemIds = new List<uint>();
         foreach (var row in inventory.Items)
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
@@ -263,6 +266,7 @@ public sealed class IroStatRules : IStatRules
             // sums param_bonus independently of the equip slot/item category).
             try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine, default, out var ownExtended); extendedBonuses.AddRange(ownExtended); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+            presentItemIds.Add((uint)row.ItemId);
 
             // Pinned pc_bonus's own card loop (pc.cpp run_script over each card[i]): a card's bonus script runs
             // exactly like the equip's own Script, summed into the SAME param_bonus accumulator - cards are not a
@@ -277,6 +281,7 @@ public sealed class IroStatRules : IStatRules
                 if (cardDefinition is not CardItemDefinition) { equipment = default; return false; } // a non-card id in a card slot is a data/generation invariant violation.
                 try { paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script, 0, default, out var cardExtended); extendedBonuses.AddRange(cardExtended); }
                 catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+                presentItemIds.Add(cardId);
             }
 
             // Pinned status_calc_pc_additional's own option loop (status.cpp, over sd->inventory.u.items_inventory[i].option[0..MAX_ITEM_RDM_OPT))
@@ -292,6 +297,17 @@ public sealed class IroStatRules : IStatRules
                 try { paramBonus += EquipmentBonusResolver.Resolve(optionScript, row.Refine, option, out var optionExtended); extendedBonuses.AddRange(optionExtended); }
                 catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
             }
+        }
+
+        // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items
+        // and/or cards, see ComboResolver's own doc comment) is currently satisfied runs its own shared script
+        // exactly like an equip/card script, summed into the SAME param_bonus/extendedBonuses accumulators - a
+        // combo is not a separate bonus category either. An unsupported combo script rejects the WHOLE equip,
+        // same fail-clearly convention as every other script source here (never silently skip a combo's bonus).
+        foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
+        {
+            try { paramBonus += EquipmentBonusResolver.Resolve(combo.Script, 0, default, out var comboExtended); extendedBonuses.AddRange(comboExtended); }
+            catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
         equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine, extendedBonuses);
         return true;

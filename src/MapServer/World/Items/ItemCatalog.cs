@@ -23,9 +23,12 @@ public sealed class ItemCatalog
     // index - resolving a row's own InventoryOption.Id through this lookup is how EquipmentBonusResolver.Resolve
     // gets the PackScript a random-option slot should execute (parallel to ById for equip/card scripts).
     public FrozenDictionary<uint, PackScript> RandomOptions { get; }
+    // Every db/re/item_combos.yml entry, resolved to its real PackScript (ComboResolver walks this list looking
+    // for an alternative item-id set that is a subset of the equipped item ids).
+    public IReadOnlyList<ComboDefinition> Combos { get; }
 
     private ItemCatalog(string commit, FrozenDictionary<int, ItemDefinition> byId, IReadOnlyList<PackScript> scripts,
-        FrozenDictionary<uint, PackItemGroup> groups, FrozenDictionary<uint, PackScript> randomOptions)
+        FrozenDictionary<uint, PackItemGroup> groups, FrozenDictionary<uint, PackScript> randomOptions, IReadOnlyList<ComboDefinition> combos)
     {
         RathenaCommit = commit;
         ById = byId;
@@ -33,6 +36,7 @@ public sealed class ItemCatalog
         Scripts = scripts;
         Groups = groups;
         RandomOptions = randomOptions;
+        Combos = combos;
     }
 
     public static ItemCatalog Open(string path) => Create(ItemPackFormat.Read(File.ReadAllBytes(path)));
@@ -42,7 +46,8 @@ public sealed class ItemCatalog
         var definitions = new Dictionary<int, ItemDefinition>(pack.Items.Count);
         foreach (var item in pack.Items) definitions.Add((int)item.Id, Build(item, pack));
         var randomOptions = pack.RandomOptions.ToFrozenDictionary(option => option.Id, option => pack.Scripts[option.ScriptIndex]);
-        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts, pack.Groups.ToFrozenDictionary(group => group.GroupId), randomOptions);
+        var combos = pack.Combos.Select(combo => new ComboDefinition(combo.Alternatives, pack.Scripts[combo.ScriptIndex])).ToArray();
+        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts, pack.Groups.ToFrozenDictionary(group => group.GroupId), randomOptions, combos);
     }
 
     private static ItemDefinition Build(PackItem item, ItemPack pack)
