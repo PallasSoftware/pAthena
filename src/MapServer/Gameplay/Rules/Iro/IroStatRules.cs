@@ -192,11 +192,20 @@ public sealed class IroStatRules : IStatRules
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
             if (!items.TryGetValue(row.ItemId, out var definition)) { equipment = default; return false; }
-            if (row.Details.EnchantGrade > 0) { equipment = default; return false; } // enchant-grade multiplier not modeled yet.
+            // EnchantGrade is already the pinned 0-indexed e_enchantgrade value this project's own
+            // ItemGrantResolver assigns (0=None..4=A, matching MaxEnchantGrade=4/ENCHANTGRADE_A) - never the
+            // pinned wire byte's own 1-indexed scheme (findCurrentLevelInfo's `item.enchantgrade - 1` only
+            // exists because THAT byte is 1-indexed with 0 meaning "never graded"; this domain model has no
+            // separate "ungraded" sentinel distinct from grade None, matching how ItemGrantResolver rolls it).
+            if (row.Details.EnchantGrade >= GeneratedEnchantGradeBonus.Grades.Length) { equipment = default; return false; } // beyond ENCHANTGRADE_A - data/generation invariant violation, not a legitimate state.
+            var enchantGradeName = GeneratedEnchantGradeBonus.Grades[row.Details.EnchantGrade];
             switch (definition)
             {
                 case ArmorItemDefinition armor:
                     hardDefense += armor.Defense;
+                    // Pinned status.cpp:4012-4013: armor's own refinedef term never receives an
+                    // enchant-grade multiplier at all (only the weapon ATK2/MATK terms below do,
+                    // status.cpp:3961,3980) - this is the pinned source's own asymmetry, not an omission here.
                     if (definition.Meta is { Refineable: true } armorMeta)
                         armorRefineDefense += (int)GeneratedRefineBonus.Bonus("Armor", (int)armorMeta.ArmorLevel, row.Refine);
                     break;
@@ -209,8 +218,15 @@ public sealed class IroStatRules : IStatRules
                         // pinned value (e.g. 1000 for a level-1 weapon at +5), divided by 100 BEFORE
                         // accumulating, never accumulated raw.
                         var bonus = (int)GeneratedRefineBonus.Bonus("Weapon", w.WeaponLevel, row.Refine) / 100;
-                        weaponRefineAtk += bonus;
-                        if (w.WeaponType != WeaponType.Bow) weaponRefineMatk += bonus;
+                        // Pinned status.cpp:3961,3980: `wa->atk2 += ((info->bonus/100) * enchantgrade_info->bonus) / 100`
+                        // - the grade multiplier is computed from the SAME already-/100-scaled refine bonus term
+                        // above, then divided by 100 again, and ADDED on top (not multiplied into) the plain
+                        // refine bonus. GeneratedEnchantGradeBonus.Bonus returns 0 for an ungraded weapon or a
+                        // (type,level) the real data never tabulates (every weapon level except 5), matching the
+                        // pinned enchantgrade_info == nullptr case exactly (no term added).
+                        var gradeBonus = (int)GeneratedEnchantGradeBonus.Bonus("Weapon", w.WeaponLevel, enchantGradeName) * bonus / 100;
+                        weaponRefineAtk += bonus + gradeBonus;
+                        if (w.WeaponType != WeaponType.Bow) weaponRefineMatk += bonus + gradeBonus;
                         // Pinned status.cpp:3986: wd->overrefine = info->randombonus_max/100 - a single flat value
                         // for the right-hand weapon (not accumulated/summed like atk2/matk across rows, since there
                         // is only ever one right-hand weapon).

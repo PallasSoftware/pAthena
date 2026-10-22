@@ -545,17 +545,69 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(15 + (400 + 800 + 50) / 100, derived.HardDefense);
     }
 
-    // S6 refine bonus: a graded item (EnchantGrade > 0) is explicitly rejected rather than silently applying
-    // the refine-only half, since the enchant-grade multiplier is not modeled yet (enchantgrade_db is not
-    // generated) - matching this project's own fail-clearly convention for an unmodeled bonus category.
+    // S6 enchant grade (supersedes the former rejection test): EnchantGrade is this project's own
+    // 0-indexed e_enchantgrade byte (0=None..4=A, matching ItemGrantResolver's MaxEnchantGrade=4) -
+    // GeneratedEnchantGradeBonus.Grades indexes it directly. A graded Sword (1101, WeaponLevel 1) resolves
+    // successfully with NO grade term added, because enchant grade's real pinned data only tabulates
+    // Weapon Level 5 / Armor Level 2 at all (status.cpp:3961's own enchantgrade_info == nullptr case for
+    // every other level) - this is the correct behavior, not a silently-dropped bonus.
     [Fact]
-    public void EquipmentStats_RealRefinedWeaponWithEnchantGrade_IsUnresolvedNotRefineOnly()
+    public void EquipmentStats_RefinedWeaponAtAnUntabulatedLevel_WithEnchantGrade_ResolvesWithNoGradeTerm()
     {
-        const int sword = 1101;
+        const int sword = 1101; // WeaponLevel 1 - not tabulated in enchantgrade.yml at all.
         var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0,
-            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 1, Revision = 0 })]);
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 3 /* B */, Revision = 0 })]); // pinned Weapon Level 1 Refine 5 Bonus=1000.
 
-        Assert.False(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10, equipment.WeaponRefineAtk); // 1000/100=10, no grade term added at an untabulated level.
+    }
+
+    // Pinned status.cpp:3961: `wa->atk2 += ((info->bonus/100) * enchantgrade_info->bonus) / 100` - the grade
+    // multiplier is ADDED on top of (not multiplied into) the plain refine bonus, using Weapon Level 5's real
+    // pinned Refine 1 Bonus=800 and Grade B's real pinned Bonus=100 (both direct inspection, not re-derived
+    // from the generated tables under test).
+    [Fact]
+    public void EquipmentStats_RealGradedWeaponAtItsOwnTabulatedLevel_AddsTheGradeMultiplierOnTopOfRefine()
+    {
+        const int axe = 28144; // 5LvBattle_Axe: WeaponLevel 5, Refineable, no script.
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 3 /* B */, Revision = 0 })]);
+        var ungraded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var gradedEquipment));
+        Assert.True(Rules.Stats.TryResolveEquipment(ungraded, GeneratedItems.ById, out var ungradedEquipment));
+
+        // Plain refine alone: 800/100 = 8. With Grade B (Bonus 100): 8 + (100 * 8 / 100) = 8 + 8 = 16.
+        Assert.Equal(8, ungradedEquipment.WeaponRefineAtk);
+        Assert.Equal(16, gradedEquipment.WeaponRefineAtk);
+    }
+
+    // Grade "None" (EnchantGrade=0) has a real pinned Bonus of 10 at Weapon Level 5 - small enough that the
+    // grade term's own `* bonus / 100` integer division truncates to 0 for a low refine bonus, proving the
+    // pinned formula's own truncation (not a bug) rather than a nonzero grade silently contributing nothing
+    // due to a sign/order mistake in this project's own implementation.
+    [Fact]
+    public void EquipmentStats_RealGradedWeapon_GradeNoneBonusTruncatesToZeroAtLowRefine()
+    {
+        const int axe = 28144;
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 0 /* None */, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(8, equipment.WeaponRefineAtk); // 8 + (10*8/100 = 0) = 8.
+    }
+
+    // A grade byte beyond the pinned enum's own range (ENCHANTGRADE_A=4 is the maximum) is a data/generation
+    // invariant violation, not a legitimate persisted state - rejected explicitly rather than throwing an
+    // IndexOutOfRangeException from GeneratedEnchantGradeBonus.Grades.
+    [Fact]
+    public void EquipmentStats_EnchantGradeBeyondA_IsRejected_NeverThrows()
+    {
+        const int axe = 28144;
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 5, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
         Assert.Equal(default, equipment);
     }
 

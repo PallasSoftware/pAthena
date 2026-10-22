@@ -38,6 +38,7 @@ internal static partial class WorldDataImporterCli
                 "compile-item" => await CompileItemAsync(args[1..]),
                 "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
                 "compile-refine" => await CompileRefineAsync(args[1..]),
+                "compile-enchantgrade" => await CompileEnchantGradeAsync(args[1..]),
                 "survey-item-scripts" => SurveyItemScripts(args[1..]),
                 "compile-item-pack" => await CompileItemPackAsync(args[1..]),
                 "collect-rathena-names" => await CollectRathenaNamesAsync(args[1..]),
@@ -1036,6 +1037,23 @@ internal static partial class WorldDataImporterCli
         }
         return aegisName => byAegis.TryGetValue(aegisName, out var id) ? id
             : throw new ArgumentException($"Refine material AegisName '{aegisName}' was not found in any pinned item_db_*.yml.");
+    }
+
+    // Regenerates GameData/Refine/GeneratedEnchantGradeBonus.cs from db/re/enchantgrade.yml's Weapon/Armor
+    // types (see EnchantGradeDataCompiler's own doc comment for the exact scope: the flat per-(type,level,
+    // grade) Bonus multiplier the status calculation reads once an item carries a grade - not the grade
+    // upgrade action's own Chances/Catalyst/Options data, which needs its own future mutation primitive).
+    private static async Task<int> CompileEnchantGradeAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var table = EnchantGradeDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, EnchantGradeDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated enchant grade bonus table for {table.Count} item types.");
+        return 0;
     }
 
     private static async Task<int> CompileItemPackAsync(string[] args)
