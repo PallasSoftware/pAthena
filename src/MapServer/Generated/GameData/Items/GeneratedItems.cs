@@ -12,6 +12,7 @@ namespace Athena.Net.MapServer.Generated.GameData.Items;
 internal static class GeneratedItems
 {
     internal static System.Collections.Generic.IReadOnlyDictionary<int, ItemDefinition> ById => ItemCatalog.Current.ById;
+    internal static System.Collections.Generic.IReadOnlyDictionary<uint, PackScript> RandomOptions => ItemCatalog.Current.RandomOptions;
 
     // Wood
     internal static EtcItemDefinition Wood => (EtcItemDefinition)ById[6008];

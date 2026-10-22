@@ -19,14 +19,20 @@ public sealed class ItemCatalog
     public FrozenDictionary<string, ItemDefinition> ByAegisName { get; }
     public IReadOnlyList<PackScript> Scripts { get; }
     public FrozenDictionary<uint, PackItemGroup> Groups { get; }
+    // Keyed by the client-matching random-option id (item_randomopt_db.yml Id, enumvar.lub), NOT a pack.Scripts
+    // index - resolving a row's own InventoryOption.Id through this lookup is how EquipmentBonusResolver.Resolve
+    // gets the PackScript a random-option slot should execute (parallel to ById for equip/card scripts).
+    public FrozenDictionary<uint, PackScript> RandomOptions { get; }
 
-    private ItemCatalog(string commit, FrozenDictionary<int, ItemDefinition> byId, IReadOnlyList<PackScript> scripts, FrozenDictionary<uint, PackItemGroup> groups)
+    private ItemCatalog(string commit, FrozenDictionary<int, ItemDefinition> byId, IReadOnlyList<PackScript> scripts,
+        FrozenDictionary<uint, PackItemGroup> groups, FrozenDictionary<uint, PackScript> randomOptions)
     {
         RathenaCommit = commit;
         ById = byId;
         ByAegisName = byId.Values.ToFrozenDictionary(item => item.AegisName, StringComparer.OrdinalIgnoreCase);
         Scripts = scripts;
         Groups = groups;
+        RandomOptions = randomOptions;
     }
 
     public static ItemCatalog Open(string path) => Create(ItemPackFormat.Read(File.ReadAllBytes(path)));
@@ -35,7 +41,8 @@ public sealed class ItemCatalog
     {
         var definitions = new Dictionary<int, ItemDefinition>(pack.Items.Count);
         foreach (var item in pack.Items) definitions.Add((int)item.Id, Build(item, pack));
-        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts, pack.Groups.ToFrozenDictionary(group => group.GroupId));
+        var randomOptions = pack.RandomOptions.ToFrozenDictionary(option => option.Id, option => pack.Scripts[option.ScriptIndex]);
+        return new(pack.RathenaCommit, definitions.ToFrozenDictionary(), pack.Scripts, pack.Groups.ToFrozenDictionary(group => group.GroupId), randomOptions);
     }
 
     private static ItemDefinition Build(PackItem item, ItemPack pack)

@@ -1,8 +1,10 @@
+using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Refine;
 using Athena.Net.MapServer.Generated.Progression;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.Items;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.Gameplay.Rules.Kro;
 
@@ -188,6 +190,7 @@ public sealed class KroStatRules : IStatRules
         var weaponRefineMatk = 0;
         var armorRefineDefense = 0;
         var weaponOverrefine = 0;
+        var extendedBonuses = new List<EquipmentExtendedBonus>();
         foreach (var row in inventory.Items)
         {
             if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
@@ -258,7 +261,7 @@ public sealed class KroStatRules : IStatRules
             }
             // Flat stat bonuses apply for every equipped row regardless of concrete type (pinned status_calc_pc_sub
             // sums param_bonus independently of the equip slot/item category).
-            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine); }
+            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine, default, out var ownExtended); extendedBonuses.AddRange(ownExtended); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
 
             // Pinned pc_bonus's own card loop (pc.cpp run_script over each card[i]): a card's bonus script runs
@@ -272,11 +275,25 @@ public sealed class KroStatRules : IStatRules
                 if (cardId == 0) continue;
                 if (!items.TryGetValue((int)cardId, out var cardDefinition)) { equipment = default; return false; }
                 if (cardDefinition is not CardItemDefinition) { equipment = default; return false; } // a non-card id in a card slot is a data/generation invariant violation.
-                try { paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script); }
+                try { paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script, 0, default, out var cardExtended); extendedBonuses.AddRange(cardExtended); }
+                catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+            }
+
+            // Pinned status_calc_pc_additional's own option loop (status.cpp, over sd->inventory.u.items_inventory[i].option[0..MAX_ITEM_RDM_OPT))
+            // runs each OCCUPIED random-option slot's own item_randomopt_db.yml script, current_equip_opt_index
+            // bound to that same slot (so getrandomoptinfo() inside it reads THIS slot's own Id/Value/Param,
+            // never another slot's). option.Id == 0 means the slot is empty (never persisted with a real option
+            // id) - skipped exactly like a zero card slot, not resolved against option id 0 (which does not exist
+            // in item_randomopt_db.yml).
+            foreach (var option in (ReadOnlySpan<InventoryOption>)[details.Option0, details.Option1, details.Option2, details.Option3, details.Option4])
+            {
+                if (option.Id == 0) continue;
+                if (!GeneratedItems.RandomOptions.TryGetValue((uint)option.Id, out var optionScript)) { equipment = default; return false; } // unknown random-option id - data/generation invariant violation.
+                try { paramBonus += EquipmentBonusResolver.Resolve(optionScript, row.Refine, option, out var optionExtended); extendedBonuses.AddRange(optionExtended); }
                 catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
             }
         }
-        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine);
+        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine, extendedBonuses);
         return true;
     }
 

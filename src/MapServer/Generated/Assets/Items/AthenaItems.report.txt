@@ -12,8 +12,9 @@ loader warnings (pinned data quirks the real loader also reports): 0
   type 12: 1028
   type 18: 2410
 item groups: 2996 (3105 sub groups, 34315 entries)
-distinct scripts: 16246
-  lowered: 16186
+random options: 249
+distinct scripts: 16476
+  lowered: 16416
   deferred: 60
         43  GeneralScript  callfunc
          3  GeneralScript  persistent-variable:@r
@@ -27,7 +28,7 @@ distinct scripts: 16246
          1  GeneralScript  persistent-variable:SC_DECAGI
          1  GeneralScript  persistent-variable:getrefine
 script uses (a script can use several):
-  Bonus            10997
+  Bonus            11227
   TriggeredBonus   460
   SkillExecution   539
   StatusEffect     524

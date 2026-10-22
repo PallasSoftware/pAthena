@@ -144,11 +144,19 @@ public sealed record PackSubGroup(uint SubGroup, byte Algorithm, uint TotalRate,
 
 public sealed record PackItemGroup(uint GroupId, string Name, IReadOnlyList<PackSubGroup> SubGroups);
 
-public sealed record ItemPack(string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts, IReadOnlyList<PackItemGroup> Groups);
+// One item_randomopt_db.yml entry (pinned s_random_opt_data): Id is the client-matching option id (enumvar.lub),
+// OptionName is the pinned `Option:` constant name (e.g. VAR_STRAMOUNT, kept for diagnostics/provenance only -
+// production code never branches on it), ScriptIndex indexes the SAME shared pack.Scripts list every item/combo
+// script lowers into (reuses the existing WriteNode/ReadNode IrNode serialization - no second script table).
+public sealed record PackRandomOption(uint Id, string OptionName, int ScriptIndex);
+
+public sealed record ItemPack(
+    string RathenaCommit, IReadOnlyList<PackItem> Items, IReadOnlyList<PackScript> Scripts,
+    IReadOnlyList<PackItemGroup> Groups, IReadOnlyList<PackRandomOption> RandomOptions);
 
 public static class ItemPackFormat
 {
-    public const ushort Version = 3;
+    public const ushort Version = 4;
     private static readonly byte[] Magic = "AIP1"u8.ToArray();
 
     public static byte[] Write(ItemPack pack)
@@ -206,6 +214,12 @@ public static class ItemPackFormat
                         w.Write(e.RefineMinimum); w.Write(e.RefineMaximum); w.Write(e.GradeMinimum); w.Write(e.GradeMaximum);
                     }
                 }
+            }
+
+            w.Write(pack.RandomOptions.Count);
+            foreach (var option in pack.RandomOptions)
+            {
+                w.Write(option.Id); w.Write(Intern(option.OptionName)); w.Write(option.ScriptIndex);
             }
         }
 
@@ -283,7 +297,11 @@ public static class ItemPackFormat
             groups[g] = new PackItemGroup(groupId, name, subs);
         }
 
-        return new ItemPack(commit, items, scripts, groups);
+        var randomOptionRows = new PackRandomOption[r.ReadInt32()];
+        for (var i = 0; i < randomOptionRows.Length; i++)
+            randomOptionRows[i] = new PackRandomOption(r.ReadUInt32(), strings[r.ReadInt32()], r.ReadInt32());
+
+        return new ItemPack(commit, items, scripts, groups, randomOptionRows);
     }
 
     private static void WriteNode(BinaryWriter w, IrNode node, Func<string, int> intern)

@@ -25,8 +25,17 @@ namespace Athena.Net.MapServer.World;
 // explicit, not silently "working".
 public readonly record struct EquipmentStats(
     int HardDefense, WeaponItemDefinition? Weapon, EquipmentParamBonus ParamBonus = default,
-    int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0)
+    int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0,
+    IReadOnlyList<EquipmentExtendedBonus>? ExtendedBonuses = null)
 {
+    // bonus2/bonus3 entries (element/race/size/class damage modifiers) accumulated from every equipped item's own
+    // script, every equipped card and every occupied random-option slot (EquipmentBonusResolver's own `extended`
+    // output) - typed, correctly-accumulated Feature 16 data, NOT yet consumed by any Feature 17 combat formula.
+    // Same "computed here, wired into the live formula as a separate increment" precedent as WeaponRefineAtk
+    // above. Never null in a successfully resolved EquipmentStats (TryResolveEquipment always passes a list,
+    // possibly empty); null only distinguishes `default(EquipmentStats)`.
+    public IReadOnlyList<EquipmentExtendedBonus> ExtendedBonusesOrEmpty => ExtendedBonuses ?? [];
+
     // The CORRECT total static+refine ATK per pinned wa->atk + wa->atk2 (status.cpp:3952,3957) - ready for
     // Feature 17 to consume once CalculatePlayerBasicAttack is updated to take EquipmentStats/this value
     // instead of a bare WeaponItemDefinition. Not yet read by any live combat path (see this type's own

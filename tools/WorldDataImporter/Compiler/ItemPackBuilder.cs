@@ -46,7 +46,9 @@ internal static class ItemPackBuilder
 
         var itemsByAegisName = items.ToDictionary(item => item.AegisName.ToLowerInvariant());
         var groups = ItemGroupLoader.Load(readFile, constants, itemsByAegisName);
-        return new(new ItemPack(commit, items, scripts, groups), Report(items, scripts, groups, loaded.Warnings.Count + noEquipWarnings.Count));
+        var randomOptions = RandomOptionLoader.Load(readFile, Index);
+        return new(new ItemPack(commit, items, scripts, groups, randomOptions),
+            Report(items, scripts, groups, randomOptions, loaded.Warnings.Count + noEquipWarnings.Count));
     }
 
     // Named accessors used by hand-written code and tests. The items themselves live in the data pack; this file only gives a
@@ -75,7 +77,8 @@ internal static class ItemPackBuilder
             .AppendLine("// Typed names for a few well-known items plus the id lookup, all backed by the item data pack (ItemCatalog).")
             .AppendLine("internal static class GeneratedItems")
             .AppendLine("{")
-            .AppendLine("    internal static System.Collections.Generic.IReadOnlyDictionary<int, ItemDefinition> ById => ItemCatalog.Current.ById;");
+            .AppendLine("    internal static System.Collections.Generic.IReadOnlyDictionary<int, ItemDefinition> ById => ItemCatalog.Current.ById;")
+            .AppendLine("    internal static System.Collections.Generic.IReadOnlyDictionary<uint, PackScript> RandomOptions => ItemCatalog.Current.RandomOptions;");
         foreach (var (name, id, type) in NamedItems)
         {
             var item = pack.Items.Single(candidate => candidate.Id == id);
@@ -84,13 +87,14 @@ internal static class ItemPackBuilder
         return builder.AppendLine("}").ToString();
     }
 
-    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, IReadOnlyList<PackItemGroup> groups, int loaderWarnings)
+    private static string Report(IReadOnlyList<PackItem> items, IReadOnlyList<PackScript> scripts, IReadOnlyList<PackItemGroup> groups, IReadOnlyList<PackRandomOption> randomOptions, int loaderWarnings)
     {
         var report = new StringBuilder();
         report.AppendLine($"items: {items.Count}");
         report.AppendLine($"loader warnings (pinned data quirks the real loader also reports): {loaderWarnings}");
         foreach (var group in items.GroupBy(item => item.Type).OrderBy(group => group.Key)) report.AppendLine($"  type {group.Key,2}: {group.Count()}");
         report.AppendLine($"item groups: {groups.Count} ({groups.Sum(group => group.SubGroups.Count)} sub groups, {groups.Sum(group => group.SubGroups.Sum(sub => sub.Entries.Count))} entries)");
+        report.AppendLine($"random options: {randomOptions.Count}");
         report.AppendLine($"distinct scripts: {scripts.Count}");
         report.AppendLine($"  lowered: {scripts.Count(script => script.Support == PackScriptSupport.Lowered)}");
         report.AppendLine($"  deferred: {scripts.Count(script => script.Support == PackScriptSupport.Deferred)}");

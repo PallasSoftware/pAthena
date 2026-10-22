@@ -1,4 +1,5 @@
 using Athena.Net.MapServer.World.Items;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.Tests.World.Items;
 
@@ -85,12 +86,83 @@ public sealed class EquipmentBonusResolverTests
         Assert.Equal(new EquipmentParamBonus(Strength: 0, 0, 0, 0, 0, 0), EquipmentBonusResolver.Resolve(script));
     }
 
+    // Pinned item_randomopt_db.yml Id 3 "VAR_STRAMOUNT": `bonus bStr,getrandomoptinfo(ROA_VALUE);`
     [Fact]
-    public void Resolve_Bonus2Command_ThrowsUnsupported()
+    public void Resolve_GetRandomOptInfoValue_ReadsTheCurrentOptionSlotsOwnValue()
     {
-        // bonus2's extra sub-key argument (race/size/element) is explicitly out of this slice's scope.
-        var script = Lowered(new(IrKind.Block, Children: [new(IrKind.Command, Text: "bonus2", Children: [Bonus("bStr", 1), new(IrKind.Int, Number: 1)])]));
-        Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "bonus", Children:
+            [
+                new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]),
+                new(IrKind.Call, Text: "getrandomoptinfo", Children: [new(IrKind.Const, Text: "ROA_VALUE", Number: 1)]),
+            ]),
+        ]));
+        var result = EquipmentBonusResolver.Resolve(script, 0, new InventoryOption(3, 9, 0));
+        Assert.Equal(new EquipmentParamBonus(Strength: 9, 0, 0, 0, 0, 0), result);
+    }
+
+    [Fact]
+    public void Resolve_GetRandomOptInfo_NoOptionOccupied_YieldsZeroRegardlessOfAttribute()
+    {
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "bonus", Children:
+            [
+                new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]),
+                new(IrKind.Call, Text: "getrandomoptinfo", Children: [new(IrKind.Const, Text: "ROA_VALUE", Number: 1)]),
+            ]),
+        ]));
+        // default(InventoryOption).Id == 0 - pinned script.cpp:24836's own "no option occupied" gate.
+        var result = EquipmentBonusResolver.Resolve(script, 0, default);
+        Assert.Equal(EquipmentParamBonus.None, result);
+    }
+
+    // Pinned item_randomopt_db.yml Id 1 "VAR_MAXHPAMOUNT": `bonus bMaxHP,getrandomoptinfo(ROA_VALUE);`
+    [Fact]
+    public void Resolve_MaxHpBonus_AccumulatesIntoItsOwnField()
+    {
+        var script = Lowered(new(IrKind.Block, Children: [new(IrKind.Command, Text: "bonus",
+            Children: [new(IrKind.Const, Text: "bMaxHP", Number: 6), new(IrKind.Int, Number: 100)])]));
+        Assert.Equal(new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxHp: 100), EquipmentBonusResolver.Resolve(script));
+    }
+
+    // Pinned item_randomopt_db.yml Id 87 "RACE_TOLERACE_NOTHING": `bonus2 bSubRace,RC_Formless,getrandomoptinfo(ROA_VALUE);`
+    [Fact]
+    public void Resolve_Bonus2Command_AccumulatesAsExtendedBonus_NotFlatParamBonus()
+    {
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "bonus2", Children:
+            [
+                new(IrKind.Const, Text: "bSubRace", Number: 1011),
+                new(IrKind.Const, Text: "RC_Formless", Number: 0),
+                new(IrKind.Int, Number: 5),
+            ]),
+        ]));
+        var flat = EquipmentBonusResolver.Resolve(script, 0, default, out var extended);
+        Assert.Equal(EquipmentParamBonus.None, flat);
+        Assert.Equal([new EquipmentExtendedBonus(1011, 0, null, 5)], extended);
+    }
+
+    // Pinned item_randomopt_db.yml Id 194 "RACE_WEAPON_TOLERACE_NOTHING": `bonus3 bSubRace,RC_Formless,getrandomoptinfo(ROA_VALUE),BF_WEAPON;`
+    // - the VALUE is the 3rd argument (pc.cpp:5235's own `bonus3 bSubRace,r,x,bf;` naming), never the trailing one.
+    [Fact]
+    public void Resolve_Bonus3Command_ValueIsThirdArgument_NotLast()
+    {
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "bonus3", Children:
+            [
+                new(IrKind.Const, Text: "bSubRace", Number: 1011),
+                new(IrKind.Const, Text: "RC_Formless", Number: 0),
+                new(IrKind.Call, Text: "getrandomoptinfo", Children: [new(IrKind.Const, Text: "ROA_VALUE", Number: 1)]),
+                new(IrKind.Const, Text: "BF_WEAPON", Number: 1),
+            ]),
+        ]));
+        var flat = EquipmentBonusResolver.Resolve(script, 0, new InventoryOption(87, 7, 0), out var extended);
+        Assert.Equal(EquipmentParamBonus.None, flat);
+        Assert.Equal([new EquipmentExtendedBonus(1011, 0, 1, 7)], extended);
     }
 
     [Fact]

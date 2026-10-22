@@ -8,6 +8,7 @@ using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.Items;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 
@@ -660,6 +661,82 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
 
         Assert.False(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
         Assert.Equal(default, equipment);
+    }
+
+    // S7 random options: item_randomopt_db.yml Id 3 "VAR_STRAMOUNT" (`bonus bStr,getrandomoptinfo(ROA_VALUE);`)
+    // occupying a Cotton_Shirt's Option0 slot. The option's OWN persisted Value (not the row's Refine, which a
+    // random option never reads) becomes the Strength delta - confirmed via the real generated pack
+    // (GeneratedItems.RandomOptions[3]), not a hand-built fixture script.
+    [Fact]
+    public void EquipmentStats_RealRandomOptionInOption0Slot_UsesTheSlotsOwnPersistedValue()
+    {
+        const int cottonShirt = 2301;
+        const uint strAmount = 3; // VAR_STRAMOUNT
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption((short)strAmount, 4, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 4, 0, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // Two occupied random-option slots on the same row both contribute, summed into the same ParamBonus
+    // accumulator as cards/equip scripts - Id 3 VAR_STRAMOUNT (bStr) and Id 4 VAR_AGIAMOUNT (bAgi).
+    [Fact]
+    public void EquipmentStats_TwoRealRandomOptionsInDifferentSlots_BothContribute()
+    {
+        const int cottonShirt = 2301;
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption(3, 4, 0), Option1 = new InventoryOption(4, 2, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 4, Agility: 2, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // An empty option slot (Id 0 - never a real item_randomopt_db.yml row) is skipped exactly like a zero card
+    // slot, never resolved against a nonexistent option id 0.
+    [Fact]
+    public void EquipmentStats_EmptyRandomOptionSlot_ContributesNothing()
+    {
+        const int cottonShirt = 2301;
+        var unoptioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(unoptioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus);
+    }
+
+    // An unknown random-option id (never a real item_randomopt_db.yml row - a data/generation invariant
+    // violation, never a legitimate persisted state) is rejected explicitly, matching every other "cannot
+    // fully account for this equipped state" rejection in this method.
+    [Fact]
+    public void EquipmentStats_UnknownRandomOptionId_IsRejected()
+    {
+        const int cottonShirt = 2301;
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption(short.MaxValue, 1, 0), Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // S7 bonus2/bonus3 extended bonuses: item_randomopt_db.yml Id 87 "RACE_TOLERACE_NOTHING"
+    // (`bonus2 bSubRace,RC_Formless,getrandomoptinfo(ROA_VALUE);`) accumulates into EquipmentStats.ExtendedBonuses
+    // - NOT into ParamBonus (bSubRace is not one of the 6 flat primary stats or the MaxHp/MaxSp family) - typed
+    // Feature 16 data, not yet consumed by any Feature 17 combat formula (see EquipmentExtendedBonus's own doc
+    // comment for the ownership boundary).
+    [Fact]
+    public void EquipmentStats_RealBonus2RandomOption_AccumulatesIntoExtendedBonuses_NotParamBonus()
+    {
+        const int cottonShirt = 2301;
+        const uint raceToleranceNothing = 87;
+        const long spSubRace = 1011;
+        const long rcFormless = 0;
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption((short)raceToleranceNothing, 15, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus);
+        Assert.Equal([new EquipmentExtendedBonus(spSubRace, rcFormless, null, 15)], equipment.ExtendedBonusesOrEmpty);
     }
 
     // A card id persisted in a card slot that does not actually resolve to a CardItemDefinition (a data/

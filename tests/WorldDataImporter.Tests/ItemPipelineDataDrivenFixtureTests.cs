@@ -112,6 +112,18 @@ public sealed class ItemPipelineDataDrivenFixtureTests
         // The real db/re/item_noequip.txt format (see ItemNoEquipLoader): "<item_id>,<bitmask>" - bit 1 "restricted in
         // normal maps", exactly the real pinned format this increment parses for real rows like 2483 (Siege_Greave).
         File.WriteAllText(Path.Combine(root, "db", "re", "item_noequip.txt"), $"{FixtureItemId},1 // Test_Fixture_Restricted_Container\n");
+        // RandomOptionLoader.Load needs this file to exist too (see item_group_db.yml's own placeholder-row comment
+        // above - the block-only YAML subset has no "Body: []" empty-sequence form).
+        File.WriteAllText(Path.Combine(root, "db", "re", "item_randomopt_db.yml"), """
+            Header:
+              Type: RANDOM_OPTION_DB
+              Version: 1
+            Body:
+              - Id: 1
+                Option: VAR_MAXHPAMOUNT
+                Script: |
+                  bonus bMaxHP,getrandomoptinfo(ROA_VALUE);
+            """);
         // RathenaBuiltins.Names only needs real script builtin names; reuse the real pinned file rather than faking one.
         File.Copy(Path.Combine(Root(), "legacy/rathena/src/map/script.cpp"), Path.Combine(root, "src", "map", "script.cpp"));
 
