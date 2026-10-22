@@ -260,6 +260,21 @@ public sealed class KroStatRules : IStatRules
             // sums param_bonus independently of the equip slot/item category).
             try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine); }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+
+            // Pinned pc_bonus's own card loop (pc.cpp run_script over each card[i]): a card's bonus script runs
+            // exactly like the equip's own Script, summed into the SAME param_bonus accumulator - cards are not a
+            // separate bonus category. getrefine() inside a CARD's own script reads the CARD's own refine (always
+            // 0 - cards have no Refine field of their own), never the equip row's refine (script.cpp's
+            // current_equip_item_index always means "whichever item's own script is currently executing").
+            var details = row.Details;
+            foreach (var cardId in (ReadOnlySpan<uint>)[details.Card0, details.Card1, details.Card2, details.Card3])
+            {
+                if (cardId == 0) continue;
+                if (!items.TryGetValue((int)cardId, out var cardDefinition)) { equipment = default; return false; }
+                if (cardDefinition is not CardItemDefinition) { equipment = default; return false; } // a non-card id in a card slot is a data/generation invariant violation.
+                try { paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script); }
+                catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+            }
         }
         equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine);
         return true;

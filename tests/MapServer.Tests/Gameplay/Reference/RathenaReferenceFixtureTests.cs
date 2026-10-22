@@ -611,6 +611,72 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(default, equipment);
     }
 
+    // S7 cards: a card's own bonus script sums into the SAME param_bonus accumulator as the equip's own
+    // script (pinned pc_bonus's own card loop, pc.cpp) - cards are not a separate bonus category. Real
+    // pinned Thief_Bug_Card (4016, Locations: Armor, Script: `bonus bAgi,1;` - confirmed by direct
+    // inspection AND independently by dumping this item's own lowered IR tree, since Poring_Card (4001)
+    // turned out to carry a SECOND unsupported `bonus bFlee2,1;` line this resolver correctly rejects -
+    // not a bug, a real multi-line card script outside this slice's scope) inserted into Cotton_Shirt's
+    // (2301) Card0 slot.
+    [Fact]
+    public void EquipmentStats_RealCardInCard0Slot_AddsItsOwnBonusToParamBonus()
+    {
+        const int cottonShirt = 2301;
+        const int thiefBugCard = 4016;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = thiefBugCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, Agility: 1, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // Two different real cards in two different slots (Card0/Card1) of the same equip row both contribute -
+    // proving the loop sums every nonzero slot, not just the first. Thief_Bug_Card (4016: bonus bAgi,1;) and
+    // Desert_Wolf_Babe_Card (4023: bonus bInt,1;) - both single-line scripts, both direct inspection of the
+    // pinned source, not re-derived from the implementation under test.
+    [Fact]
+    public void EquipmentStats_TwoRealCardsInDifferentSlots_BothContributeToParamBonus()
+    {
+        const int cottonShirtSlotted = 2302; // Slots: 1 - TryResolveEquipment sums every persisted card slot regardless of the item's own Slots count (that gate is ItemCardInsertResolver's own concern at insert time).
+        const int thiefBugCard = 4016;
+        const int desertWolfBabeCard = 4023;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirtSlotted, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = thiefBugCard, Card1 = desertWolfBabeCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, Agility: 1, 0, Intelligence: 1, 0, 0), equipment.ParamBonus);
+    }
+
+    // A real card whose own script this resolver cannot fully account for (bonus2-5, autobonus, or - as
+    // discovered investigating this very slice - a second unsupported bonus line like Poring_Card's own
+    // `bonus bFlee2,1;`) must reject the WHOLE equip, not silently apply only the supported line(s).
+    [Fact]
+    public void EquipmentStats_RealCardWithAnUnsupportedSecondBonusLine_IsRejected()
+    {
+        const int cottonShirt = 2301;
+        const int poringCard = 4001; // bonus bLuk,2; bonus bFlee2,1; - the second line is unsupported.
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = poringCard, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // A card id persisted in a card slot that does not actually resolve to a CardItemDefinition (a data/
+    // generation invariant violation - never a legitimate gameplay state) is rejected explicitly, matching
+    // every other "cannot fully account for this equipped state" rejection in this method.
+    [Fact]
+    public void EquipmentStats_NonCardItemIdInCardSlot_IsRejected()
+    {
+        const int cottonShirt = 2301;
+        const int sword = 1101; // a real item id, but NOT a card.
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = sword, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
     // A4: equipped ammo (routine, common gameplay for several classes - archers equip arrows constantly) must
     // NOT discard every other equipped item's contribution. Real pinned Arrow (1750, Type: Ammo, no script) worn
     // alongside a refined Cotton_Shirt proves the armor's hard DEF/refine bonus still resolves correctly with
