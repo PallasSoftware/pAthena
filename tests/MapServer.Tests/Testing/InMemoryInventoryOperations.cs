@@ -24,15 +24,20 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
     private readonly Dictionary<Guid, (byte[] Hash, InventoryOperationResponse Response)> _log = [];
     private CharacterInventorySnapshot? _firstRead;
     private uint _nextId;
+    private uint _zeny;
 
     public InMemoryInventoryOperations() : this(new CharacterInventorySnapshot([])) { }
 
-    public InMemoryInventoryOperations(CharacterInventorySnapshot initial)
+    public InMemoryInventoryOperations(CharacterInventorySnapshot initial, uint zeny = 0)
     {
         _firstRead = initial;
         _rows = [.. initial.Items.Select(item => item.ToRow())];
         _nextId = _rows.Count == 0 ? 1 : _rows.Max(row => row.DurableId) + 1;
+        _zeny = zeny;
     }
+
+    /// <summary>The current in-memory zeny balance, mirroring CharCharacter.Zeny - mutated only by a request whose ZenyCost > 0, exactly like InventoryOperationExecutor's own real deduction.</summary>
+    public uint Zeny { get { lock (_gate) return _zeny; } }
 
     /// <summary>Seeds a non-inventory container (Storage/Cart/GuildStorage) with initial rows - test setup only, never touched by production code.</summary>
     public void SeedContainer(InventoryContainer container, IReadOnlyList<InventoryItemRow> rows)
@@ -124,9 +129,10 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
 
     private InventoryOperationResponse Apply(InventoryOperationRequest request, byte[] hash)
     {
-        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => RowsFor(container).FirstOrDefault(row => row.DurableId == id));
+        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => RowsFor(container).FirstOrDefault(row => row.DurableId == id), _zeny);
         if (evaluation.Status != InventoryOperationStatus.Applied)
             return new(evaluation.Status, request.CharId, request.OperationId, evaluation.FailedIndex, []);
+        if (request.ZenyCost > 0) _zeny -= request.ZenyCost;
 
         var results = new List<InventoryMutationResult>();
         foreach (var change in evaluation.Changes)
@@ -152,7 +158,7 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
             }
         }
 
-        var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results);
+        var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results, request.ZenyCost > 0 ? _zeny : 0);
         _log[request.OperationId] = (hash, response);
         Applied.Add(request);
         return response;

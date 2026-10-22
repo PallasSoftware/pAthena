@@ -95,14 +95,31 @@ public sealed class CharacterInventoryService
     /// see ClaimGroundItemAsync) supplies a deterministic one so a retry of the same logical attempt replays through CharServer's operation
     /// log instead of risking a duplicate grant, exactly like this service's own internal retry/InDoubt handling already does for OperationId.
     /// </summary>
-    /// <param name="zenyCost">Zeny this operation spends, checked/deducted atomically with the mutations by CharServer (0 = no currency involved). See InventoryOperationRequest's own doc comment.</param>
-    /// <param name="expectedZeny">The caller's last-known zeny balance; required (and checked) whenever zenyCost > 0, exactly like a row's ExpectedRevision.</param>
+    /// <param name="expectedZeny">
+    /// The caller's last-known zeny balance; required (and checked) whenever <paramref name="plan"/> returns a
+    /// nonzero zeny cost, exactly like a row's ExpectedRevision. Fixed at the call site (not re-read from the
+    /// live snapshot, since MapServer does not track zeny itself) - the caller supplies whatever value it last
+    /// observed, same as every other Expected* precondition elsewhere in this domain model.
+    /// </param>
     public async Task<InventoryChange> ExecuteAsync(
         InventoryOperationKind kind,
         Func<CharacterInventorySnapshot, IReadOnlyList<InventoryMutation>?> plan,
         CancellationToken cancellationToken,
         Guid? operationId = null,
-        uint zenyCost = 0,
+        uint expectedZeny = 0) => await ExecuteAsync(kind, snapshot => (plan(snapshot), 0u), cancellationToken, operationId, expectedZeny);
+
+    /// <summary>
+    /// Overload for an operation whose zeny cost is itself decided BY the plan, against the SAME current
+    /// snapshot the mutations are planned from (e.g. CharacterRefineService: the cost depends on which refine
+    /// level is actually being attempted, which can only be known once the live snapshot is in hand under the
+    /// gate - computing it separately, before the gate, risks planning against one snapshot and charging for
+    /// another). A null Mutations list declines the whole operation, exactly like the single-value overload.
+    /// </summary>
+    public async Task<InventoryChange> ExecuteAsync(
+        InventoryOperationKind kind,
+        Func<CharacterInventorySnapshot, (IReadOnlyList<InventoryMutation>? Mutations, uint ZenyCost)> plan,
+        CancellationToken cancellationToken,
+        Guid? operationId = null,
         uint expectedZeny = 0)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -111,7 +128,7 @@ public sealed class CharacterInventoryService
             if (_needsReload && !await ReloadAsync(cancellationToken))
                 return new(InventoryChangeStatus.Unavailable, Snapshot, [], Guid.Empty);
 
-            var mutations = plan(Snapshot);
+            var (mutations, zenyCost) = plan(Snapshot);
             if (mutations is null || mutations.Count == 0) return new(InventoryChangeStatus.Rejected, Snapshot, [], Guid.Empty);
 
             var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations, zenyCost, expectedZeny);
