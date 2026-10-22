@@ -26,6 +26,9 @@ public sealed record InventoryChange(InventoryChangeStatus Status, CharacterInve
     /// <summary>For a rejected grant: the pinned pc_additem result (overweight, no free slot, ...) that stopped it.</summary>
     public AddItemResult? Failure { get; init; }
 
+    /// <summary>The character's authoritative zeny balance after this change, when the operation carried a ZenyCost (0 otherwise).</summary>
+    public uint RemainingZeny { get; init; }
+
     /// <summary>The mutations that were sent (same order as <see cref="Results"/>).</summary>
     public IReadOnlyList<InventoryMutation> Mutations { get; init; } = [];
 
@@ -92,11 +95,15 @@ public sealed class CharacterInventoryService
     /// see ClaimGroundItemAsync) supplies a deterministic one so a retry of the same logical attempt replays through CharServer's operation
     /// log instead of risking a duplicate grant, exactly like this service's own internal retry/InDoubt handling already does for OperationId.
     /// </summary>
+    /// <param name="zenyCost">Zeny this operation spends, checked/deducted atomically with the mutations by CharServer (0 = no currency involved). See InventoryOperationRequest's own doc comment.</param>
+    /// <param name="expectedZeny">The caller's last-known zeny balance; required (and checked) whenever zenyCost > 0, exactly like a row's ExpectedRevision.</param>
     public async Task<InventoryChange> ExecuteAsync(
         InventoryOperationKind kind,
         Func<CharacterInventorySnapshot, IReadOnlyList<InventoryMutation>?> plan,
         CancellationToken cancellationToken,
-        Guid? operationId = null)
+        Guid? operationId = null,
+        uint zenyCost = 0,
+        uint expectedZeny = 0)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -107,7 +114,7 @@ public sealed class CharacterInventoryService
             var mutations = plan(Snapshot);
             if (mutations is null || mutations.Count == 0) return new(InventoryChangeStatus.Rejected, Snapshot, [], Guid.Empty);
 
-            var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations);
+            var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations, zenyCost, expectedZeny);
             return await SendAsync(request, cancellationToken);
         }
         finally { _gate.Release(); }
@@ -238,6 +245,6 @@ public sealed class CharacterInventoryService
             MapLogger.Warning($"Inventory operation {request.OperationId} result contradicts the cache ({ex.Message}); reloading.");
             if (!await ReloadAsync(cancellationToken)) _needsReload = true;
         }
-        return new(InventoryChangeStatus.Applied, Snapshot, response.Results, request.OperationId) { Mutations = request.Mutations };
+        return new(InventoryChangeStatus.Applied, Snapshot, response.Results, request.OperationId) { Mutations = request.Mutations, RemainingZeny = response.RemainingZeny };
     }
 }

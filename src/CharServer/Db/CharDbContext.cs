@@ -41,7 +41,12 @@ public sealed class CharDbContext : DbContext
         character.Property(c => c.JobLevel).HasColumnName("job_level");
         character.Property(c => c.BaseExp).HasColumnName("base_exp");
         character.Property(c => c.JobExp).HasColumnName("job_exp");
-        character.Property(c => c.Zeny).HasColumnName("zeny");
+        // Concurrency token (not just a plain column): the Refine mutation's zeny deduction (InventoryOperationExecutor)
+        // reads this value, checks it against the caller's ExpectedZeny in InventoryOperationEngine, then relies on
+        // EF's own generated UPDATE ... WHERE zeny = @original to make a second concurrent transaction's write fail
+        // at SaveChangesAsync (DbUpdateConcurrencyException, already handled there) instead of silently stacking two
+        // deductions past zero - the same mechanism Revision already gives inventory rows, applied to this column.
+        character.Property(c => c.Zeny).HasColumnName("zeny").IsConcurrencyToken();
         character.Property(c => c.Str).HasColumnName("str");
         character.Property(c => c.Agi).HasColumnName("agi");
         character.Property(c => c.Vit).HasColumnName("vit");

@@ -24,11 +24,13 @@ public sealed class InventoryOperationExecutorTests
 
         internal InventoryOperationRequest Op(Guid id, params InventoryMutation[] mutations) => new(AccountId, CharId, id, InventoryOperationKind.Add, mutations);
         internal InventoryOperationRequest Op(params InventoryMutation[] mutations) => Op(Guid.NewGuid(), mutations);
+        internal InventoryOperationRequest RefineOp(uint zenyCost, uint expectedZeny, params InventoryMutation[] mutations) =>
+            new(AccountId, CharId, Guid.NewGuid(), InventoryOperationKind.Refine, mutations, zenyCost, expectedZeny);
 
-        internal static async Task<Fixture> CreateAsync(uint guildId = 0)
+        internal static async Task<Fixture> CreateAsync(uint guildId = 0, uint zeny = 0)
         {
             var database = await SqlServerTestDatabase.CreateAsync();
-            var alpha = new CharCharacter { Name = "Alpha", AccountId = AccountId, GuildId = guildId };
+            var alpha = new CharCharacter { Name = "Alpha", AccountId = AccountId, GuildId = guildId, Zeny = zeny };
             var beta = new CharCharacter { Name = "Beta", AccountId = AccountId + 1 };
             await using (var db = database.NewContext())
             {
@@ -49,6 +51,12 @@ public sealed class InventoryOperationExecutorTests
         {
             await using var db = Database.NewContext();
             return await db.Inventory.AsNoTracking().Where(i => i.CharId == (charId ?? CharId)).OrderBy(i => i.Id).ToListAsync();
+        }
+
+        internal async Task<uint> ZenyAsync()
+        {
+            await using var db = Database.NewContext();
+            return await db.Characters.AsNoTracking().Where(c => c.CharId == CharId).Select(c => c.Zeny).SingleAsync();
         }
 
         public ValueTask DisposeAsync() => Database.DisposeAsync();
@@ -270,5 +278,97 @@ public sealed class InventoryOperationExecutorTests
         var retry = await fixture.RunAsync(request);
         Assert.Equal(InventoryOperationStatus.Applied, retry.Status);
         Assert.Single(await fixture.InventoryAsync());
+    }
+
+    // Zeny extension (Feature 16 S6 refine-action mutation): ZenyCost/ExpectedZeny ride the SAME transaction and
+    // the SAME OperationId-keyed idempotency log as every other inventory operation - no second currency
+    // transaction, no new persistence mechanism.
+
+    [SqlServerFact]
+    public async Task ZenyCost_DeductsAtomicallyWithTheRowMutations()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 1000);
+        var material = (await fixture.RunAsync(fixture.Op(AddNew(1010, 1)))).Results.Single().Row!; // one Phracon.
+
+        var response = await fixture.RunAsync(fixture.RefineOp(zenyCost: 50, expectedZeny: 1000,
+            new RemoveFromRowMutation(InventoryContainer.Inventory, material.DurableId, 1, 1, material.Revision)));
+
+        Assert.Equal(InventoryOperationStatus.Applied, response.Status);
+        Assert.Equal(950u, response.RemainingZeny);
+        Assert.Equal(950u, await fixture.ZenyAsync());
+        Assert.Empty(await fixture.InventoryAsync()); // the material was consumed in the SAME commit.
+    }
+
+    [SqlServerFact]
+    public async Task ZenyCost_InsufficientFunds_RejectsTheWholeOperation_NothingPersisted()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 40);
+        var material = (await fixture.RunAsync(fixture.Op(AddNew(1010, 1)))).Results.Single().Row!;
+
+        var response = await fixture.RunAsync(fixture.RefineOp(zenyCost: 50, expectedZeny: 40,
+            new RemoveFromRowMutation(InventoryContainer.Inventory, material.DurableId, 1, 1, material.Revision)));
+
+        Assert.Equal(InventoryOperationStatus.PreconditionFailed, response.Status);
+        Assert.Equal(-1, response.FailedIndex); // a currency failure names no single mutation index.
+        Assert.Equal(40u, await fixture.ZenyAsync()); // untouched.
+        Assert.Equal(1u, Assert.Single(await fixture.InventoryAsync()).Amount); // material NOT consumed.
+    }
+
+    [SqlServerFact]
+    public async Task ZenyCost_StaleExpectedZeny_IsRejectedLikeAnyStaleWrite()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 1000);
+        await fixture.RunAsync(fixture.RefineOp(zenyCost: 100, expectedZeny: 1000, AddNew(1010, 1))); // spends down to 900.
+
+        // Retries with the ORIGINAL (now stale) balance of 1000, not the current 900.
+        var stale = await fixture.RunAsync(fixture.RefineOp(zenyCost: 50, expectedZeny: 1000, AddNew(1011, 1)));
+
+        Assert.Equal(InventoryOperationStatus.PreconditionFailed, stale.Status);
+        Assert.Equal(900u, await fixture.ZenyAsync());
+        Assert.Single(await fixture.InventoryAsync()); // the second AddNew never persisted.
+    }
+
+    [SqlServerFact]
+    public async Task ZenyCost_ConcurrentRequests_OnlyOneSucceeds_NoDoubleCharge()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 100);
+
+        // Eight concurrent attempts, each independently reading the same starting balance (100) and spending 100 -
+        // only one can legitimately succeed; every other must see the ALREADY-DECREMENTED balance and fail,
+        // never stack multiple deductions past zero.
+        var responses = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+            fixture.RunAsync(fixture.RefineOp(zenyCost: 100, expectedZeny: 100, AddNew((uint)(2000 + _), 1))))));
+
+        Assert.Equal(1, responses.Count(r => r.Status == InventoryOperationStatus.Applied));
+        Assert.Equal(7, responses.Count(r => r.Status == InventoryOperationStatus.PreconditionFailed));
+        Assert.Equal(0u, await fixture.ZenyAsync()); // exactly one deduction landed, never negative, never double-charged.
+        Assert.Single(await fixture.InventoryAsync()); // exactly one of the eight AddNew mutations persisted.
+    }
+
+    [SqlServerFact]
+    public async Task ZenyCost_RepeatedOperationId_IsReplayed_NeverChargedTwice()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 500);
+        var request = fixture.RefineOp(zenyCost: 75, expectedZeny: 500, AddNew(1010, 1));
+
+        var first = await fixture.RunAsync(request);
+        var lostAckRetry = await fixture.RunAsync(request); // same OperationId: a client resend after a lost ack.
+
+        Assert.Equal(InventoryOperationStatus.Applied, first.Status);
+        Assert.Equal(InventoryOperationStatus.Replayed, lostAckRetry.Status);
+        Assert.Equal(425u, await fixture.ZenyAsync()); // deducted exactly once, not twice.
+        Assert.Single(await fixture.InventoryAsync());
+    }
+
+    [SqlServerFact]
+    public async Task ZenyCost_Zero_NeverTouchesTheCharacterRow_ExistingOperationsAreUnaffected()
+    {
+        await using var fixture = await Fixture.CreateAsync(zeny: 123);
+
+        var response = await fixture.RunAsync(fixture.Op(AddNew(501, 1))); // ZenyCost defaults to 0.
+
+        Assert.Equal(InventoryOperationStatus.Applied, response.Status);
+        Assert.Equal(0u, response.RemainingZeny); // no currency involved in this operation at all.
+        Assert.Equal(123u, await fixture.ZenyAsync()); // balance is exactly what it was - never read, never touched.
     }
 }

@@ -77,6 +77,15 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
             if (guildId is null or 0) return Respond(InventoryOperationStatus.Invalid, request, request.Mutations.Select((m, i) => (m, i)).First(p => p.m.Container == InventoryContainer.GuildStorage).i);
         }
 
+        // Tracked (not AsNoTracking): a ZenyCost > 0 operation mutates this same entity's Zeny below, in the SAME
+        // SaveChangesAsync pass as the row mutations and the operation-log row - one transaction, one commit.
+        CharCharacter? character = null;
+        if (request.ZenyCost > 0)
+        {
+            character = await db.Characters.FirstOrDefaultAsync(c => c.CharId == request.CharId && c.AccountId == request.AccountId, cancellationToken);
+            if (character is null) return Respond(InventoryOperationStatus.Invalid, request, -1);
+        }
+
         // Load the rows the operation names (one query per container), let the shared engine decide, then persist its changes.
         var tracked = new Dictionary<(InventoryContainer Container, uint Id), IItemRowColumns>();
         foreach (var group in request.Mutations.Where(m => m is not AddNewRowMutation).GroupBy(m => m.Container))
@@ -89,8 +98,14 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
             foreach (var row in rows) tracked[(group.Key, row.Id)] = row;
         }
 
-        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => tracked.TryGetValue((container, id), out var entity) ? ItemRowMapper.ToRow(entity) : null);
+        var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => tracked.TryGetValue((container, id), out var entity) ? ItemRowMapper.ToRow(entity) : null, character?.Zeny ?? 0);
         if (evaluation.Status != InventoryOperationStatus.Applied) return Respond(evaluation.Status, request, evaluation.FailedIndex);
+
+        // The engine has already verified character.Zeny == request.ExpectedZeny and >= request.ZenyCost; applying
+        // the deduction here, before the first SaveChangesAsync, means it commits atomically with every row change
+        // and the operation-log row below - a stale-write race on THIS row would surface as a normal EF
+        // DbUpdateConcurrencyException/SQL error on save, caught by the same handlers as every other row conflict.
+        if (character is not null) character.Zeny -= request.ZenyCost;
 
         var touched = new List<(IItemRowColumns Entity, bool Deleted, uint DurableId)>();
         foreach (var change in evaluation.Changes)
@@ -131,7 +146,7 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
         await db.SaveChangesAsync(cancellationToken);
 
         var results = touched.Select(t => new InventoryMutationResult(t.Deleted ? t.DurableId : t.Entity.Id, t.Deleted, t.Deleted ? null : ItemRowMapper.ToRow(t.Entity))).ToList();
-        var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results);
+        var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results, character?.Zeny ?? 0);
 
         var now = _time.GetUtcNow().ToUnixTimeSeconds();
         db.InventoryOperations.Add(new CharInventoryOperation

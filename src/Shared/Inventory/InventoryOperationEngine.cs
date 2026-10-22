@@ -36,9 +36,19 @@ public static class InventoryOperationEngine
     }
 
     /// <param name="findRow">The CURRENT stored row of a container, or null when it does not exist (or belongs to another owner).</param>
-    public static InventoryEvaluation Evaluate(InventoryOperationRequest request, Func<InventoryContainer, uint, InventoryItemRow?> findRow)
+    /// <param name="currentZeny">The character's CURRENT persisted zeny balance. Ignored when request.ZenyCost is 0.</param>
+    /// <remarks>
+    /// The zeny precondition is checked BEFORE any row mutation is evaluated, matching the pinned pc_payzeny-before-
+    /// anything-else ordering (clif.cpp:22746-22750): if the caller's ExpectedZeny does not match the current balance
+    /// (a stale write, exactly like ExpectedRevision/ExpectedAmount on a row) or the balance is insufficient for
+    /// ZenyCost, the WHOLE operation fails with PreconditionFailed and FailedIndex -1 (no single mutation index names
+    /// a currency failure) - no row is touched, matching "nothing applied" on any other precondition failure.
+    /// </remarks>
+    public static InventoryEvaluation Evaluate(InventoryOperationRequest request, Func<InventoryContainer, uint, InventoryItemRow?> findRow, uint currentZeny = 0)
     {
         if (!IsWellFormed(request, out var badIndex)) return new(InventoryOperationStatus.Invalid, badIndex, []);
+        if (request.ZenyCost > 0 && (currentZeny != request.ExpectedZeny || currentZeny < request.ZenyCost))
+            return new(InventoryOperationStatus.PreconditionFailed, -1, []);
 
         var changes = new List<InventoryRowChange>(request.Mutations.Count);
         for (var index = 0; index < request.Mutations.Count; index++)

@@ -107,12 +107,24 @@ public sealed record RemoveFromRowMutation(InventoryContainer Container, uint Du
 public sealed record UpdateRowMutation(InventoryContainer Container, uint DurableId, uint ExpectedRevision, InventoryItemRow NewRow)
     : InventoryMutation(Container);
 
-public sealed record InventoryOperationRequest(uint AccountId, uint CharId, Guid OperationId, InventoryOperationKind Kind, IReadOnlyList<InventoryMutation> Mutations);
+// ZenyCost/ExpectedZeny default to 0, meaning "this operation spends no zeny" - every mutation kind except Refine
+// leaves them untouched. When ZenyCost > 0, CharServer checks the character's CURRENT zeny equals ExpectedZeny
+// (the caller's last-known balance, exactly like ExpectedRevision/ExpectedAmount on a row mutation - rejecting a
+// stale write rather than overwriting) AND is >= ZenyCost, deducts ZenyCost, and persists that deduction in the
+// SAME transaction as the row mutations and the operation-log row - one all-or-nothing commit, matching the
+// pinned pc_payzeny-before-anything-else ordering (clif.cpp:22746: zeny is checked/paid before any item is
+// touched). Precondition failure here (stale balance OR insufficient funds) rejects the WHOLE operation; nothing
+// is mutated, matching every other precondition in this contract.
+public sealed record InventoryOperationRequest(uint AccountId, uint CharId, Guid OperationId, InventoryOperationKind Kind, IReadOnlyList<InventoryMutation> Mutations,
+    uint ZenyCost = 0, uint ExpectedZeny = 0);
 
 public sealed record InventoryMutationResult(uint DurableId, bool Deleted, InventoryItemRow? Row);
 
+// RemainingZeny is the character's authoritative zeny balance AFTER this operation when the request carried a
+// ZenyCost > 0 - the caller never has to re-derive it. It is always 0 for a ZenyCost == 0 request (every
+// non-currency operation never reads the character row for this at all, so there is no balance to report).
 public sealed record InventoryOperationResponse(
-    InventoryOperationStatus Status, uint CharId, Guid OperationId, int FailedIndex, IReadOnlyList<InventoryMutationResult> Results)
+    InventoryOperationStatus Status, uint CharId, Guid OperationId, int FailedIndex, IReadOnlyList<InventoryMutationResult> Results, uint RemainingZeny = 0)
 {
     public bool Succeeded => Status is InventoryOperationStatus.Applied or InventoryOperationStatus.Replayed;
 }
@@ -122,8 +134,11 @@ public static class InventoryOperationWire
     public const short RequestOpcode = 0x2b3e;
     public const short ResponseOpcode = 0x2b3f;
     public const int MaxMutations = 32;
-    public const int RequestHeaderLength = 30;
-    public const int ResponseHeaderLength = 26;
+    // +8 over the original 30: ZenyCost.L (4) then ExpectedZeny.L (4), appended after the original fixed fields
+    // so every existing byte offset up to 30 is unchanged.
+    public const int RequestHeaderLength = 38;
+    // +4 over the original 26: RemainingZeny.L (4) appended after the original fixed fields.
+    public const int ResponseHeaderLength = 30;
     public const int ResultLength = 4 + 1 + InventoryItemRow.WireLength;
 
     private const byte AddNewTag = 1, AddToStackTag = 2, RemoveTag = 3, UpdateTag = 4;
@@ -142,6 +157,8 @@ public static class InventoryOperationWire
         request.OperationId.TryWriteBytes(packet.AsSpan(12), bigEndian: false, out _);
         packet[28] = (byte)request.Kind;
         packet[29] = (byte)request.Mutations.Count;
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(30), request.ZenyCost);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(34), request.ExpectedZeny);
 
         var offset = RequestHeaderLength;
         foreach (var mutation in request.Mutations)
@@ -233,7 +250,8 @@ public static class InventoryOperationWire
 
         request = new InventoryOperationRequest(
             BinaryPrimitives.ReadUInt32LittleEndian(packet[4..]), BinaryPrimitives.ReadUInt32LittleEndian(packet[8..]),
-            new Guid(packet.Slice(12, 16)), (InventoryOperationKind)packet[28], mutations);
+            new Guid(packet.Slice(12, 16)), (InventoryOperationKind)packet[28], mutations,
+            BinaryPrimitives.ReadUInt32LittleEndian(packet[30..]), BinaryPrimitives.ReadUInt32LittleEndian(packet[34..]));
         return true;
     }
 
@@ -247,6 +265,7 @@ public static class InventoryOperationWire
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), response.CharId);
         response.OperationId.TryWriteBytes(packet.AsSpan(9), bigEndian: false, out _);
         packet[25] = (byte)(sbyte)response.FailedIndex;
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(26), response.RemainingZeny);
         // The result count is derivable from the length; the byte at 25 carries the failed mutation index (-1 = none).
         var offset = ResponseHeaderLength;
         foreach (var result in response.Results)
@@ -274,7 +293,7 @@ public static class InventoryOperationWire
             results.Add(new InventoryMutationResult(BinaryPrimitives.ReadUInt32LittleEndian(packet[offset..]), deleted, deleted ? null : row));
         }
         response = new InventoryOperationResponse((InventoryOperationStatus)packet[4], BinaryPrimitives.ReadUInt32LittleEndian(packet[5..]),
-            new Guid(packet.Slice(9, 16)), (sbyte)packet[25], results);
+            new Guid(packet.Slice(9, 16)), (sbyte)packet[25], results, BinaryPrimitives.ReadUInt32LittleEndian(packet[26..]));
         return true;
     }
 

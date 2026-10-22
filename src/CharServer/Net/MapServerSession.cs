@@ -375,7 +375,18 @@ public sealed class MapServerSession : IDisposable, ISession
         }
 
         ApplyLastPosition(character, mapName, x, y);
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Position is a frequent, best-effort background save, never worth retrying synchronously: the next
+            // periodic save will carry a fresh read. A concurrent writer of the SAME CharCharacter row - most
+            // notably a Refine zeny deduction (InventoryOperationExecutor), now that Zeny is a concurrency token
+            // on this entity - must not crash this session over a lost position update.
+            CharLogger.Warning($"Character position save lost a concurrency race accountId={accountId} charId={charId}; will retry on the next periodic save.");
+        }
     }
 
     // Persistence write boundary: only canonical map names are ever stored. A legacy channel copy

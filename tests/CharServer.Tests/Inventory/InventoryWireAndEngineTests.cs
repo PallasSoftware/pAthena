@@ -40,6 +40,27 @@ public sealed class InventoryWireAndEngineTests
     }
 
     [Fact]
+    public void Request_RoundTripsZenyCostAndExpectedZeny()
+    {
+        var request = new InventoryOperationRequest(10, 20, Id, InventoryOperationKind.Refine,
+            [new RemoveFromRowMutation(InventoryContainer.Inventory, 5, 1, 1, 1)], ZenyCost: 500, ExpectedZeny: 12_345);
+
+        var bytes = InventoryOperationWire.BuildRequest(request);
+
+        Assert.True(InventoryOperationWire.TryParseRequest(bytes, out var parsed));
+        Assert.Equal((500u, 12_345u), (parsed.ZenyCost, parsed.ExpectedZeny));
+    }
+
+    [Fact]
+    public void Response_RoundTripsRemainingZeny()
+    {
+        var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, 20, Id, -1, [], RemainingZeny: 9_876);
+
+        Assert.True(InventoryOperationWire.TryParseResponse(InventoryOperationWire.BuildResponse(response), out var parsed));
+        Assert.Equal(9_876u, parsed.RemainingZeny);
+    }
+
+    [Fact]
     public void Request_RejectsTruncatedOversizedAndUnknownContent()
     {
         var bytes = InventoryOperationWire.BuildRequest(new(10, 20, Id, InventoryOperationKind.Add, [new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(501, 1))]));
@@ -134,6 +155,45 @@ public sealed class InventoryWireAndEngineTests
 
         Assert.Equal((InventoryOperationStatus.PreconditionFailed, 1), (evaluation.Status, evaluation.FailedIndex));
         Assert.Empty(evaluation.Changes);
+    }
+
+    [Fact]
+    public void Engine_ZenyCost_RejectsInsufficientFunds_WithNoRowChangesComputed()
+    {
+        var row = InventoryItemRow.New(501, 10) with { DurableId = 5, Revision = 1 };
+        var request = new InventoryOperationRequest(10, 20, Id, InventoryOperationKind.Refine,
+            [new RemoveFromRowMutation(InventoryContainer.Inventory, 5, 1, 10, 1)], ZenyCost: 100, ExpectedZeny: 99);
+
+        var evaluation = InventoryOperationEngine.Evaluate(request, Rows(row), currentZeny: 99);
+
+        Assert.Equal((InventoryOperationStatus.PreconditionFailed, -1), (evaluation.Status, evaluation.FailedIndex));
+        Assert.Empty(evaluation.Changes); // not even the well-formed row mutation was evaluated.
+    }
+
+    [Fact]
+    public void Engine_ZenyCost_RejectsStaleExpectedZeny_EvenWhenSufficientForTheCost()
+    {
+        var row = InventoryItemRow.New(501, 10) with { DurableId = 5, Revision = 1 };
+        var request = new InventoryOperationRequest(10, 20, Id, InventoryOperationKind.Refine,
+            [new RemoveFromRowMutation(InventoryContainer.Inventory, 5, 1, 10, 1)], ZenyCost: 100, ExpectedZeny: 1000);
+
+        // Current balance (1500) is plenty for ZenyCost (100), but does not match the caller's stale ExpectedZeny (1000).
+        var evaluation = InventoryOperationEngine.Evaluate(request, Rows(row), currentZeny: 1500);
+
+        Assert.Equal(InventoryOperationStatus.PreconditionFailed, evaluation.Status);
+    }
+
+    [Fact]
+    public void Engine_ZenyCost_Zero_NeverConsultsCurrentZeny()
+    {
+        var row = InventoryItemRow.New(501, 10) with { DurableId = 5, Revision = 1 };
+        var request = Op(new RemoveFromRowMutation(InventoryContainer.Inventory, 5, 10, 10, 1)); // ZenyCost defaults to 0.
+
+        // currentZeny: 0 (the default) even though a real caller's balance could be anything - ZenyCost=0 means
+        // this operation involves no currency at all, so the check must never gate on it.
+        var evaluation = InventoryOperationEngine.Evaluate(request, Rows(row));
+
+        Assert.Equal(InventoryOperationStatus.Applied, evaluation.Status);
     }
 
     [Fact]
