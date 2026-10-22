@@ -1000,20 +1000,42 @@ internal static partial class WorldDataImporterCli
         return 0;
     }
 
-    // Regenerates GameData/Refine/GeneratedRefineBonus.cs from db/re/refine.yml's Weapon/Armor
-    // groups (see RefineDataCompiler's own doc comment for the exact scope - only each (Group,
-    // Level, RefineLevel)'s flat Bonus field, not the Chances/Catalyst/Options refine-action data).
+    // Regenerates GameData/Refine/GeneratedRefineBonus.cs from db/re/refine.yml's Weapon/Armor groups
+    // (see RefineDataCompiler's own doc comment for the exact scope): the flat Bonus/RandomBonus the
+    // status calculation reads, and the Chances[] cost table the refine-ACTION mutation needs.
     private static async Task<int> CompileRefineAsync(string[] args)
     {
         var options = CliOptions.Parse(args);
         var root = Path.GetFullPath(options.Required("rathena-root"));
         var commit = options.Required("rathena-commit");
-        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var resolveMaterialItemId = BuildAegisNameToItemIdResolver(root);
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)), resolveMaterialItemId);
         var output = Path.GetFullPath(options.Required("output"));
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllTextAsync(output, RefineDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
         Console.WriteLine($"Generated refine bonus table for {table.Count} item groups.");
         return 0;
+    }
+
+    // Scans every pinned db/re/item_db_*.yml once for "  - Id: N\n    AegisName: X" pairs (the same shape
+    // QuestDropDataCompiler's own per-lookup regex matches), building one reusable AegisName -> Id map for
+    // RefineDataCompiler's Chances[].Material field - refine.yml names its material by AegisName, never by
+    // numeric id, and this is the compiler-tooling-layer resolution step (not ItemDatabaseLoader's own
+    // multi-layer item-pack pipeline, which this file does not need or want to couple to for one lookup).
+    private static Func<string, int> BuildAegisNameToItemIdResolver(string rathenaRoot)
+    {
+        var byAegis = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var file in new[] { "db/re/item_db_equip.yml", "db/re/item_db_etc.yml", "db/re/item_db_usable.yml" })
+        {
+            var text = File.ReadAllText(Path.Combine(rathenaRoot, file));
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                text, @"^  - Id: (\d+)\n    AegisName: (\S+)$", System.Text.RegularExpressions.RegexOptions.Multiline))
+            {
+                byAegis[match.Groups[2].Value] = int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        return aegisName => byAegis.TryGetValue(aegisName, out var id) ? id
+            : throw new ArgumentException($"Refine material AegisName '{aegisName}' was not found in any pinned item_db_*.yml.");
     }
 
     private static async Task<int> CompileItemPackAsync(string[] args)

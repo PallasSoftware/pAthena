@@ -181,6 +181,792 @@ internal static class GeneratedRefineBonus
         },
     };
 
+    // [group][level][refineLevel][costType] -> (Rate, Price, MaterialItemId, BreakingRate, DowngradeAmount),
+    // the pinned Chances[] cost table (status.hpp:92-99). costType is the pinned YAML's own Type spelling
+    // ("Normal"/"HD"/"Enriched"). A (group,level,refineLevel) with no Chances block at all is simply absent
+    // here - see Cost's own doc comment.
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, IReadOnlyDictionary<string, (uint Rate, uint Price, int MaterialItemId, uint BreakingRate, uint DowngradeAmount)>>>> CostTable =
+        new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyDictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>>>
+    {
+        ["Armor"] = new Dictionary<int, IReadOnlyDictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>>
+        {
+            [1] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7619, 0, 0),
+                    ["HD"] = (10000, 20000, 6241, 0, 0),
+                    ["Normal"] = (10000, 2000, 985, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7619, 0, 0),
+                    ["HD"] = (10000, 20000, 6241, 0, 0),
+                    ["Normal"] = (10000, 2000, 985, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7619, 0, 0),
+                    ["HD"] = (10000, 20000, 6241, 0, 0),
+                    ["Normal"] = (10000, 2000, 985, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7619, 0, 0),
+                    ["HD"] = (10000, 20000, 6241, 0, 0),
+                    ["Normal"] = (10000, 2000, 985, 0, 0),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 2000, 7619, 10000, 0),
+                    ["HD"] = (6000, 20000, 6241, 0, 1),
+                    ["Normal"] = (6000, 2000, 985, 10000, 0),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7619, 10000, 0),
+                    ["HD"] = (4000, 20000, 6241, 0, 1),
+                    ["Normal"] = (4000, 2000, 985, 10000, 0),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7619, 10000, 0),
+                    ["HD"] = (4000, 20000, 6241, 0, 1),
+                    ["Normal"] = (4000, 2000, 985, 10000, 0),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7619, 10000, 0),
+                    ["HD"] = (2000, 20000, 6241, 0, 1),
+                    ["Normal"] = (2000, 2000, 985, 10000, 0),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7619, 10000, 0),
+                    ["HD"] = (2000, 20000, 6241, 0, 1),
+                    ["Normal"] = (2000, 2000, 985, 10000, 0),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (2000, 2000, 7619, 10000, 0),
+                    ["HD"] = (900, 20000, 6241, 0, 1),
+                    ["Normal"] = (900, 2000, 985, 10000, 0),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6225, 0, 1),
+                    ["Normal"] = (800, 100000, 6223, 2000, 3),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6225, 0, 1),
+                    ["Normal"] = (800, 100000, 6223, 2000, 3),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6225, 0, 1),
+                    ["Normal"] = (800, 100000, 6223, 2000, 3),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6225, 0, 1),
+                    ["Normal"] = (800, 100000, 6223, 2000, 3),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6225, 0, 1),
+                    ["Normal"] = (700, 100000, 6223, 2000, 3),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6225, 0, 1),
+                    ["Normal"] = (700, 100000, 6223, 2000, 3),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6225, 0, 1),
+                    ["Normal"] = (700, 100000, 6223, 2000, 3),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6225, 0, 1),
+                    ["Normal"] = (700, 100000, 6223, 2000, 3),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (500, 100000, 6225, 0, 1),
+                    ["Normal"] = (500, 100000, 6223, 2000, 3),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (500, 100000, 6225, 0, 1),
+                    ["Normal"] = (500, 100000, 6223, 2000, 3),
+                },
+            },
+            [2] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000333, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000331, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000333, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000331, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000333, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000331, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (6000, 50000, 1000331, 0, 3),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (6000, 50000, 1000331, 0, 3),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (6000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (4000, 50000, 1000331, 0, 3),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (6000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (4000, 50000, 1000331, 0, 3),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (2000, 50000, 1000331, 0, 3),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (2000, 50000, 1000331, 0, 3),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (2000, 50000, 1000333, 0, 1),
+                    ["Normal"] = (900, 50000, 1000331, 0, 3),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000335, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000370, 10000, 0),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000335, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000370, 10000, 0),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000335, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000370, 10000, 0),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000335, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000370, 10000, 0),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000335, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000370, 10000, 0),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000371, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000370, 10000, 0),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000371, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000370, 10000, 0),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000371, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000370, 10000, 0),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 1000371, 10000, 0),
+                    ["Normal"] = (500, 100000, 1000370, 10000, 0),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 1000371, 10000, 0),
+                    ["Normal"] = (500, 100000, 1000370, 10000, 0),
+                },
+            },
+        },
+        ["Weapon"] = new Dictionary<int, IReadOnlyDictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>>
+        {
+            [1] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 50, 1010, 0, 0),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 2000, 7620, 10000, 0),
+                    ["HD"] = (6000, 20000, 6240, 0, 1),
+                    ["Normal"] = (6000, 50, 1010, 10000, 0),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7620, 10000, 0),
+                    ["HD"] = (4000, 20000, 6240, 0, 1),
+                    ["Normal"] = (4000, 50, 1010, 10000, 0),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (3000, 2000, 7620, 10000, 0),
+                    ["HD"] = (1900, 20000, 6240, 0, 1),
+                    ["Normal"] = (1900, 50, 1010, 10000, 0),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+            },
+            [2] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 200, 1011, 0, 0),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 2000, 7620, 10000, 0),
+                    ["HD"] = (6000, 20000, 6240, 0, 1),
+                    ["Normal"] = (6000, 200, 1011, 10000, 0),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7620, 10000, 0),
+                    ["HD"] = (4000, 20000, 6240, 0, 1),
+                    ["Normal"] = (4000, 200, 1011, 10000, 0),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7620, 10000, 0),
+                    ["HD"] = (2000, 20000, 6240, 0, 1),
+                    ["Normal"] = (2000, 200, 1011, 10000, 0),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (3000, 2000, 7620, 10000, 0),
+                    ["HD"] = (1900, 20000, 6240, 0, 1),
+                    ["Normal"] = (1900, 200, 1011, 10000, 0),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+            },
+            [3] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 5000, 984, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 5000, 984, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 5000, 984, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 5000, 984, 0, 0),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 5000, 984, 0, 0),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 2000, 7620, 10000, 0),
+                    ["HD"] = (6000, 20000, 6240, 0, 1),
+                    ["Normal"] = (6000, 5000, 984, 10000, 0),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (8000, 2000, 7620, 10000, 0),
+                    ["HD"] = (5000, 20000, 6240, 0, 1),
+                    ["Normal"] = (5000, 5000, 984, 10000, 0),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7620, 10000, 0),
+                    ["HD"] = (2000, 20000, 6240, 0, 1),
+                    ["Normal"] = (2000, 5000, 984, 10000, 0),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7620, 10000, 0),
+                    ["HD"] = (2000, 20000, 6240, 0, 1),
+                    ["Normal"] = (2000, 5000, 984, 10000, 0),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (3000, 2000, 7620, 10000, 0),
+                    ["HD"] = (1900, 20000, 6240, 0, 1),
+                    ["Normal"] = (1900, 5000, 984, 10000, 0),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1800, 100000, 6226, 0, 1),
+                    ["Normal"] = (1800, 100000, 6224, 2000, 3),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1700, 100000, 6226, 0, 1),
+                    ["Normal"] = (1700, 100000, 6224, 2000, 3),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 6226, 0, 1),
+                    ["Normal"] = (1500, 100000, 6224, 2000, 3),
+                },
+            },
+            [4] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 20000, 984, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 20000, 984, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 20000, 984, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 2000, 7620, 0, 0),
+                    ["HD"] = (10000, 20000, 6240, 0, 0),
+                    ["Normal"] = (10000, 20000, 984, 0, 0),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 2000, 7620, 10000, 0),
+                    ["HD"] = (6000, 20000, 6240, 0, 1),
+                    ["Normal"] = (6000, 20000, 984, 10000, 0),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7620, 10000, 0),
+                    ["HD"] = (4000, 20000, 6240, 0, 1),
+                    ["Normal"] = (4000, 20000, 984, 10000, 0),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 2000, 7620, 10000, 0),
+                    ["HD"] = (4000, 20000, 6240, 0, 1),
+                    ["Normal"] = (4000, 20000, 984, 10000, 0),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7620, 10000, 0),
+                    ["HD"] = (2000, 20000, 6240, 0, 1),
+                    ["Normal"] = (2000, 20000, 984, 10000, 0),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 2000, 7620, 10000, 0),
+                    ["HD"] = (2000, 20000, 6240, 0, 1),
+                    ["Normal"] = (2000, 20000, 984, 10000, 0),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (2000, 2000, 7620, 10000, 0),
+                    ["HD"] = (900, 20000, 6240, 0, 1),
+                    ["Normal"] = (900, 20000, 984, 10000, 0),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6226, 0, 1),
+                    ["Normal"] = (800, 100000, 6224, 2000, 3),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6226, 0, 1),
+                    ["Normal"] = (800, 100000, 6224, 2000, 3),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6226, 0, 1),
+                    ["Normal"] = (800, 100000, 6224, 2000, 3),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (800, 100000, 6226, 0, 1),
+                    ["Normal"] = (800, 100000, 6224, 2000, 3),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6226, 0, 1),
+                    ["Normal"] = (700, 100000, 6224, 2000, 3),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6226, 0, 1),
+                    ["Normal"] = (700, 100000, 6224, 2000, 3),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6226, 0, 1),
+                    ["Normal"] = (700, 100000, 6224, 2000, 3),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 6226, 0, 1),
+                    ["Normal"] = (700, 100000, 6224, 2000, 3),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (500, 100000, 6226, 0, 1),
+                    ["Normal"] = (500, 100000, 6224, 2000, 3),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (500, 100000, 6226, 0, 1),
+                    ["Normal"] = (500, 100000, 6224, 2000, 3),
+                },
+            },
+            [5] = new Dictionary<int, IReadOnlyDictionary<string, (uint, uint, int, uint, uint)>>
+            {
+                [1] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000334, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000332, 0, 0),
+                },
+                [2] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000334, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000332, 0, 0),
+                },
+                [3] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (10000, 50000, 1000334, 0, 0),
+                    ["Normal"] = (10000, 50000, 1000332, 0, 0),
+                },
+                [4] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (9000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (6000, 50000, 1000332, 0, 3),
+                },
+                [5] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (7000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (6000, 50000, 1000332, 0, 3),
+                },
+                [6] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (6000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (4000, 50000, 1000332, 0, 3),
+                },
+                [7] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (6000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (4000, 50000, 1000332, 0, 3),
+                },
+                [8] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (2000, 50000, 1000332, 0, 3),
+                },
+                [9] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (4000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (2000, 50000, 1000332, 0, 3),
+                },
+                [10] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["Enriched"] = (2000, 50000, 1000334, 0, 1),
+                    ["Normal"] = (900, 50000, 1000332, 0, 3),
+                },
+                [11] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000336, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000368, 10000, 0),
+                },
+                [12] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000336, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000368, 10000, 0),
+                },
+                [13] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000336, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000368, 10000, 0),
+                },
+                [14] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1500, 100000, 1000336, 10000, 0),
+                    ["Normal"] = (800, 100000, 1000368, 10000, 0),
+                },
+                [15] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000336, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000368, 10000, 0),
+                },
+                [16] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000369, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000368, 10000, 0),
+                },
+                [17] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000369, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000368, 10000, 0),
+                },
+                [18] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (1000, 100000, 1000369, 10000, 0),
+                    ["Normal"] = (700, 100000, 1000368, 10000, 0),
+                },
+                [19] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 1000369, 10000, 0),
+                    ["Normal"] = (500, 100000, 1000368, 10000, 0),
+                },
+                [20] = new Dictionary<string, (uint, uint, int, uint, uint)>
+                {
+                    ["HD"] = (700, 100000, 1000369, 10000, 0),
+                    ["Normal"] = (500, 100000, 1000368, 10000, 0),
+                },
+            },
+        },
+    };
+
     // Pinned RefineDatabase::findCurrentLevelInfo (status.cpp:457-463): refine == 0 has no bonus at
     // all (never looked up); refine > 0 reads the (refine-1)-th 0-based RefineLevels entry, i.e. the
     // pinned YAML's own 1-based `Level: refine` entry directly - no further offset here. A miss on
@@ -206,4 +992,12 @@ internal static class GeneratedRefineBonus
         if (refine <= 0) return 0;
         return Table.TryGetValue(group, out var levels) && levels.TryGetValue(itemLevel, out var refineLevels) && refineLevels.TryGetValue(refine, out var value) ? value.RandomBonusMax : 0;
     }
+
+    // Pinned s_refine_cost (status.hpp:92-99), the Chances[] entry for one (group, item level, refine level,
+    // cost type) the player is ATTEMPTING to refine TO (clif_parse_refineui_refine reads refine_db.findLevelInfo
+    // for the item's CURRENT refine+1 level, clif.cpp:22688-22693) - null when the item cannot be refined
+    // further at this level/cost-type combination (no Chances entry, or no RefineLevels entry at all for
+    // refine+1, matching pinned findLevelInfo's own null return for "no further refine possible").
+    internal static (uint Rate, uint Price, int MaterialItemId, uint BreakingRate, uint DowngradeAmount)? Cost(string group, int itemLevel, int refine, string costType) =>
+        CostTable.TryGetValue(group, out var levels) && levels.TryGetValue(itemLevel, out var refineLevels) && refineLevels.TryGetValue(refine, out var costs) && costs.TryGetValue(costType, out var cost) ? cost : null;
 }
