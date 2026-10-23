@@ -183,45 +183,62 @@ Previously remaining blockers were dominated by control flow and locals (`.@r = 
 If + ~1,200 non-constant values) - the evaluator increment below - then F18 `skill` grants (~410), client-only `hateffect`
 (~130), F20 general-script deferrals (~25) and one invalid pinned skill name (`WZ_METEORSTORM`).
 
-## S9 completion audit (measured against commit 2199654, 2026-10-23)
+## S9 completion audit - reconciled (measured against commit 668ea12, 2026-10-23)
 
-Verified against actual source, generated data, contracts, and regression tests - not a documentation summary.
-Status categories: **Complete** (implemented and verified), **Partial** (real, tested, honestly-measured subset),
-**Deferred** (explicit, justified Feature 17/18/20 ownership with a tested integration contract), **Protocol-
-pending-capture** (server logic done and tested; only wire projection waits on evidence), **Missing**.
+Supersedes the 2199654 audit. That audit called S0-S6 Complete while S4 lacked equip switch; re-checking every stage
+against the pinned functions (not against the earlier summary) found more of the same kind, listed per stage below.
+Categories: **Complete** (implemented, runtime-verified by tests against pinned behavior), **Implemented, insufficiently
+verified**, **Partial**, **Typed (downstream)** (correct F16 data, consumer not built), **Owned elsewhere** (F17/F18/F20,
+with the contract named), **Protocol-pending-capture** (server done; wire waits - capture request in this plan),
+**Missing**.
 
-| # | Requirement | Status | Evidence |
+| Stage | Requirement | Status | Evidence / what is left |
 |---|---|---|---|
-| 1-2 | Acceptance criteria / milestones (S0-S8) | Partial | S0-S6 Complete (see per-stage commit list below); S7 Partial (cards Complete, combos/random-opts/enchant Partial by measured %); S8 Partial (triggered-effect registration Complete, client sync mostly Protocol-pending-capture, cross-replica ground-item feed Missing) |
-| 3 | Deterministic generation from pinned rAthena | Complete | `WorldDataImporter.Tests` (456 tests) includes byte-identical pack regeneration (`Pack_RegenerationIsByteIdenticalToTheCommittedPack`) and facade/report reproducibility checks; `git diff --check` clean on every regenerated artifact this session |
-| 4 | Item/equipment catalog completeness | Complete | 29,357 real pinned items loaded (`ItemCatalog`), verified against the real loader (`70c4be0`); `ItemPipelineDataDrivenFixtureTests` proves zero item-specific production code |
-| 5 | Script lowering/support classification/execution | Partial | Lowering itself is comprehensive (21,250 of 21,317 pack scripts fully lowered, 67 deferred with named construct+owner); EXECUTION (bonus resolution) is the honestly-measured 35.6%/75.9%/10.1% above - a real, substantial, separately-scoped gap (506 pinned SP_* params, ~14 modeled) |
-| 6 | Item effects, healing, consumption, cooldowns | Complete | `ItemScriptEvaluator`/`IItemEffectHost`, delay-group cooldown gate (`5609d36`), `nouse_mapflag` gate (`f63c692`) |
-| 7 | Equipment eligibility and bonus accumulation | Complete | Level/sex/broken/map/job-class eligibility (`ee032e9`, `d3195dc`); bonus accumulation (flat + bonus2/3 + autobonus registration) fully wired into `TryResolveEquipment` for both regions |
-| 8 | Cards, combos, random options, enchantments | Partial | Cards Complete (bonus consumption + insertion); combos 10.1% resolved (49% activate, bonus payload resolution is the bottleneck); random options 75.9% resolved; enchant grade bonus multiplier AND upgrade action both Complete |
-| 9 | Refinement, zeny, transaction atomicity | Complete | `CharacterRefineService`/`CharacterEnchantGradeService` both use the atomic zeny+inventory transaction (`CharacterInventoryService.ExecuteAsync`'s zeny-aware overload); concurrent-request double-charge bug found and fixed this session (`a05bc6a`), verified against real SQL Server |
-| 10 | Inventory/storage/cart/ground-item persistence | Complete | `8b26d27` (atomic idempotent operations), `d8a650f` (storage/cart transfer + rental expiry), `9a436f6`/`06d5b78` (ground-item lifecycle) |
-| 11 | Expiry, rental, bound, lifecycle | Complete | `d8a650f`; `NoCart`/`NoStorage`/`NoGuildStorage` enforcement (`6162685`) |
-| 12 | Triggered effects and integration boundaries | Partial | Registration (autobonus/2/3 -> `TriggeredBonusDefinition`) Complete this session (`3dd9148`); on-attack DISPATCH explicitly Deferred to Feature 17 (`pc_exeautobonus`'s own combat-loop call site), with a typed, tested contract (`EquipmentStats.TriggeredBonusesOrEmpty`) |
-| 13 | Client protocol evidence and synchronization | Protocol-pending-capture (mostly) | Ground-item pickup/removal (0x0362/0x00A1) and equip/unequip request framing (0x0998/0x00AB) are capture-Verified and implemented; equip/unequip derived-stat resend is explicitly Protocol-pending-capture (this session, `2199654`) with the exact 2 captures needed documented above; cross-replica ground-item VISIBILITY feed is Missing (investigated, scoped, not implemented - comparable in size to the existing ~1000-line monster/player feed subsystem) |
-| 14 | Regional iRO/kRO correctness | Complete | Every S4-S8 change this session applied identically (structurally diffed, confirmed zero shared algorithm) to both `IroStatRules`/`KroStatRules`; architecture test suite enforces no shared concrete algorithm |
-| 15 | Compatibility with existing architecture | Complete | Every new increment reused the existing pipeline (RathenaLexer/Parser -> Semantics -> ItemScriptLowerer -> shared `pack.Scripts`), no second script engine, no parallel serializer (random options/combos reuse `ItemPackFormat.WriteNode`/`ReadNode`) |
-| 16 | Test coverage and CI reliability | Complete | MapServer.Tests 3506, WorldDataImporter.Tests 456, CharServer.Tests 237 (+23 SQL-Server-gated), World.Tests 180, LoginServer.Tests 210 - all green this session; one confirmed pre-existing load-sensitive flake (`PlayerAttackActionFanoutTests`), reconfirmed isolation-clean 3x, zero file overlap with any change made this session |
-| 17 | Features falsely described as complete | None found | Every Partial/Deferred/Protocol-pending-capture item above is explicitly labeled as such in code comments, memory, and this document - no feature in this audit claims completeness beyond its measured/verified scope |
+| S0 | Baseline, plan, ownership | Complete | This document; ownership table |
+| S1 | Item data pipeline + pack | Complete | 29,357 items; byte-identical regeneration test; data-driven fixtures (incl. a never-seen conditional equipment item, `ItemPipelineDataDrivenFixtureTests`) |
+| S2 | Persistence, idempotency, ground claim | Complete | Atomic/idempotent operations incl. EquipSwitch kind 15 (SQL Server executor swap test); exactly-once claim (TestCluster) |
+| S3 | Inventory rules, consumption, containers | Complete | as before (`8b26d27`, `d8a650f`, cooldown/nouse gates) |
+| S3 | Ground items: monster drop, pickup | Complete | `9a436f6`/`06d5b78`; pickup now restores a dropped instance |
+| S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a` `CharacterItemDropService` (12 tests). Not modeled: MF_NODROP (no map-flag runtime), free-cell scatter |
+| S4 | Eligibility (level, sex, broken, map, class_base) | Complete | `ee032e9`, `d3195dc` |
+| S4 | ClassUpper tier eligibility (pc_isItemClass) | Partial | Data is packed (`PackItem.ClassUpper`), never enforced: an upper/baby/third-only item is wearable by any tier. Needs a generated JOBL_* tier per job |
+| S4 | Slot rules: EQP_ACC single slot, card-forced accessory, dual-wield EQP_ARMS, costume/shadow slots, bind-on-equip | Complete | Were **incorrect/missing**; fixed `be06e49` (30 tests) |
+| S4 | Equip switch (add/remove/full/single, cooldown) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `be06e49` |
+| S4 | Ammo equip (pc_isequip EQP_AMMO) | Complete (server); wire Protocol-pending-capture (0x013C) | Was **Missing**; `668ea12`. Cannonball mount checks assume unmounted |
+| S4 | Unequip side effects (status cancels, ammo) | Owned elsewhere (status effects) | status-change interactions belong to the SC system |
+| S5 | Bonus model: param/HP/SP family, 150 single-value pc_bonus cases, bonus2..5 | Complete for accumulation | `152866b`: per-case pinned combine rules, lr_flag hands, skill-name sub-keys |
+| S5 | Live consumption in derived stats | Partial | Live: primary stats, bHit, bFlee, bFlee2, bCritical, bDef, bDef2, bMdef2. **Typed (downstream)** for F17/F18: ATK/MATK/ASPD/rates/race-element tables (`EquipmentStats.FlatBonuses/ExtendedBonuses/MultiBonuses`) |
+| S5 | Equipment Max HP/SP (bMaxHP/SP[rate], equip VIT +1 HP) | Partial (Typed, not applied) | `IStatRules.MaxHp/MaxSp` ignore equipment. Next step: pinned status_calc_maxhp_pc/maxsp_pc (JOBL_UPPER x1.25, param_equip VIT, equip vs item rate) applied on equip with a persisted resource recalculation; client resend is the pending 0x00B0 capture |
+| S5 | Script execution scope (equipment) | Complete for the in-scope constructs | `1cec909`, `7efa739`: locals, if/else, operators, equipment and wearer context, explore-validated branches |
+| S5 | Recalculation on change | Complete | Stats re-resolved from the inventory on every read; equip-time `CanResolveAfter` gate; switch/drop/refine all re-resolve |
+| S6 | Refine, enchant grade (multiplier, upgrade) | Complete | `df77795`, `60ee647`, `4e7841a` |
+| S7 | Cards (insert, bonus) | Complete | card scripts now see the carrying row's refine (pinned status.cpp:4100), forged/brewed/pet rows skip cards |
+| S7 | Combos | Complete for activation; scripts 90.1% resolve | 4,609 / 5,114; remainder in the coverage table |
+| S7 | Random options | Complete | 248 / 249 (one `for` loop, F20) |
+| S7 | Equipment scripts overall | Partial (measured) | Weapon 94.0%, Armor 88.7%, Card 94.2% of scripted items resolve; every unresolved item is unequippable, never silently partial |
+| S8 | Triggered-effect registration | Complete; dispatch Owned elsewhere (F17 pc_exeautobonus) | `3dd9148` |
+| S8 | Cross-replica ground-item visibility | Complete (server); wire Protocol-pending-capture (0x0ADD) | Was **Missing**; `9ffdc17` (World feed + replica mirror + per-session AREA_SIZE visibility) |
+| S8 | Equip/unequip stat resend | Protocol-pending-capture | `DerivedStatComparer` (`2199654`) |
+| S8 | Client effects (hateffect, specialeffect2) | Typed; wire Protocol-pending-capture | `EquipmentStats.ClientEffects` |
+| S9 | Coverage reporting | Complete | `EquipmentBonusCoverageTests`: NoScript excluded, Live/AwaitingConsumer/NoEffect/Deferred/Unsupported with blocker owners |
 
-**Confirmed real gap found during this audit (not previously tracked as such): "equip switch"** (pinned
-`clif_parse_equipswitch_add/remove/request/request_single`, clif.cpp:22275-22430+) - a prepared alternate
-equipment loadout the player can swap into in one action. `EquipSwitch` exists only as a persisted data column
-(`InventoryItemRow.EquipSwitch`); no mutation/mechanic uses it anywhere. Already correctly listed under
-"Outstanding iRO captures" (`equip switch`) but not previously called out as a MISSING MECHANIC distinct from a
-missing capture - this is genuinely unimplemented gameplay, not merely an unverified wire projection of an
-otherwise-complete feature, and should be scoped as its own increment (data model, mutation primitive,
-eligibility rules) independent of its own client capture gap.
+### Remaining genuine Feature 16 gaps (server side)
+1. Equipment Max HP/SP not applied (S5, above).
+2. ClassUpper tier eligibility (S4, above).
+3. Equipment-script constructs still unsupported but F16-owned: `eaclass`/`BaseJob`/`BaseClass` (~480 scripts; need a generated MAPID job table), trait-stat `readparam` (~70; traits unmodeled), `getequipweaponlv`/`getequiparmorlv`/`getitempos`, `switch`, string locals.
+4. Map flags (MF_NODROP and the GvG/PvP/zone NoEquip bits) - no map-flag runtime exists.
 
-**Overall Feature 16 status: substantially implemented, honestly partial where measured, not complete.** S0-S6
-are Complete. S7's four named requirements all have real, tested implementation at an honestly-documented
-percentage. S8 has triggered-effect registration Complete and most client-sync work correctly Protocol-pending-
-capture per explicit user direction, with one genuinely Missing subsystem (ground-item visibility feed) and one
-newly-identified Missing mechanic (equip switch). No defect found during this audit was left unfixed; every
-Partial/Deferred/Missing classification above is backed by code, tests, or documented evidence, never asserted
-from memory alone.
+### Owned elsewhere (contract named)
+F17: every Feature17Combat parameter in `EquipmentBonusParameters` and all bonus2..5 tables (`EquipmentStats.FlatBonuses`,
+`ExtendedBonuses`, `MultiBonuses`), autobonus dispatch (`TriggeredBonusesOrEmpty`), weapon refine ATK (`WeaponAttack`).
+F18: Feature18Skill parameters, `skill` grants in equipment scripts (~410 scripts, unequippable until F18). F20: `for`,
+`setarray`, persistent variables in item scripts.
+
+### Protocol-pending-capture (each with its capture request in this plan)
+Equip switch (0x0A97-0x0A9D, 0x0ACE); ammo equip ack (0x013C); player drop (CZ_ITEM_THROW + ack); bystander ground-item
+appearance/removal (0x0ADD fields, 0x00A1 for bystanders); equip/unequip stat resend (0x00B0 var ids); the older
+list in "Outstanding iRO captures".
+
+**Overall: Feature 16 is not complete.** Every previously-missing mechanic found in this re-audit (equip switch, player
+drop, ammo, cross-replica visibility, accessory/dual-wield/costume/shadow slots, arrow/card script context) now exists
+server side with tests; the items above remain.
