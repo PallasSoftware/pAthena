@@ -12,7 +12,8 @@ namespace Athena.Net.MapServer.Tests.World.Items;
 //   NoScript         - nothing to execute (not counted as coverage)
 //   Live             - resolves, and at least one effect is applied by today's status calculation
 //   AwaitingConsumer - resolves into typed, accumulated data only a Feature 17/18 (or not-yet-built) consumer reads
-//   NoEffect         - resolves to nothing at all
+//   NoEffect         - resolves, but contributes nothing in the probe context (refine 0, no grade, nothing else worn):
+//                      conditional scripts whose every effect needs a higher refine or another slot land here
 //   Deferred         - the importer could not lower it (named construct + owner)
 //   Unsupported      - lowered, but the equipment-bonus evaluator rejects it; the equipment cannot be worn at all
 //                      (CharacterEquipmentMutationService.CanResolveAfter), so this is never silent effect loss
@@ -31,7 +32,8 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
         if (script is null) return new(Category.NoScript, null);
         if (script.Support == PackScriptSupport.Deferred) return new(Category.Deferred, $"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
         var bonuses = new EquipmentBonusAccumulator();
-        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option), bonuses); }
+        // Nothing else worn: getequip* builtins see empty slots; every branch is still validated (explore pass).
+        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option, EquippedAt: _ => null, Items: ItemCatalog.Current.ById), bonuses); }
         catch (EquipmentBonusResolver.UnsupportedEquipScriptException ex) { return new(Category.Unsupported, ex.Message); }
 
         var p = bonuses.Param;
@@ -89,14 +91,14 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
     }
 
     // Floors over SCRIPTED entries only (Live + AwaitingConsumer + NoEffect): a script-less item never counts as coverage.
-    // Measured after the S7 pc_bonus vocabulary increment (EquipmentBonusParameters). These must only rise; a drop means a
+    // Measured after the S7 evaluator increment (locals, if/else, equipment context). These must only rise; a drop means a
     // construct regressed - investigate it, never lower the bound.
     [Theory]
-    [InlineData("Weapon", 752)]
-    [InlineData("Armor", 2566)]
-    [InlineData("Card", 2919)]
+    [InlineData("Weapon", 1805)]
+    [InlineData("Armor", 4102)]
+    [InlineData("Card", 4323)]
     [InlineData("RandomOption", 248)]
-    [InlineData("Combo", 2365)]
+    [InlineData("Combo", 4200)]
     public void Coverage_ResolvedScriptedEntries_NeverRegressBelowTheVerifiedFloor(string population, int floor)
     {
         var resolved = Count(population, Category.Live, Category.AwaitingConsumer, Category.NoEffect);

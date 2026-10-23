@@ -24,6 +24,7 @@ public sealed class ItemPipelineDataDrivenFixtureTests
     private const uint FixtureItemId = 900_001;
     private const uint HealFixtureItemId = 900_004;
     private const uint UnsupportedFixtureItemId = 900_005;
+    private const uint ConditionalEquipFixtureItemId = 900_006;
     private const uint GrantItemId = 501; // Red_Potion - a real pinned item, so a grant-resolution check downstream (as
                                            // MapClientSession.HandleIroUseItemRequestAsync performs) could resolve it.
 
@@ -78,7 +79,7 @@ public sealed class ItemPipelineDataDrivenFixtureTests
             """);
         // The block-only YAML subset this importer parses has no "Body: []" empty-sequence form, so each otherwise-empty
         // database gets one harmless placeholder Etc item (outside the fixture's own id and every real pinned id range).
-        File.WriteAllText(Path.Combine(root, "db", "re", "item_db_equip.yml"), """
+        File.WriteAllText(Path.Combine(root, "db", "re", "item_db_equip.yml"), $$"""
             Header:
               Type: ITEM_DB
               Version: 1
@@ -86,6 +87,19 @@ public sealed class ItemPipelineDataDrivenFixtureTests
               - Id: 900002
                 AegisName: Test_Fixture_Placeholder_Equip
                 Name: Test Fixture Placeholder Equip
+              - Id: {{ConditionalEquipFixtureItemId}}
+                AegisName: Test_Fixture_Conditional_Armor
+                Name: Test Fixture Conditional Armor
+                Type: Armor
+                Locations:
+                  Armor: true
+                Script: |
+                  .@r = getrefine();
+                  bonus bDef,.@r/2;
+                  if (.@r >= 7) {
+                    bonus2 bSkillAtk,"MG_FIREBOLT",10;
+                  } else
+                    bonus bFlee,3;
             """);
         File.WriteAllText(Path.Combine(root, "db", "re", "item_db_etc.yml"), """
             Header:
@@ -191,6 +205,35 @@ public sealed class ItemPipelineDataDrivenFixtureTests
     // itemheal/percentheal/sc_start, converted by the real importer and round-tripped through the real pack format, plans to the
     // exact effects the MapServer evaluator (the same source file, linked into this project) dispatches - with no code naming it.
     // A second unseen item using a command the evaluator does not run gets an actionable diagnostic instead of a partial effect.
+    // A never-seen equipment id whose script uses a local, getrefine(), an if/else and a skill-named bonus2 lowers fully
+    // through the real importer - the shapes MapServer's EquipmentBonusResolver executes generically (proven catalog-wide by
+    // EquipmentBonusCoverageTests and EquipmentBonusConditionalTests). No equipment-specific importer code is involved.
+    [Fact]
+    public void ConditionalEquipmentFixture_LowersWithEveryConstructTheEquipmentEvaluatorExecutes()
+    {
+        var syntheticRoot = BuildSyntheticRoot();
+        try
+        {
+            string ReadFile(string relative) => File.ReadAllText(Path.Combine(syntheticRoot, relative));
+            var reloaded = ItemPackFormat.Read(ItemPackFormat.Write(ItemPackBuilder.Build(ReadFile, Constants(), new string('a', 40)).Pack));
+            var script = reloaded.Scripts[reloaded.Items.Single(item => item.Id == ConditionalEquipFixtureItemId).ScriptIndex];
+
+            Assert.Equal(PackScriptSupport.Lowered, script.Support);
+            Assert.True(script.Uses.HasFlag(PackScriptUses.Bonus));
+            var kinds = new List<IrKind>();
+            void Walk(IrNode node) { kinds.Add(node.Kind); foreach (var child in node.Items) Walk(child); }
+            Walk(script.Program!);
+            Assert.Contains(IrKind.If, kinds);
+            Assert.Contains(IrKind.Assign, kinds);
+            Assert.Contains(IrKind.Local, kinds);
+            Assert.Contains(IrKind.Str, kinds); // "MG_FIREBOLT", resolved to a skill id at evaluation time
+        }
+        finally
+        {
+            Directory.Delete(syntheticRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public void FixtureScripts_ExecuteThroughTheGenericEvaluator_OrNameWhatBlocksThem()
     {

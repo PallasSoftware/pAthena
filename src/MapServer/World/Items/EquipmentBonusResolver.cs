@@ -53,8 +53,11 @@ public readonly record struct EquipmentMultiBonus(long Param, IReadOnlyList<long
 // current_equip_opt_index / lr_flag). Refine and EnchantGrade are the CARRYING equipment row's own values for its own
 // script AND for the cards compounded into it (status.cpp:4100 passes the equipment's index to card scripts), 0 / -1 for
 // a combo (current_equip_item_index = -1, status.cpp:4060). Option is the random-option slot being evaluated.
+// EquippedAt answers pinned pc_checkequip(sd, equip_bitmask[eqi]) for the getequip* builtins (the row worn on that EQI
+// slot, or null); Items resolves item ids for getiteminfo. Both are read-only: nothing a script reads here can change.
 public readonly record struct EquipmentScriptContext(byte Refine = 0, int EnchantGrade = -1, InventoryOption Option = default,
-    EquipmentBonusHand Hand = EquipmentBonusHand.Right);
+    EquipmentBonusHand Hand = EquipmentBonusHand.Right, Func<int, CharacterInventoryItem?>? EquippedAt = null,
+    IReadOnlyDictionary<int, ItemDefinition>? Items = null);
 
 // Everything every equipped script contributed, folded with each pc_bonus case's own pinned rule.
 public sealed class EquipmentBonusAccumulator
@@ -150,17 +153,40 @@ public static class EquipmentBonusResolver
         if (script.Support == PackScriptSupport.Deferred)
             throw new UnsupportedEquipScriptException($"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
         if (script.Program is null) throw new UnsupportedEquipScriptException("no-program");
-        new Run(context, into).Statement(script.Program);
+        // Every branch must be supported, not just the one today's refine/equipment takes: otherwise an item accepted at +0
+        // would stop resolving at +10. The explore pass takes every branch into a discarded accumulator.
+        new Run(context, new EquipmentBonusAccumulator(), explore: true).Statement(script.Program);
+        new Run(context, into, explore: false).Statement(script.Program);
     }
 
-    private sealed class Run(EquipmentScriptContext context, EquipmentBonusAccumulator into)
+    // One execution of one script: pinned `.@` variables live exactly as long as this run (script_state scope).
+    private sealed class Run(EquipmentScriptContext context, EquipmentBonusAccumulator into, bool explore)
     {
+        private readonly Dictionary<string, long> _locals = new(StringComparer.OrdinalIgnoreCase);
+
         public void Statement(IrNode node)
         {
             switch (node.Kind)
             {
                 case IrKind.Block:
                     foreach (var child in node.Items) Statement(child);
+                    return;
+                case IrKind.If:
+                    // If[cond, then, else?] - pinned C_EQ..C_LOR yield 1/0; any nonzero condition takes the branch.
+                {
+                    var taken = Value(node.Items[0]) != 0;
+                    var hasElse = node.Items.Count > 2 && node.Items[2].Kind != IrKind.Empty;
+                    if (taken || explore) Statement(node.Items[1]);
+                    if ((!taken || explore) && hasElse) Statement(node.Items[2]);
+                    return;
+                }
+                case IrKind.ExprStmt when node.Items is [{ Kind: IrKind.Assign } assign]:
+                    Assign(assign);
+                    return;
+                case IrKind.Assign:
+                    Assign(node);
+                    return;
+                case IrKind.Empty:
                     return;
                 case IrKind.Command when node.Text is "bonus" or "bonus2" or "bonus3" or "bonus4" or "bonus5":
                     Bonus(node);
@@ -259,9 +285,31 @@ public static class EquipmentBonusResolver
             return new PackScript(node.Text ?? string.Empty, PackScriptSupport.Lowered, null, owner, uses, program);
         }
 
-        // Expressions over literals, script constants (already resolved to their pinned numbers by the importer), getrefine()
-        // and getrandomoptinfo(). script.cpp BUILDIN_FUNC(getrefine) with no arguments reads the currently-evaluating item's
-        // refine; BUILDIN_FUNC(getrandomoptinfo) the current random-option slot (script.cpp:24833-24858).
+        // `.@name = value;` and the compound forms. Only integer locals: a string local (.@name$), or any non-local target,
+        // needs general script storage (Feature 20) - the importer already defers persistent variables.
+        private void Assign(IrNode node)
+        {
+            if (node.Items is not [{ Kind: IrKind.Local, Text: { } name }, var valueNode] || name.EndsWith('$'))
+                throw new UnsupportedEquipScriptException("assign-target-not-integer-local");
+            var value = Value(valueNode);
+            var current = _locals.GetValueOrDefault(name);
+            _locals[name] = (IrOp)node.Number switch
+            {
+                IrOp.Set => value,
+                IrOp.AddSet => current + value,
+                IrOp.SubSet => current - value,
+                IrOp.MulSet => current * value,
+                IrOp.DivSet when value != 0 => current / value,
+                IrOp.ModSet when value != 0 => current % value,
+                IrOp.DivSet or IrOp.ModSet when explore => 0,
+                _ => throw new UnsupportedEquipScriptException($"assign-op:{(IrOp)node.Number}"),
+            };
+        }
+
+        // Deterministic expressions: literals, script constants (already resolved to their pinned numbers by the importer),
+        // locals, arithmetic/comparison/logic operators, and the read-only equipment builtins below. script.cpp
+        // BUILDIN_FUNC(getrefine) with no arguments reads the currently-evaluating item's refine; BUILDIN_FUNC(getrandomoptinfo)
+        // the current random-option slot (script.cpp:24833-24858).
         public long Value(IrNode node)
         {
             switch (node.Kind)
@@ -269,6 +317,72 @@ public static class EquipmentBonusResolver
                 case IrKind.Int:
                 case IrKind.Const:
                     return node.Number;
+                case IrKind.Local when node.Text is { } local && !local.EndsWith('$'):
+                    return _locals.GetValueOrDefault(local); // pinned: an unset variable reads as 0
+                case IrKind.Conditional:
+                {
+                    var condition = Value(node.Items[0]) != 0;
+                    if (explore) { var a = Value(node.Items[1]); var b = Value(node.Items[2]); return condition ? a : b; }
+                    return condition ? Value(node.Items[1]) : Value(node.Items[2]);
+                }
+                case IrKind.Unary when (IrOp)node.Number is IrOp.Not:
+                    return Value(node.Items[0]) == 0 ? 1 : 0;
+                case IrKind.Unary when (IrOp)node.Number is IrOp.Plus:
+                    return Value(node.Items[0]);
+                case IrKind.Unary when (IrOp)node.Number is IrOp.BitNot:
+                    return ~Value(node.Items[0]);
+                case IrKind.Binary when (IrOp)node.Number is IrOp.Eq or IrOp.Ne or IrOp.Lt or IrOp.Gt or IrOp.Le or IrOp.Ge or IrOp.LogAnd or IrOp.LogOr
+                    or IrOp.Mod or IrOp.BitAnd or IrOp.BitOr or IrOp.BitXor or IrOp.Shl or IrOp.Shr:
+                {
+                    var a = Value(node.Items[0]);
+                    var b = Value(node.Items[1]);
+                    return (IrOp)node.Number switch
+                    {
+                        IrOp.Eq => a == b ? 1 : 0,
+                        IrOp.Ne => a != b ? 1 : 0,
+                        IrOp.Lt => a < b ? 1 : 0,
+                        IrOp.Gt => a > b ? 1 : 0,
+                        IrOp.Le => a <= b ? 1 : 0,
+                        IrOp.Ge => a >= b ? 1 : 0,
+                        IrOp.LogAnd => a != 0 && b != 0 ? 1 : 0,
+                        IrOp.LogOr => a != 0 || b != 0 ? 1 : 0,
+                        IrOp.Mod when b != 0 => a % b,
+                        IrOp.Mod when explore => 0,
+                        IrOp.BitAnd => a & b,
+                        IrOp.BitOr => a | b,
+                        IrOp.BitXor => a ^ b,
+                        IrOp.Shl => a << (int)b,
+                        IrOp.Shr => a >> (int)b,
+                        _ => throw new UnsupportedEquipScriptException("bonus-value-modulo-by-zero"),
+                    };
+                }
+                case IrKind.Call when node.Text is "min" or "minimum" or "max" or "maximum" && node.Items.Count > 0:
+                {
+                    // BUILDIN_FUNC(minmax): folds every integer argument.
+                    var values = node.Items.Select(Value);
+                    return node.Text!.StartsWith("min") ? values.Min() : values.Max();
+                }
+                case IrKind.Call when node.Text == "pow" && node.Items.Count == 2:
+                    // BUILDIN_FUNC(pow): (int32)pow((double)a, (double)b).
+                    return (int)Math.Clamp(Math.Pow(Value(node.Items[0]), Value(node.Items[1])), int.MinValue, int.MaxValue);
+                case IrKind.Call when node.Text == "vip_status" && node.Items.Count is 1 or 2:
+                    // BUILDIN_FUNC(vip_status) pushes 0 when VIP_ENABLE is undefined - the pinned default (config/core.hpp:52).
+                    return 0;
+                case IrKind.Call when node.Text == "getenchantgrade" && node.Items.Count is 0 or 1:
+                {
+                    // BUILDIN_FUNC(getenchantgrade): the evaluating item (EQI_COMPOUND_ON) or the row on an EQI slot; -1 for none.
+                    if (node.Items.Count == 0) return context.EnchantGrade;
+                    return EquippedRow(node.Items[0]) is { } row ? row.Details.EnchantGrade : -1;
+                }
+                case IrKind.Call when node.Text == "getequiprefinerycnt" && node.Items.Count == 1:
+                    // BUILDIN_FUNC(getequiprefinerycnt): the refine of the row on that EQI slot, 0 when the slot is empty.
+                    return EquippedRow(node.Items[0])?.Refine ?? 0;
+                case IrKind.Call when node.Text == "getequipid" && node.Items.Count == 1:
+                    // BUILDIN_FUNC(getequipid): the item id worn on that EQI slot, -1 when empty. (The no-argument form reads
+                    // current_equip_item_index, which this context does not carry for combos; it stays unsupported.)
+                    return EquippedRow(node.Items[0])?.ItemId ?? -1;
+                case IrKind.Call when node.Text == "getiteminfo" && node.Items.Count == 2:
+                    return ItemInfo(Value(node.Items[0]), Value(node.Items[1]));
                 case IrKind.Call when node.Text == "getrefine" && node.Items.Count == 0:
                     return context.Refine;
                 case IrKind.Call when node.Text == "getrandomoptinfo" && node.Items.Count == 1:
@@ -287,13 +401,48 @@ public static class EquipmentBonusResolver
                 case IrKind.Binary when (IrOp)node.Number is IrOp.Add or IrOp.Sub or IrOp.Mul or IrOp.Div:
                     var left = Value(node.Items[0]);
                     var right = Value(node.Items[1]);
-                    if (right == 0 && (IrOp)node.Number == IrOp.Div) throw new UnsupportedEquipScriptException("bonus-value-division-by-zero");
+                    if (right == 0 && (IrOp)node.Number == IrOp.Div)
+                        return explore ? 0 : throw new UnsupportedEquipScriptException("bonus-value-division-by-zero");
                     return (IrOp)node.Number switch { IrOp.Add => left + right, IrOp.Sub => left - right, IrOp.Mul => left * right, _ => left / right };
+                case IrKind.Call:
+                    throw new UnsupportedEquipScriptException($"function:{node.Text}");
+                case IrKind.Param:
+                    throw new UnsupportedEquipScriptException($"character-param:{node.Text}");
                 default:
                     throw new UnsupportedEquipScriptException("bonus-value-not-constant");
             }
         }
+
+        // The EQI argument of a getequip* builtin: pinned equip_index_check(num) && pc_checkequip(sd, equip_bitmask[num]).
+        private CharacterInventoryItem? EquippedRow(IrNode eqiNode)
+        {
+            var eqi = Value(eqiNode);
+            if (context.EquippedAt is null) throw new UnsupportedEquipScriptException("equipment-context-unavailable");
+            return eqi is >= 0 and < 21 ? context.EquippedAt((int)eqi) : null;
+        }
+
+        // BUILDIN_FUNC(getiteminfo) for the numeric item properties equipment scripts read (ITEMINFO_* constants,
+        // script_constants.hpp); an unknown item is -1. Other properties stay unsupported.
+        private long ItemInfo(long itemId, long type)
+        {
+            if (context.Items is null) throw new UnsupportedEquipScriptException("item-context-unavailable");
+            if (!context.Items.TryGetValue((int)itemId, out var item)) return -1;
+            return type switch
+            {
+                ItemInfoLocations => item is IEquippableItemDefinition equippable ? equippable.EquipLocation : 0,
+                ItemInfoWeaponLevel => item is WeaponItemDefinition weapon ? weapon.WeaponLevel : 0,
+                ItemInfoArmorLevel => item is ArmorItemDefinition ? item.Meta?.ArmorLevel ?? 0 : 0,
+                ItemInfoEquipLevelMin => item.Meta?.EquipLevelMin ?? 0,
+                ItemInfoSlot => item.Meta?.Slots ?? 0,
+                ItemInfoView or ItemInfoSubType when item is WeaponItemDefinition weaponType => (long)weaponType.WeaponType,
+                ItemInfoSubType when item is AmmoItemDefinition ammo => ammo.AmmoType,
+                _ => throw new UnsupportedEquipScriptException($"getiteminfo-type:{type}"),
+            };
+        }
     }
+
+    // script_constants.hpp ITEMINFO_* (enum e_iteminfo, script.hpp).
+    private const long ItemInfoLocations = 5, ItemInfoSlot = 10, ItemInfoView = 11, ItemInfoEquipLevelMin = 12, ItemInfoWeaponLevel = 13, ItemInfoArmorLevel = 19, ItemInfoSubType = 20;
 
     // The pc_bonus cases that fold into sd->indexed_bonus.param_bonus (pc.cpp:3734-3742, 4290-4312: SP_STR..SP_LUK,
     // SP_ALL_STATS, SP_AGI_VIT, SP_AGI_DEX_STR) or the HP/SP accumulators EquipmentParamBonus carries (sd->bonus.hp/sp,

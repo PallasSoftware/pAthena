@@ -284,6 +284,11 @@ public sealed class IroStatRules : IStatRules
         // pinned rule (EquipmentBonusParameters); an unsupported script anywhere rejects the whole equipment set, never a
         // silently partial bonus.
         var bonuses = new EquipmentBonusAccumulator();
+        // Pinned pc_checkequip(sd, equip_bitmask[eqi]) for the getequip* builtins: the worn row on that EQI slot.
+        var slotMasks = EquipSlots.Bitmask.Values.ToArray();
+        CharacterInventoryItem? EquippedAt(int eqi) => eqi < slotMasks.Length ? equipped.FirstOrDefault(r => (r.Equip & slotMasks[eqi]) != 0) : null;
+        EquipmentScriptContext Context(CharacterInventoryItem row, EquipmentBonusHand hand) =>
+            new(row.Refine, row.Details.EnchantGrade, default, hand, EquippedAt, items);
         try
         {
             foreach (var row in equipped)
@@ -302,7 +307,7 @@ public sealed class IroStatRules : IStatRules
             // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items and/or cards,
             // see ComboResolver) is satisfied runs its shared script with current_equip_item_index = -1 (status.cpp:4060).
             foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
-                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(), bonuses);
+                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items), bonuses);
             // Cards run with the CARRYING row as current_equip_item_index (status.cpp:4100), so getrefine() inside a card
             // reads that row's refine; the row worn exactly at EQP_HAND_L runs its cards and options as LR_FLAG_WEAPON.
             foreach (var row in equipped)
@@ -326,9 +331,6 @@ public sealed class IroStatRules : IStatRules
             bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi);
         return true;
     }
-
-    private static EquipmentScriptContext Context(CharacterInventoryItem row, EquipmentBonusHand hand) =>
-        new(row.Refine, row.Details.EnchantGrade, default, hand);
 
     private static EquipmentBonusHand LeftHandOf(CharacterInventoryItem row) =>
         row.Equip == EquipSlots.Bitmask[EquipSlot.HandLeft] ? EquipmentBonusHand.Left : EquipmentBonusHand.Right;

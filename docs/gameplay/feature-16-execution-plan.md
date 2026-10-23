@@ -107,7 +107,22 @@ data for its named owner. Also fixed (pinned status_calc_pc): passes run in EQI 
 random options); the ammo script runs as LR_FLAG_ARROW (its stat bonuses were wrongly summed); card scripts see the carrying
 row's refine/grade (they saw 0); forged/brewed/pet rows (CARD0_FORGE/CREATE/PET) skip card scripts.
 
-Remaining blockers are dominated by control flow and locals (`.@r = getrefine();`, `if (...)`, ~5,900 ExprStmt + ~1,400
+**Evaluator increment (S7, same pipeline).** `EquipmentBonusResolver` now executes integer `.@` locals (scoped to one
+script run), `if`/`else`, `?:`, comparison/logical/bit operators, `min`/`max`/`pow`, `vip_status` (0: pinned VIP_ENABLE is
+off) and read-only equipment context: `getrefine()`, `getenchantgrade([EQI])`, `getequiprefinerycnt(EQI)`, `getequipid(EQI)`,
+`getiteminfo(id, LOCATIONS/SLOT/VIEW/EQUIPLEVELMIN/WEAPONLEVEL/ARMORLEVEL/SUBTYPE)`. Every branch is validated before the
+real run (an explore pass over all branches), so an item accepted at +0 can never stop resolving at +10. Character-dependent
+reads (`BaseLevel`, `readparam`, `getskilllv`, `BaseJob`/`BaseClass`/`eaclass`, ...) are rejected by name, never read as 0.
+
+| Population | Scripted | Resolved after vocabulary | Resolved after evaluator | Live / AwaitingConsumer / NoEffect-at-probe |
+|---|---|---|---|---|
+| Weapon | 2,384 | 752 | 1,805 | 441 / 1,311 / 53 |
+| Armor | 5,508 | 2,566 | 4,102 | 1,448 / 2,610 / 44 |
+| Card | 5,083 | 2,919 | 4,323 | 909 / 3,321 / 93 |
+| Random option | 249 | 248 | 248 | 11 / 237 / 0 |
+| Combo | 5,114 | 2,365 | 4,200 | 456 / 3,564 / 180 |
+
+Previously remaining blockers were dominated by control flow and locals (`.@r = getrefine();`, `if (...)`, ~5,900 ExprStmt + ~1,400
 If + ~1,200 non-constant values) - the evaluator increment below - then F18 `skill` grants (~410), client-only `hateffect`
 (~130), F20 general-script deferrals (~25) and one invalid pinned skill name (`WZ_METEORSTORM`).
 
