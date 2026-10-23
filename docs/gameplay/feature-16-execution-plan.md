@@ -79,40 +79,37 @@ That settles 0x0A97/0x0A98 (add + ack, whose flag width changed at 20170502), 0x
 login/list projection), 0x0A9C/0x0A9D (full switch + reply, and whether a 0x0A9D precedes the equip acks), 0x0ACE (single
 switch), and which equip/appearance acks accompany each swap.
 
-## S7 equipment-bonus script coverage (measured against commit 4e7841a, EquipmentBonusCoverageTests.cs)
-Scope: only scripts `IStatRules.TryResolveEquipment` can actually reach - every Weapon/Armor/Card item's own `Script`,
-every `item_randomopt_db.yml` entry, every `item_combos.yml` entry's shared script. Deliberately excludes the ~21k
-other distinct scripts in the pack (Usable/Healing/consumable on-use scripts), which are not equipment-bonus scripts
-and would make the percentage misleading.
+## S7 equipment-bonus script coverage
 
-| Population | Eligible | Resolved (flat `bonus` + `bonus2`/`bonus3` extended) | Gap |
-|---|---|---|---|
-| Weapon/Armor/Card item scripts | 17,353 | 6,183 (35.6%) | real SP_* params beyond the current vocabulary (see below) |
-| Random options (`item_randomopt_db.yml`) | 249 | 189 (75.9%) | same SP_* gap, plus the `bAtkEle`-style non-delta single-constant form |
-| Combos (`item_combos.yml`) | 5,114 | 515 (10.1%) | same SP_* gap on the combo's OWN shared script (activation logic itself is correct for every combo - this measures only whether the combo's bonus payload resolves) |
+Measured by `EquipmentBonusCoverageTests` over the real `ItemCatalog.Current` (every Weapon/Armor/Card Script, every
+`item_randomopt_db.yml` entry, every `item_combos.yml` shared Script). Categories: **NoScript** (never counted as coverage),
+**Live** (resolves and at least one effect reaches today's status calculation), **AwaitingConsumer** (resolves into typed,
+accumulated data a Feature 17/18 or not-yet-built consumer reads), **NoEffect**, **Deferred** (not lowered), **Unsupported**
+(lowered but rejected: the equipment cannot be worn at all - `CanResolveAfter` - so this is never silent effect loss, but it
+is a real gameplay gap). The old S7 floors counted NoScript rows as resolved; 4,378 of the 6,183 "resolved" items had no
+script, so the honest pre-increment figure was 1,805 of 12,975 scripted items (13.9%).
 
-S7 S8-adjacent addition (commit 4e7841a): `autobonus`/`autobonus2`/`autobonus3` are now a recognized, registered
-construct (`EquipmentBonusResolver` extracts a typed `TriggeredBonusDefinition` - the inner bonus script, rate,
-duration, attack-type filter, and an untyped client-effect `other_script`) instead of an automatic rejection -
-this is the "item-triggered-effect registration" half of the ownership table's own phrase; the actual on-attack
-DISPATCH (`pc_exeautobonus`'s combat-loop call site) stays Feature 17's own integration work, same deferred-but-
-typed pattern as `WeaponRefineAtk`/`EquipmentExtendedBonus`. The resolved-count increase from this alone is small
-(6182->6183 items; combos unchanged at 515) because most real autobonus-using scripts are guarded by `if`/local-
-variable logic this resolver's outer statement walk still rejects - the registration primitive itself is correct
-and tested (21 EquipmentBonusResolverTests cases including the real pinned `other_script` shape), but most real
-autobonus items won't resolve until `if`/variable support lands (same control-flow gap blocking the harder half
-of combos).
+| Population | Scripted | Resolved before (4e7841a) | Resolved after pc_bonus vocabulary | of which Live / AwaitingConsumer |
+|---|---|---|---|---|
+| Weapon | 2,384 | 152 | 752 | 317 / 435 |
+| Armor | 5,508 | 869 | 2,566 | 1,074 / 1,492 |
+| Card | 5,083 | 784 | 2,919 | 733 / 2,184 (+2 NoEffect) |
+| Random option | 249 | 189 | 248 | 11 / 237 |
+| Combo | 5,114 | 515 | 2,365 | 349 / 2,016 |
 
-**The gap is NOT a defect in S7's card/combo/random-option wiring.** `EquipmentBonusResolver` currently recognizes: the
-6 primary stats (bStr/bAgi/bVit/bInt/bDex/bLuk), 6 HP/SP-family params (bMaxHP/bMaxSP/bMaxHPrate/bMaxSPrate/
-bHPrecovRate/bSPrecovRate), and `bonus2`/`bonus3` accumulated generically into `EquipmentExtendedBonus` (uninterpreted,
-Feature 17's job to consume). Pinned `pc.cpp` has **506** distinct `case SP_*` entries across `pc_bonus`/`pc_bonus2`/
-`pc_bonus3`/`pc_bonus4`/`pc_bonus5` - this resolver implements a small fraction. The most common unmodeled params seen
-in the real data: `bFlee`(47), `bBaseAtk`(1014), `bLongAtkRate`(2012), `bMatk`(2046), `bMatkRate`(1025), `bAtkRate`(1028),
-`bAllStats`(1073), `bAspdRate`(1015), `bDelayrate`(1083) - almost all genuinely combat-formula territory (Feature 17's
-"cardfix, elements... formula branches" per the ownership table), not primary character stats. Widening this vocabulary
-is real, substantial, separately-scoped future work - see `feature16-s7-cards-combos-randomopts-scope.md` memory.
-`EquipmentBonusCoverageTests` locks in these counts as a floor (regression-only, never silently lowered).
+What changed (S7 vocabulary increment): `EquipmentBonusParameters` holds every one of the 150 single-value `pc_bonus` cases
+(pc.cpp:3725-4488) with its pinned combine rule (add, x10, negated, max, min, set, bit-or, mask, flag, 0..100 cap), lr_flag
+behavior (arrow/left-hand separate or ignored) and consumer; script constants are matched case-insensitively like the pinned
+symbol table. `bonus2..bonus5` accept skill names (skill_name2id) and numeric sub-keys; script constants are valid values;
+1-argument flag bonuses work. Live today: primary stats/bAllStats family, bHit, bFlee, bFlee2, bCritical, bDef, bDef2,
+bMdef2 (CalculateDerivedStats). Everything else is typed `EquipmentStats.FlatBonuses`/`ExtendedBonuses`/`MultiBonuses`
+data for its named owner. Also fixed (pinned status_calc_pc): passes run in EQI order (item scripts, ammo, combos, cards,
+random options); the ammo script runs as LR_FLAG_ARROW (its stat bonuses were wrongly summed); card scripts see the carrying
+row's refine/grade (they saw 0); forged/brewed/pet rows (CARD0_FORGE/CREATE/PET) skip card scripts.
+
+Remaining blockers are dominated by control flow and locals (`.@r = getrefine();`, `if (...)`, ~5,900 ExprStmt + ~1,400
+If + ~1,200 non-constant values) - the evaluator increment below - then F18 `skill` grants (~410), client-only `hateffect`
+(~130), F20 general-script deferrals (~25) and one invalid pinned skill name (`WZ_METEORSTORM`).
 
 ## S9 completion audit (measured against commit 2199654, 2026-10-23)
 

@@ -307,19 +307,33 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(0, stats.HardDefense);
     }
 
-    // S5 scope boundary: an item mixing a modeled flat bonus (bonus bStr,2;) with an unmodeled
-    // bonus2 (bSkillAtk - card/combo/skill-target territory, explicitly deferred) must reject the
-    // WHOLE equip, never silently apply just the modeled half - pinned db/re/item_db_equip.yml Id
-    // 1427 "Spear_Of_Excellent": `bonus2 bSkillAtk,"SM_MAGNUM",25; bonus bStr,2;`.
+    // Scope boundary: an item mixing modeled bonuses with an unmodeled construct must reject the WHOLE
+    // equip, never silently apply just the modeled half - pinned db/re/item_db_equip.yml Id 1135
+    // "Cutlas": `skill "SM_BASH",5; bonus bStr,2; bonus bDef,1;` (the skill grant is Feature 18).
     [Fact]
     public void EquipmentStats_ItemMixingModeledAndUnmodeledBonus_IsUnresolvedNotPartiallyApplied()
+    {
+        const int cutlas = 1135;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cutlas, 1, 0x000002, true, 0, 0, 0)]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment); // never the bStr,2 / bDef,1 half silently applied
+    }
+
+    // Pinned db/re/item_db_equip.yml Id 1427 "Spear_Of_Excellent": `bonus2 bSkillAtk,"SM_MAGNUM",25; bonus bStr,2;`.
+    // BUILDIN_FUNC(bonus) resolves the skill name through skill_name2id (SM_MAGNUM = skill 7 in db/re/skill_db.yml) and
+    // pc_bonus2 keys sd->skillatk by it; the bStr half lands in param_bonus.
+    [Fact]
+    public void EquipmentStats_SkillNameKeyedBonus2_ResolvesTheSkillId_AndKeepsTheFlatHalf()
     {
         const int spearOfExcellent = 1427;
         var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[spearOfExcellent]).EquipLocation;
         var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, spearOfExcellent, 1, equipLocation, true, 0, 0, 0)]);
 
-        Assert.False(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
-        Assert.Equal(default, equipment); // never the bStr,2 half silently applied
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(2, equipment.ParamBonus.Strength);
+        var skillAtk = Assert.Single(equipment.ExtendedBonusesOrEmpty);
+        Assert.Equal((7L, 25), (skillAtk.SubKey1, skillAtk.Value));
     }
 
     // S5 bonus model: pinned db/re/item_db_equip.yml Id 2601 "Ring" (Both_Accessory, `bonus bStr,2;`) is a real equip
@@ -648,19 +662,37 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
         Assert.Equal(new EquipmentParamBonus(0, Agility: 1, 0, Intelligence: 1, 0, 0), equipment.ParamBonus);
     }
 
-    // A real card whose own script this resolver cannot fully account for (bonus2-5, autobonus, or - as
-    // discovered investigating this very slice - a second unsupported bonus line like Poring_Card's own
-    // `bonus bFlee2,1;`) must reject the WHOLE equip, not silently apply only the supported line(s).
+    // A real card whose own script this resolver cannot fully account for must reject the WHOLE equip, not
+    // silently apply only the supported line(s): Vitata Card (4053) `skill "AL_HEAL",1; bonus bUseSPrate,25;`
+    // compounded into a Clip (2607, `bonus bMaxSP,10;`).
     [Fact]
     public void EquipmentStats_RealCardWithAnUnsupportedSecondBonusLine_IsRejected()
     {
-        const int cottonShirt = 2301;
-        const int poringCard = 4001; // bonus bLuk,2; bonus bFlee2,1; - the second line is unsupported.
-        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
-            Detail: ItemInstanceDetail.Empty with { Card0 = poringCard, Revision = 0 })]);
+        const int clip = 2607, vitataCard = 4053;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, clip, 1, 0x000008, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = vitataCard, Revision = 0 })]);
 
         Assert.False(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
         Assert.Equal(default, equipment);
+    }
+
+    // Poring Card (4001) `bonus bLuk,2; bonus bFlee2,1;` in a Cotton Shirt: pc_bonus SP_FLEE2 adds val*10 to
+    // status->flee2 (pc.cpp:3822-3826), which status_calc_misc then extends by luk + 10 (perfect dodge in tenths). For a
+    // base-1 character (LUK 1) the card's LUK +2 gives luk 3: flee2 = 10 + 3 + 10 = 23.
+    [Fact]
+    public void EquipmentStats_PoringCard_AddsLuckAndTenPerfectFleeTenths()
+    {
+        const int cottonShirt = 2301, poringCard = 4001;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = poringCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(2, equipment.ParamBonus.Luck);
+        Assert.Equal(10, equipment.FlatBonusesOrEmpty.Get("bFlee2"));
+        var state = new CharacterGameplayState(CharacterId: 1, Version: 0, JobClass: 0, BaseLevel: 1, JobLevel: 1, BaseExperience: 0, JobExperience: 0,
+            CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
+        var snapshot = new CharacterStatusSnapshot(state, new EffectiveCharacterStats(1, 1, 1, 1, 1, 3, 0, 0), DateTimeOffset.UnixEpoch);
+        Assert.Equal(23, Rules.Stats.CalculateDerivedStats(snapshot, equipment).PerfectFlee);
     }
 
     // S7 random options: item_randomopt_db.yml Id 3 "VAR_STRAMOUNT" (`bonus bStr,getrandomoptinfo(ROA_VALUE);`)

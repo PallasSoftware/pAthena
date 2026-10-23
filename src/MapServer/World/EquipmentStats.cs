@@ -26,8 +26,18 @@ namespace Athena.Net.MapServer.World;
 public readonly record struct EquipmentStats(
     int HardDefense, WeaponItemDefinition? Weapon, EquipmentParamBonus ParamBonus = default,
     int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0,
-    IReadOnlyList<EquipmentExtendedBonus>? ExtendedBonuses = null, IReadOnlyList<TriggeredBonusDefinition>? TriggeredBonuses = null)
+    IReadOnlyList<EquipmentExtendedBonus>? ExtendedBonuses = null, IReadOnlyList<TriggeredBonusDefinition>? TriggeredBonuses = null,
+    EquipmentFlatBonuses? FlatBonuses = null, IReadOnlyList<EquipmentMultiBonus>? MultiBonuses = null)
 {
+    // Every single-value pc_bonus parameter outside EquipmentParamBonus, combined with its pinned rule. Each parameter's
+    // EquipmentBonusParameters entry names its consumer: LiveDerivedStats ones (bDef, bDef2, bMdef2, bHit, bFlee, bFlee2,
+    // bCritical) are applied by CalculateDerivedStats; Feature17Combat/Feature18Skill ones are typed, accumulated data the
+    // owning feature reads - not applied to live gameplay yet.
+    public EquipmentFlatBonuses FlatBonusesOrEmpty => FlatBonuses ?? EquipmentFlatBonuses.Empty;
+
+    // bonus4/bonus5 entries (autospell / status-on-skill families) - Feature 17/18 dispatch data, carried uninterpreted.
+    public IReadOnlyList<EquipmentMultiBonus> MultiBonusesOrEmpty => MultiBonuses ?? [];
+
     // bonus2/bonus3 entries (element/race/size/class damage modifiers) accumulated from every equipped item's own
     // script, every equipped card and every occupied random-option slot (EquipmentBonusResolver's own `extended`
     // output) - typed, correctly-accumulated Feature 16 data, NOT yet consumed by any Feature 17 combat formula.

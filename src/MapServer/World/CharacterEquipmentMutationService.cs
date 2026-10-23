@@ -69,6 +69,18 @@ public static class EquipSlots
     // Pinned EQP_ACC = EQP_ACC_L|EQP_ACC_R (pc.hpp:1134).
     public const uint Acc = 0x000080 | 0x000008;
 
+    // The first EQI index (pinned equip_index order) a worn mask occupies; int.MaxValue for a mask on no modeled slot.
+    public static int EqiOrder(uint equip)
+    {
+        var index = 0;
+        foreach (var mask in Bitmask.Values)
+        {
+            if ((equip & mask) != 0) return index;
+            index++;
+        }
+        return int.MaxValue;
+    }
+
     // Pinned EQP_SHADOW_ACC / EQP_SHADOW_ARMS (pc.hpp:1138-1139).
     public const uint ShadowAcc = 0x100000 | 0x200000;
     public const uint ShadowArms = 0x020000 | 0x040000;

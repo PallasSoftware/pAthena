@@ -189,21 +189,22 @@ public sealed class EquipmentBonusResolverTests
     [Fact]
     public void Resolve_AutoBonus_WithUnsupportedInnerScript_ThrowsUnsupported()
     {
-        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bFlee", Number: 47), new(IrKind.Int, Number: 5)]);
+        // bFame is a script constant but no pc_bonus case (pinned: "unknown bonus type" warning).
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bFame", Number: 59), new(IrKind.Int, Number: 5)]);
         var script = Lowered(new(IrKind.Block, Children:
         [
-            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bFlee,5; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
+            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bFame,5; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
         ]));
         Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
     }
 
     [Fact]
-    public void Resolve_AutoBonus_NonConstantRate_ThrowsUnsupported()
+    public void Resolve_AutoBonus_StringRate_ThrowsUnsupported()
     {
         var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]), new(IrKind.Int, Number: 5)]);
         var script = Lowered(new(IrKind.Block, Children:
         [
-            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bStr,5; }", innerBonus), new(IrKind.Call, Text: "getrefine"), new(IrKind.Int, Number: 5000)]),
+            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bStr,5; }", innerBonus), new(IrKind.Str, Text: "100"), new(IrKind.Int, Number: 5000)]),
         ]));
         Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
     }
@@ -259,7 +260,7 @@ public sealed class EquipmentBonusResolverTests
     public void Resolve_UnknownParam_ThrowsUnsupported()
     {
         var script = Lowered(new(IrKind.Block, Children: [new(IrKind.Command, Text: "bonus",
-            Children: [new(IrKind.Const, Text: "bMaxHP", Number: 999), new(IrKind.Int, Number: 10)])]));
+            Children: [new(IrKind.Const, Text: "bFame", Number: 59), new(IrKind.Int, Number: 10)])]));
         Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
     }
 

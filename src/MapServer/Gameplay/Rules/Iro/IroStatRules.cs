@@ -50,7 +50,7 @@ public sealed class IroStatRules : IStatRules
         var level = snapshot.State.BaseLevel;
         var b = ApplyEquipmentBonus(BasePrimaryStats(snapshot.State), equipment.ParamBonus);
         var e = snapshot.Effective;
-        var baseDerived = BaseDerived(level, b);
+        var baseDerived = BaseDerived(level, b, equipment.FlatBonusesOrEmpty);
 
         // status_calc_bl_main only rebuilds BATK when the base value is non-zero (status.cpp:5964).
         var batk = baseDerived.BaseAttack;
@@ -79,7 +79,8 @@ public sealed class IroStatRules : IStatRules
         // `(refinedef+50)/100` truncation, applied once to the SUM of every equipped armor row's
         // own refine bonus, not per-row); status_calc_def with no active DEF status is
         // cap_value(def, SHRT_MIN, SHRT_MAX).
-        var hardDef = Math.Clamp(equipment.HardDefense + (equipment.ArmorRefineDefense + 50) / 100, short.MinValue, ShortMax);
+        // Script bDef (pc_bonus SP_DEF1: status->def += val) lands in the same status->def before the refine term.
+        var hardDef = Math.Clamp(equipment.HardDefense + equipment.FlatBonusesOrEmpty.Get("bDef") + (equipment.ArmorRefineDefense + 50) / 100, short.MinValue, ShortMax);
 
         // RENEWAL status_calc_bl_main MATK for BL_PC (status.cpp:6283-6361), NOT status_base_matk_min/max
         // alone (that function is only the StatusMATK term - 2559-2591). The live player formula is
@@ -122,14 +123,16 @@ public sealed class IroStatRules : IStatRules
     }
 
     // status_calc_misc, RENEWAL, BL_PC (status.cpp:2638-2745).
-    private static DerivedStats BaseDerived(int level, PrimaryStats s)
+    // Equipment-script bonuses (pc_bonus SP_HIT/FLEE1/FLEE2/CRITICAL/DEF2/MDEF2, already x10 where pinned scales) are what
+    // base_status holds when status_calc_misc adds the level/stat terms and caps (status.cpp:4405, 2600-2680).
+    private static DerivedStats BaseDerived(int level, PrimaryStats s, EquipmentFlatBonuses bonus)
     {
-        var hit = Math.Clamp(level + s.Dexterity + s.Luck / 3 + 175, 1, ShortMax);
-        var flee = Math.Clamp(level + s.Agility + s.Luck / 5 + 100, 1, ShortMax);
-        var def2 = Math.Clamp((int)(((float)level + s.Vitality) / 2 + (float)s.Agility / 5), 0, ShortMax);
-        var mdef2 = Math.Clamp((int)(s.Intelligence + (float)level / 4 + (float)(s.Dexterity + s.Vitality) / 5), 0, ShortMax);
-        var cri = Math.Clamp(level / 10 + 10 + s.Luck * 3, 1, ShortMax);
-        var flee2 = Math.Clamp(s.Luck + 10, 0, ShortMax);
+        var hit = Math.Clamp(bonus.Get("bHit") + level + s.Dexterity + s.Luck / 3 + 175, 1, ShortMax);
+        var flee = Math.Clamp(bonus.Get("bFlee") + level + s.Agility + s.Luck / 5 + 100, 1, ShortMax);
+        var def2 = Math.Clamp(bonus.Get("bDef2") + (int)(((float)level + s.Vitality) / 2 + (float)s.Agility / 5), 0, ShortMax);
+        var mdef2 = Math.Clamp(bonus.Get("bMdef2") + (int)(s.Intelligence + (float)level / 4 + (float)(s.Dexterity + s.Vitality) / 5), 0, ShortMax);
+        var cri = Math.Clamp(bonus.Get("bCritical") + level / 10 + 10 + s.Luck * 3, 1, ShortMax);
+        var flee2 = Math.Clamp(bonus.Get("bFlee2") + s.Luck + 10, 0, ShortMax);
         return new DerivedStats(BaseAtk(level, s.Strength, s.Dexterity, s.Luck), hit, flee, flee2, cri, def2, mdef2);
     }
 
@@ -185,19 +188,18 @@ public sealed class IroStatRules : IStatRules
     {
         var hardDefense = 0;
         WeaponItemDefinition? weapon = null;
-        var paramBonus = EquipmentParamBonus.None;
         var weaponRefineAtk = 0;
         var weaponRefineMatk = 0;
         var armorRefineDefense = 0;
         var weaponOverrefine = 0;
-        var extendedBonuses = new List<EquipmentExtendedBonus>();
-        var triggeredBonuses = new List<TriggeredBonusDefinition>();
         // Combined id pool for ComboResolver.ActiveCombos (pinned pc_checkcombo, pc.cpp:11803-11900): each
         // equipped row's own ItemId once, plus every nonzero Card0-3 - cards are real, common combo members.
         var presentItemIds = new List<uint>();
-        foreach (var row in inventory.Items)
+        // Pinned status_calc_pc walks sd->equip_index[] in EQI order (status.cpp:3905), each row once however many slot bits it
+        // carries; only "last script wins" parameters (bAtkEle, bDefEle, ...) can observe the order.
+        var equipped = inventory.Items.Where(row => row.Equip != 0).OrderBy(row => EquipSlots.EqiOrder(row.Equip)).ToList();
+        foreach (var row in equipped)
         {
-            if (row.Equip == 0) continue; // One inventory row counts once however many slot bits it carries.
             if (!items.TryGetValue(row.ItemId, out var definition)) { equipment = default; return false; }
             // EnchantGrade is already the pinned 0-indexed e_enchantgrade value this project's own
             // ItemGrantResolver assigns (0=None..4=A, matching MaxEnchantGrade=4/ENCHANTGRADE_A) - never the
@@ -263,76 +265,77 @@ public sealed class IroStatRules : IStatRules
                     equipment = default;
                     return false;
             }
-            // Flat stat bonuses apply for every equipped row regardless of concrete type (pinned status_calc_pc_sub
-            // sums param_bonus independently of the equip slot/item category).
-            try
-            {
-                paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine, default, out var ownExtended, out var ownTriggered);
-                extendedBonuses.AddRange(ownExtended);
-                triggeredBonuses.AddRange(ownTriggered);
-            }
-            catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
             presentItemIds.Add((uint)row.ItemId);
-
-            // Pinned pc_bonus's own card loop (pc.cpp run_script over each card[i]): a card's bonus script runs
-            // exactly like the equip's own Script, summed into the SAME param_bonus accumulator - cards are not a
-            // separate bonus category. getrefine() inside a CARD's own script reads the CARD's own refine (always
-            // 0 - cards have no Refine field of their own), never the equip row's refine (script.cpp's
-            // current_equip_item_index always means "whichever item's own script is currently executing").
             var details = row.Details;
+            if (IsSpecialCard0(details.Card0) || definition is AmmoItemDefinition) continue;
             foreach (var cardId in (ReadOnlySpan<uint>)[details.Card0, details.Card1, details.Card2, details.Card3])
             {
                 if (cardId == 0) continue;
                 if (!items.TryGetValue((int)cardId, out var cardDefinition)) { equipment = default; return false; }
                 if (cardDefinition is not CardItemDefinition) { equipment = default; return false; } // a non-card id in a card slot is a data/generation invariant violation.
-                try
-                {
-                    paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script, 0, default, out var cardExtended, out var cardTriggered);
-                    extendedBonuses.AddRange(cardExtended);
-                    triggeredBonuses.AddRange(cardTriggered);
-                }
-                catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
                 presentItemIds.Add(cardId);
             }
-
-            // Pinned status_calc_pc_additional's own option loop (status.cpp, over sd->inventory.u.items_inventory[i].option[0..MAX_ITEM_RDM_OPT))
-            // runs each OCCUPIED random-option slot's own item_randomopt_db.yml script, current_equip_opt_index
-            // bound to that same slot (so getrandomoptinfo() inside it reads THIS slot's own Id/Value/Param,
-            // never another slot's). option.Id == 0 means the slot is empty (never persisted with a real option
-            // id) - skipped exactly like a zero card slot, not resolved against option id 0 (which does not exist
-            // in item_randomopt_db.yml).
             foreach (var option in (ReadOnlySpan<InventoryOption>)[details.Option0, details.Option1, details.Option2, details.Option3, details.Option4])
-            {
-                if (option.Id == 0) continue;
-                if (!GeneratedItems.RandomOptions.TryGetValue((uint)option.Id, out var optionScript)) { equipment = default; return false; } // unknown random-option id - data/generation invariant violation.
-                try
-                {
-                    paramBonus += EquipmentBonusResolver.Resolve(optionScript, row.Refine, option, out var optionExtended, out var optionTriggered);
-                    extendedBonuses.AddRange(optionExtended);
-                    triggeredBonuses.AddRange(optionTriggered);
-                }
-                catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
-            }
+                if (option.Id != 0 && !GeneratedItems.RandomOptions.ContainsKey((uint)option.Id)) { equipment = default; return false; } // unknown random-option id - data/generation invariant violation.
         }
 
-        // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items
-        // and/or cards, see ComboResolver's own doc comment) is currently satisfied runs its own shared script
-        // exactly like an equip/card script, summed into the SAME param_bonus/extendedBonuses accumulators - a
-        // combo is not a separate bonus category either. An unsupported combo script rejects the WHOLE equip,
-        // same fail-clearly convention as every other script source here (never silently skip a combo's bonus).
-        foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
+        // Script passes in pinned status_calc_pc order (status.cpp:3905-4185): every item's own Script, the ammo Script under
+        // LR_FLAG_ARROW, every active combo, every card, every random option. One accumulator applies each pc_bonus case's own
+        // pinned rule (EquipmentBonusParameters); an unsupported script anywhere rejects the whole equipment set, never a
+        // silently partial bonus.
+        var bonuses = new EquipmentBonusAccumulator();
+        try
         {
-            try
+            foreach (var row in equipped)
             {
-                paramBonus += EquipmentBonusResolver.Resolve(combo.Script, 0, default, out var comboExtended, out var comboTriggered);
-                extendedBonuses.AddRange(comboExtended);
-                triggeredBonuses.AddRange(comboTriggered);
+                var definition = items[row.ItemId];
+                if (definition is AmmoItemDefinition) continue;
+                // A left-hand WEAPON's own script runs as LR_FLAG_WEAPON (status.cpp:3948-3994).
+                var hand = definition is WeaponItemDefinition && row.Equip == EquipSlots.Bitmask[EquipSlot.HandLeft] ? EquipmentBonusHand.Left : EquipmentBonusHand.Right;
+                EquipmentBonusResolver.Accumulate(definition.Meta?.Script, Context(row, hand), bonuses);
             }
-            catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+            // shortcut: pinned skips the ammo script for IG_THROWABLE items (status.cpp:4046); item groups are not
+            // generated yet - upgrade when item_group_db is.
+            foreach (var row in equipped)
+                if (items[row.ItemId] is AmmoItemDefinition ammo)
+                    EquipmentBonusResolver.Accumulate(ammo.Meta?.Script, Context(row, EquipmentBonusHand.Arrow), bonuses);
+            // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items and/or cards,
+            // see ComboResolver) is satisfied runs its shared script with current_equip_item_index = -1 (status.cpp:4060).
+            foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
+                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(), bonuses);
+            // Cards run with the CARRYING row as current_equip_item_index (status.cpp:4100), so getrefine() inside a card
+            // reads that row's refine; the row worn exactly at EQP_HAND_L runs its cards and options as LR_FLAG_WEAPON.
+            foreach (var row in equipped)
+            {
+                if (items[row.ItemId] is AmmoItemDefinition || IsSpecialCard0(row.Details.Card0)) continue;
+                var d = row.Details;
+                foreach (var cardId in (ReadOnlySpan<uint>)[d.Card0, d.Card1, d.Card2, d.Card3])
+                    if (cardId != 0) EquipmentBonusResolver.Accumulate(items[(int)cardId].Meta?.Script, Context(row, LeftHandOf(row)), bonuses);
+            }
+            foreach (var row in equipped)
+            {
+                if (items[row.ItemId] is AmmoItemDefinition) continue;
+                var d = row.Details;
+                foreach (var option in (ReadOnlySpan<InventoryOption>)[d.Option0, d.Option1, d.Option2, d.Option3, d.Option4])
+                    if (option.Id != 0) EquipmentBonusResolver.Accumulate(GeneratedItems.RandomOptions[(uint)option.Id], Context(row, LeftHandOf(row)) with { Option = option }, bonuses);
+            }
         }
-        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine, extendedBonuses, triggeredBonuses);
+        catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
+
+        equipment = new EquipmentStats(hardDefense, weapon, bonuses.Param, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine,
+            bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi);
         return true;
     }
+
+    private static EquipmentScriptContext Context(CharacterInventoryItem row, EquipmentBonusHand hand) =>
+        new(row.Refine, row.Details.EnchantGrade, default, hand);
+
+    private static EquipmentBonusHand LeftHandOf(CharacterInventoryItem row) =>
+        row.Equip == EquipSlots.Bitmask[EquipSlot.HandLeft] ? EquipmentBonusHand.Left : EquipmentBonusHand.Right;
+
+    // Pinned itemdb_isspecial (itemdb.hpp:33-38): CARD0_FORGE/CREATE/PET mark a forged, brewed or pet-egg row whose card
+    // slots carry a maker signature, not cards; status_calc_pc skips their card scripts (status.cpp:4112).
+    private static bool IsSpecialCard0(uint card0) => card0 is 0x00FF or 0x00FE or 0x0100;
 
     private static int CostForStep(int current) => current < 100 ? 2 + (current - 1) / 10 : 16 + 4 * ((current - 100) / 5);
 

@@ -257,19 +257,20 @@ public sealed class MapClientSessionEquipmentMutationTests
 
     // Defect 3 regression: an item whose script TryResolveEquipment cannot fully account for must
     // be rejected AT EQUIP TIME (CharacterEquipmentMutationService.CanResolveAfter), never persisted
-    // as a "successful" equip that later makes the player untargetable to every monster. Spear Of
-    // Excellent (1427, Jobs: Crusader/Knight/Swordman, no EquipLevelMin) mixes a modeled flat bonus
-    // (bonus bStr,2;) with an unmodeled bonus2 (bSkillAtk) - a Knight who legitimately meets every
-    // OTHER eligibility gate (level, sex, job-class) must still be refused this specific item.
+    // as a "successful" equip that later makes the player untargetable to every monster. A Clip
+    // (2607, every job, no EquipLevelMin, `bonus bMaxSP,10;`) carrying Vitata Card (4053:
+    // `skill "AL_HEAL",1; bonus bUseSPrate,25;` - the skill grant is Feature 18) passes every OTHER
+    // eligibility gate and must still be refused.
     [Fact]
     public async Task EquipRealItemWithUnresolvableScript_SendsFailAck_NeverPersists()
     {
-        const int spearOfExcellent = 1427;
-        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, spearOfExcellent, 1, 0, true, 0, 0, 0)]);
-        var (client, stream, session, run, persistence) = await SetupAsync(initial, jobClass: 7 /* JOB_KNIGHT */);
+        const int clip = 2607, vitataCard = 4053;
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, clip, 1, 0, true, 0, 0, 0,
+            ItemInstanceDetail.Empty with { Card0 = vitataCard })]);
+        var (client, stream, session, run, persistence) = await SetupAsync(initial);
         using var _ = client;
 
-        await stream.WriteAsync(EquipRequestPacket(2, 0x000002));
+        await stream.WriteAsync(EquipRequestPacket(2, 0x000008));
 
         var ack = await ReadExact(stream, 11);
         Assert.Equal((short)0x0999, BinaryPrimitives.ReadInt16LittleEndian(ack));
@@ -292,10 +293,11 @@ public sealed class MapClientSessionEquipmentMutationTests
     [Fact]
     public async Task PreExistingUnresolvableEquippedItem_StillProducesATargetableCombatSnapshot()
     {
-        const int spearOfExcellent = 1427; // Jobs: Crusader/Knight/Swordman; unresolvable script (bonus2 bSkillAtk).
-        // Equip bits set directly in the INITIAL snapshot, bypassing CharacterEquipmentMutationService
-        // entirely - simulating data that was already equipped before the CanResolveAfter gate existed.
-        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, spearOfExcellent, 1, 0x000002, true, 0, 0, 0)]);
+        // Cutlas (1135): `skill "SM_BASH",5; bonus bStr,2; bonus bDef,1;` - the skill grant is Feature 18, so the row is
+        // unresolvable; resolved, its bDef would make HardDefense 1. Equip bits set directly in the INITIAL snapshot, bypassing
+        // CharacterEquipmentMutationService entirely - data already equipped before the CanResolveAfter gate existed.
+        const int cutlas = 1135;
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, cutlas, 1, 0x000002, true, 0, 0, 0)]);
         var (client, stream, session, run, _) = await SetupAsync(initial);
         using var _2 = client;
 

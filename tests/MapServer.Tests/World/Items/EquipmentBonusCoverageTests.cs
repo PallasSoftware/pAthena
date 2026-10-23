@@ -1,139 +1,123 @@
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
+using Xunit.Abstractions;
 
 namespace Athena.Net.MapServer.Tests.World.Items;
 
-// S7 coverage audit (data-driven acceptance requirement, docs/gameplay/feature-16-execution-plan.md): proves every
-// script EquipmentBonusResolver can actually be asked to run - every Weapon/Armor/Card item's own Script, every
-// item_randomopt_db.yml entry, every item_combos.yml entry's shared Script - is classified into exactly one outcome,
-// never silently "parsed but untested". Runs against the REAL committed ItemCatalog.Current (the production
-// conversion pipeline's own output), not a hand-built fixture, so a pack regeneration that breaks coverage fails
-// this test immediately.
+// Coverage audit and gap inventory (data-driven acceptance requirement, docs/gameplay/feature-16-execution-plan.md) over
+// the REAL committed ItemCatalog.Current: every script TryResolveEquipment can reach - every Weapon/Armor/Card item's own
+// Script, every item_randomopt_db.yml entry, every item_combos.yml entry's shared Script - lands in exactly one category:
 //
-// Scope note: this is deliberately NARROWER than "every script in the pack" (21k+ distinct scripts across the whole
-// item_db, including Usable/Healing/consumable on-use scripts) - those are not equipment-bonus scripts at all and
-// including them in a "resolver coverage" percentage would be misleading (most legitimately fail against a resolver
-// built only for equip-time bonus accumulation). Only scripts TryResolveEquipment can actually reach are counted.
-public sealed class EquipmentBonusCoverageTests
+//   NoScript         - nothing to execute (not counted as coverage)
+//   Live             - resolves, and at least one effect is applied by today's status calculation
+//   AwaitingConsumer - resolves into typed, accumulated data only a Feature 17/18 (or not-yet-built) consumer reads
+//   NoEffect         - resolves to nothing at all
+//   Deferred         - the importer could not lower it (named construct + owner)
+//   Unsupported      - lowered, but the equipment-bonus evaluator rejects it; the equipment cannot be worn at all
+//                      (CharacterEquipmentMutationService.CanResolveAfter), so this is never silent effect loss
+//
+// Scope note: Usable/Healing/consumable on-use scripts are not equipment-bonus scripts and are excluded.
+public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
 {
-    private enum Outcome { Resolved, UnsupportedConstruct, Deferred }
+    private enum Category { NoScript, Live, AwaitingConsumer, NoEffect, Deferred, Unsupported }
 
-    private readonly record struct Classified(Outcome Outcome, string? Detail);
+    private readonly record struct Classified(Category Category, string? Blocker);
+
+    private static readonly HashSet<string> LiveFlat = [.. EquipmentBonusParameters.ByName.Where(p => p.Value.Consumer == EquipmentBonusConsumer.LiveDerivedStats).Select(p => p.Key)];
 
     private static Classified Classify(PackScript? script, InventoryOption option = default)
     {
-        if (script is null) return new(Outcome.Resolved, null); // no script at all is zero bonus, not a gap.
-        if (script.Support == PackScriptSupport.Deferred) return new(Outcome.Deferred, $"{script.DeferredOwner}:{script.DeferredConstruct}");
-        try { EquipmentBonusResolver.Resolve(script, 0, option); return new(Outcome.Resolved, null); }
-        catch (EquipmentBonusResolver.UnsupportedEquipScriptException ex) { return new(Outcome.UnsupportedConstruct, ex.Message); }
+        if (script is null) return new(Category.NoScript, null);
+        if (script.Support == PackScriptSupport.Deferred) return new(Category.Deferred, $"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
+        var bonuses = new EquipmentBonusAccumulator();
+        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option), bonuses); }
+        catch (EquipmentBonusResolver.UnsupportedEquipScriptException ex) { return new(Category.Unsupported, ex.Message); }
+
+        var p = bonuses.Param;
+        var livePrimary = p.Strength != 0 || p.Agility != 0 || p.Vitality != 0 || p.Intelligence != 0 || p.Dexterity != 0 || p.Luck != 0;
+        if (livePrimary || bonuses.Flat.Values.Any(v => LiveFlat.Contains(v.Key.Name) && v.Key.Hand != EquipmentBonusHand.Arrow)) return new(Category.Live, null);
+        var anything = p != EquipmentParamBonus.None || bonuses.Flat.Values.Count > 0 || bonuses.Extended.Count > 0 || bonuses.Multi.Count > 0 || bonuses.Triggered.Count > 0;
+        return new(anything ? Category.AwaitingConsumer : Category.NoEffect, null);
     }
 
-    // Every Weapon/Armor/Card item's own Script (the field TryResolveEquipment actually reads - see
-    // EquipmentBonusResolver's own doc comment on why Script, not EquipScript/UnEquipScript). Ammo/ShadowGear/
-    // PetEgg/etc. are explicitly out of scope: TryResolveEquipment never calls EquipmentBonusResolver for them.
-    private static IEnumerable<(int ItemId, string AegisName, PackScript? Script)> EligibleItemScripts(ItemCatalog catalog) =>
-        catalog.ById.Values
-            .Where(def => def is WeaponItemDefinition or ArmorItemDefinition or CardItemDefinition)
-            .Select(def => (def.Id, def.AegisName, def.Meta?.Script));
+    // Which feature owns the first blocking construct (ownership table of the execution plan).
+    private static string OwnerOf(string blocker) => blocker switch
+    {
+        _ when blocker.StartsWith("command:skill") || blocker.StartsWith("command:itemskill") => "F18 skill grant",
+        _ when blocker.StartsWith("command:sc_start") || blocker.StartsWith("command:sc_end") => "F17/F18 status effect",
+        _ when blocker.StartsWith("command:hateffect") || blocker.StartsWith("command:specialeffect") => "client effect (no server state)",
+        _ when blocker.StartsWith("deferred:GeneralScript") => "F20 general script",
+        _ when blocker.StartsWith("deferred:") => "deferred (importer)",
+        _ when blocker.StartsWith("bonus-param:") => "F16 vocabulary (not a pc_bonus case)",
+        _ when blocker.Contains("-unknown-skill:") => "invalid source data (pinned skips it with an error)",
+        _ => "F16 evaluator (control flow / locals / context)",
+    };
+
+    private static IEnumerable<(string Population, PackScript? Script, InventoryOption Option)> Populations(ItemCatalog catalog)
+    {
+        foreach (var def in catalog.ById.Values)
+            if (def is WeaponItemDefinition or ArmorItemDefinition or CardItemDefinition)
+                yield return (def switch { WeaponItemDefinition => "Weapon", ArmorItemDefinition => "Armor", _ => "Card" }, def.Meta?.Script, default);
+        foreach (var (id, script) in catalog.RandomOptions) yield return ("RandomOption", script, new InventoryOption((short)id, 10, 0));
+        foreach (var combo in catalog.Combos) yield return ("Combo", combo.Script, default);
+    }
+
+    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyList<Classified>>> Measured = new(() =>
+        Populations(ItemCatalog.Current).GroupBy(p => p.Population)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<Classified>)[.. g.Select(p => Classify(p.Script, p.Option))]));
+
+    private static int Count(string population, params Category[] categories) => Measured.Value[population].Count(c => categories.Contains(c.Category));
 
     [Fact]
-    public void Coverage_EveryEligibleItemScript_IsClassified_NoneThrowAnUnhandledException()
+    public void Inventory_EveryReachableScriptIsClassified_AndTheBreakdownIsReported()
     {
-        var catalog = ItemCatalog.Current;
-        var total = 0;
-        foreach (var (itemId, aegisName, script) in EligibleItemScripts(catalog))
+        Assert.True(Measured.Value["Weapon"].Count + Measured.Value["Armor"].Count + Measured.Value["Card"].Count > 15_000,
+            "The real pinned item_db should contain over 15,000 Weapon/Armor/Card rows; a smaller count means the pack failed to load.");
+        Assert.True(Measured.Value["Combo"].Count > 5_000);
+        Assert.True(Measured.Value["RandomOption"].Count > 0);
+
+        foreach (var (population, classified) in Measured.Value.OrderBy(p => p.Key))
         {
-            total++;
-            // Classify must never itself throw anything other than the resolver's own typed exception (already
-            // caught inside Classify) - any other exception here is a genuine defect (e.g. a null-ref in the
-            // resolver on some real pinned script shape), not a classification outcome.
-            var classified = Classify(script);
-            Assert.True(classified.Outcome is Outcome.Resolved or Outcome.UnsupportedConstruct or Outcome.Deferred,
-                $"Item {itemId} ({aegisName}) produced an unclassifiable outcome.");
-        }
-        Assert.True(total > 15_000, $"Expected the real pinned item_db to contain over 15,000 eligible Weapon/Armor/Card rows; got {total}. " +
-            "A much smaller count likely means the real generated pack failed to load or ItemCatalog.Current is stale.");
-    }
-
-    // Locked-in snapshot of the CURRENT resolved count. This number MUST only increase (a future increment widening
-    // EquipmentBonusResolver's vocabulary) or stay the same (unrelated work) - a decrease means a prior commit's
-    // bonus support regressed, which this test exists to catch. Do not "fix" a failure here by lowering the bound;
-    // investigate what newly-unsupported construct appeared first.
-    [Fact]
-    public void Coverage_EligibleItemScripts_ResolvedCountNeverRegressesBelowTheLastVerifiedFloor()
-    {
-        var catalog = ItemCatalog.Current;
-        var resolved = EligibleItemScripts(catalog).Count(entry => Classify(entry.Script).Outcome == Outcome.Resolved);
-        // Verified floor as of PR #48 commit 4e7841a (2026-10-23, after autobonus/2/3 registration support):
-        // 6183 of 17353 eligible item scripts resolve. The remaining ~11170 are real, common equip bonuses
-        // using SP_* params beyond the current flat-bonus/bonus2/bonus3 vocabulary (bFlee, bCritical, bAspdRate,
-        // bMatk, bAllStats, ... - 506 distinct pc_bonus* SP_* cases exist in pinned pc.cpp, this resolver
-        // recognizes a small fraction), or an autobonus whose OUTER statement shape (if/variable-guarded) is
-        // still unsupported - a real, substantial, separately-scoped gap, not a defect in this increment. See
-        // feature16-s7-cards-combos-randomopts-scope.md memory for the full finding.
-        Assert.True(resolved >= 6183, $"Eligible item script resolution regressed: expected at least 6183 resolved, got {resolved}.");
-    }
-
-    [Fact]
-    public void Coverage_EveryRandomOption_IsClassified()
-    {
-        var catalog = ItemCatalog.Current;
-        Assert.True(catalog.RandomOptions.Count > 0, "The real pinned item_randomopt_db.yml should have loaded at least one entry.");
-        foreach (var (id, script) in catalog.RandomOptions)
-        {
-            var classified = Classify(script, new InventoryOption((short)id, 10, 0));
-            Assert.True(classified.Outcome is Outcome.Resolved or Outcome.UnsupportedConstruct or Outcome.Deferred,
-                $"Random option {id} produced an unclassifiable outcome.");
+            var scripted = classified.Count(c => c.Category != Category.NoScript);
+            output.WriteLine($"{population}: total={classified.Count} noScript={Count(population, Category.NoScript)} scripted={scripted} " +
+                $"live={Count(population, Category.Live)} awaitingConsumer={Count(population, Category.AwaitingConsumer)} noEffect={Count(population, Category.NoEffect)} " +
+                $"deferred={Count(population, Category.Deferred)} unsupported={Count(population, Category.Unsupported)}");
+            foreach (var blocker in classified.Where(c => c.Blocker is not null).GroupBy(c => c.Blocker!).OrderByDescending(g => g.Count()).Take(15))
+                output.WriteLine($"   {blocker.Count(),6}  {blocker.Key}  [{OwnerOf(blocker.Key)}]");
         }
     }
 
-    // Locked-in floor: 189 of 249 random options resolve when probed with a representative nonzero option Value
-    // (as of e593fb6). The remainder use the same unmodeled SP_* params as the wider item-script gap above (a few,
-    // like bAtkEle, use a different non-delta single-constant argument shape entirely - see EquipmentBonusResolver's
-    // Value() doc comment).
-    [Fact]
-    public void Coverage_RandomOptions_ResolvedCountNeverRegressesBelowTheLastVerifiedFloor()
+    // Floors over SCRIPTED entries only (Live + AwaitingConsumer + NoEffect): a script-less item never counts as coverage.
+    // Measured after the S7 pc_bonus vocabulary increment (EquipmentBonusParameters). These must only rise; a drop means a
+    // construct regressed - investigate it, never lower the bound.
+    [Theory]
+    [InlineData("Weapon", 752)]
+    [InlineData("Armor", 2566)]
+    [InlineData("Card", 2919)]
+    [InlineData("RandomOption", 248)]
+    [InlineData("Combo", 2365)]
+    public void Coverage_ResolvedScriptedEntries_NeverRegressBelowTheVerifiedFloor(string population, int floor)
     {
-        var catalog = ItemCatalog.Current;
-        var resolved = catalog.RandomOptions.Count(entry => Classify(entry.Value, new InventoryOption((short)entry.Key, 10, 0)).Outcome == Outcome.Resolved);
-        Assert.True(resolved >= 189, $"Random-option resolution regressed: expected at least 189 resolved, got {resolved}.");
+        var resolved = Count(population, Category.Live, Category.AwaitingConsumer, Category.NoEffect);
+        Assert.True(resolved >= floor, $"{population}: expected at least {floor} resolved scripted entries, got {resolved}.");
     }
 
+    // The original S7 floors (counting script-less items as resolved), kept so the earlier contract still holds.
     [Fact]
-    public void Coverage_EveryCombo_IsClassified()
+    public void Coverage_OriginalS7Floors_StillHold()
     {
-        var catalog = ItemCatalog.Current;
-        Assert.True(catalog.Combos.Count > 5_000, $"Expected the real pinned item_combos.yml to contain over 5,000 entries; got {catalog.Combos.Count}.");
-        foreach (var combo in catalog.Combos)
-        {
-            var classified = Classify(combo.Script);
-            Assert.True(classified.Outcome is Outcome.Resolved or Outcome.UnsupportedConstruct or Outcome.Deferred,
-                "A combo script produced an unclassifiable outcome.");
-        }
+        Assert.True(Count("Weapon", Category.NoScript, Category.Live, Category.AwaitingConsumer, Category.NoEffect)
+            + Count("Armor", Category.NoScript, Category.Live, Category.AwaitingConsumer, Category.NoEffect)
+            + Count("Card", Category.NoScript, Category.Live, Category.AwaitingConsumer, Category.NoEffect) >= 6183);
+        Assert.True(Count("RandomOption", Category.Live, Category.AwaitingConsumer, Category.NoEffect) >= 189);
+        Assert.True(Count("Combo", Category.Live, Category.AwaitingConsumer, Category.NoEffect) >= 515);
     }
 
-    // Locked-in floor: 515 of 5114 combos resolve (as of e593fb6) - the much larger remaining gap (vs. the ~49% of
-    // combos that are PURELY bonus/bonus2/bonus3 found during initial scoping) is explained by this count covering
-    // EVERY combo regardless of its own member items' scripts: ComboResolver only determines ACTIVATION, but a
-    // combo's bonus still only resolves if ITS OWN shared script uses supported SP_* params - the same wider
-    // flat-bonus-vocabulary gap as the item-script floor above, not a combo-activation defect.
-    [Fact]
-    public void Coverage_Combos_ResolvedCountNeverRegressesBelowTheLastVerifiedFloor()
-    {
-        var catalog = ItemCatalog.Current;
-        var resolved = catalog.Combos.Count(combo => Classify(combo.Script).Outcome == Outcome.Resolved);
-        Assert.True(resolved >= 515, $"Combo script resolution regressed: expected at least 515 resolved, got {resolved}.");
-    }
-
-    // Every random option referenced by catalog.RandomOptions must have a real PackScript behind it (never a stale/
-    // missing index) - a missing catalog entry is exactly the kind of silent gap the data-driven acceptance
-    // requirement forbids.
+    // Every random option referenced by catalog.RandomOptions must have a real PackScript behind it.
     [Fact]
     public void Coverage_NoRandomOptionReferencesAMissingScript()
     {
-        foreach (var (id, script) in ItemCatalog.Current.RandomOptions)
-            Assert.NotNull(script); // FrozenDictionary<uint, PackScript> is non-nullable by construction, but this
-                                     // locks in the invariant explicitly so a future refactor can't silently regress it.
+        foreach (var (_, script) in ItemCatalog.Current.RandomOptions) Assert.NotNull(script);
     }
 }

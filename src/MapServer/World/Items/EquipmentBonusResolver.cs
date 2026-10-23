@@ -40,7 +40,56 @@ public readonly record struct EquipmentParamBonus(
 // ("cardfix, elements... formula branches"). Matches this project's existing EquipmentStats precedent: typed,
 // correctly-accumulated Feature 16 data, not yet consumed by any Feature 17 combat formula - see
 // EquipmentStats.ExtendedBonuses's own doc comment.
-public readonly record struct EquipmentExtendedBonus(long Param, long SubKey1, long? SubKey2, int Value);
+// Hand is the pinned lr_flag the script ran under (EquipmentBonusHand): pc_bonus2/3 keep separate right_weapon/left_weapon/
+// arrow_* tables for most cases, so the same entry from a left-hand weapon or an arrow must stay distinguishable.
+public readonly record struct EquipmentExtendedBonus(long Param, long SubKey1, long? SubKey2, int Value, EquipmentBonusHand Hand = EquipmentBonusHand.Right);
+
+// bonus4/bonus5 (pinned pc_bonus4/pc_bonus5: bAutoSpellOnSkill, bAddEffOnSkill, bAddEff2-style autospell/status-on-hit
+// entries, every one of them a Feature 17/18 dispatch). Carried in pinned argument order, uninterpreted, exactly like
+// EquipmentExtendedBonus - the per-case meaning of each argument belongs to the consuming feature.
+public readonly record struct EquipmentMultiBonus(long Param, IReadOnlyList<long> Arguments, EquipmentBonusHand Hand = EquipmentBonusHand.Right);
+
+// Read-only context one equipment script runs against (pinned status_calc_pc's current_equip_item_index /
+// current_equip_opt_index / lr_flag). Refine and EnchantGrade are the CARRYING equipment row's own values for its own
+// script AND for the cards compounded into it (status.cpp:4100 passes the equipment's index to card scripts), 0 / -1 for
+// a combo (current_equip_item_index = -1, status.cpp:4060). Option is the random-option slot being evaluated.
+public readonly record struct EquipmentScriptContext(byte Refine = 0, int EnchantGrade = -1, InventoryOption Option = default,
+    EquipmentBonusHand Hand = EquipmentBonusHand.Right);
+
+// Everything every equipped script contributed, folded with each pc_bonus case's own pinned rule.
+public sealed class EquipmentBonusAccumulator
+{
+    private readonly Dictionary<(string, EquipmentBonusHand), int> _flat = [];
+
+    public EquipmentParamBonus Param { get; private set; }
+    public List<EquipmentExtendedBonus> Extended { get; } = [];
+    public List<EquipmentMultiBonus> Multi { get; } = [];
+    public List<TriggeredBonusDefinition> Triggered { get; } = [];
+    public EquipmentFlatBonuses Flat => new(new Dictionary<(string, EquipmentBonusHand), int>(_flat));
+
+    internal void AddParam(EquipmentParamBonus bonus) => Param += bonus;
+
+    internal void Apply(string name, EquipmentBonusParameter parameter, EquipmentBonusHand hand, int value)
+    {
+        var mode = hand switch { EquipmentBonusHand.Left => parameter.Left, EquipmentBonusHand.Arrow => parameter.Arrow, _ => EquipmentBonusHandMode.Shared };
+        if (mode == EquipmentBonusHandMode.Ignored) return;
+        var key = (name, mode == EquipmentBonusHandMode.Separate ? hand : EquipmentBonusHand.Right);
+        var current = _flat.GetValueOrDefault(key);
+        _flat[key] = parameter.Combine switch
+        {
+            EquipmentBonusCombine.Add => (int)Math.Clamp((long)current + (long)value * parameter.Scale, parameter.ClampMin, parameter.ClampMax),
+            EquipmentBonusCombine.Max => Math.Max(current, value),
+            EquipmentBonusCombine.Min => Math.Min(current, value * parameter.Scale),
+            EquipmentBonusCombine.Set => value,
+            EquipmentBonusCombine.OrShift => value is >= 0 and < 32 ? current | (1 << value) : throw new EquipmentBonusResolver.UnsupportedEquipScriptException($"bonus-bit-out-of-range:{name}:{value}"),
+            EquipmentBonusCombine.OrValue => current | value,
+            EquipmentBonusCombine.OrMask => current | (int)parameter.Mask,
+            _ => 1,
+        };
+    }
+}
+
+
 
 // Registration-time data for pinned BUILDIN_FUNC(autobonus/autobonus2/autobonus3) (script.cpp:10128-10200+,
 // identical argument shape across all three - only WHICH internal sd->autobonus* list a pinned attempt
@@ -60,24 +109,23 @@ public static class EquipmentBonusResolver
 {
     public sealed class UnsupportedEquipScriptException(string reason) : Exception(reason);
 
-    // Pinned SP_* constants (script_constants.hpp) for the MaxHp/MaxSp family a few random-option scripts target
-    // (item_randomopt_db.yml Id 1/2/9/10/11) - the 6 primary-stat SP_* constants already live in
-    // IroStatusEffectPackets (that file's own narrower packet-wire scope), these are this resolver's own.
-    private const long SpMaxHp = 6, SpMaxSp = 8, SpMaxHpRate = 1004, SpMaxSpRate = 1005, SpHpRecovRate = 1016, SpSpRecovRate = 1017;
-
     // getrandomoptinfo's own pinned attribute selector (script_constants.hpp ROA_*): ROA_ID=0, ROA_VALUE=1, ROA_PARAM=2.
     private const long RoaId = 0, RoaValue = 1, RoaParam = 2;
 
-    // Resolves one equipped item's EquipScript (or one occupied random-option slot's own script) into its flat
-    // param bonus plus any bonus2/3 extended entries. Null (no EquipScript) is zero bonus - most equip-capable
-    // items have none. refine is the equipped row's OWN persisted refine level (pinned getrefine()'s
-    // current_equip_item_index semantics, script.cpp:16903-16914: with no index argument it always reads the item
-    // currently being evaluated, never another equipped slot). option is the CURRENT random-option slot being
-    // evaluated (pinned current_equip_opt_index, script.cpp:24836) - zero/default when resolving an item's own
-    // equip script or a card's script, neither of which can reference getrandomoptinfo(). Anything this resolver
-    // cannot account for (autobonus, any other command, control flow, deferred constructs, a non-constant/
-    // non-getrefine/non-getrandomoptinfo bonus value) throws UnsupportedEquipScriptException naming the construct,
-    // so the caller rejects the equip rather than silently applying a wrong bonus.
+    // Pinned BUILDIN_FUNC(bonus) (script.cpp): these parameters take a skill NAME (or id) as their first argument, for
+    // every arity; skill_name2id resolves it and an unknown name skips the bonus with an error.
+    private static readonly HashSet<string> SkillKeyed = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bAutoSpell", "bAutoSpellWhenHit", "bAutoSpellOnSkill", "bSkillAtk", "bSkillHeal", "bSkillHeal2", "bAddSkillBlow", "bCastrate",
+        "bAddEffOnSkill", "bSkillUseSPrate", "bSkillCooldown", "bSkillFixedCast", "bSkillVariableCast", "bVariableCastrate",
+        "bFixedCastrate", "bSkillDelay", "bSkillUseSP", "bSubSkill",
+    };
+
+    // Resolves one equipped item's Script (or one card's, combo's or random-option slot's) into its flat param bonus plus
+    // any bonus2/3 extended entries. Null (no script) is zero bonus. refine is the evaluating row's own refine (pinned
+    // getrefine() reads current_equip_item_index), option the random-option slot being evaluated. Anything this resolver
+    // cannot account for throws UnsupportedEquipScriptException naming the construct, so the caller rejects the equip
+    // rather than silently applying a wrong bonus.
     public static EquipmentParamBonus Resolve(PackScript? equipScript, byte refine = 0, InventoryOption option = default)
         => Resolve(equipScript, refine, option, out _);
 
@@ -87,168 +135,191 @@ public static class EquipmentBonusResolver
     public static EquipmentParamBonus Resolve(PackScript? equipScript, byte refine, InventoryOption option,
         out IReadOnlyList<EquipmentExtendedBonus> extended, out IReadOnlyList<TriggeredBonusDefinition> triggered)
     {
-        extended = [];
-        triggered = [];
-        if (equipScript is null) return EquipmentParamBonus.None;
-        if (equipScript.Support == PackScriptSupport.Deferred)
-            throw new UnsupportedEquipScriptException($"deferred:{equipScript.DeferredOwner}:{equipScript.DeferredConstruct}");
-        if (equipScript.Program is null) throw new UnsupportedEquipScriptException("no-program");
-
-        var total = EquipmentParamBonus.None;
-        var extendedList = new List<EquipmentExtendedBonus>();
-        var triggeredList = new List<TriggeredBonusDefinition>();
-        Statement(equipScript.Program, refine, option, ref total, extendedList, triggeredList);
-        extended = extendedList;
-        triggered = triggeredList;
-        return total;
+        var accumulator = new EquipmentBonusAccumulator();
+        Accumulate(equipScript, new EquipmentScriptContext(refine, -1, option), accumulator);
+        extended = accumulator.Extended;
+        triggered = accumulator.Triggered;
+        return accumulator.Param;
     }
 
-    private static void Statement(IrNode node, byte refine, InventoryOption option, ref EquipmentParamBonus total,
-        List<EquipmentExtendedBonus> extended, List<TriggeredBonusDefinition> triggered)
+    // Runs one script against `context`, folding every bonus into `into`. On UnsupportedEquipScriptException `into` may hold a
+    // partial result; callers discard it (an equipment set with any unsupported script does not resolve at all).
+    public static void Accumulate(PackScript? script, EquipmentScriptContext context, EquipmentBonusAccumulator into)
     {
-        switch (node.Kind)
+        if (script is null) return;
+        if (script.Support == PackScriptSupport.Deferred)
+            throw new UnsupportedEquipScriptException($"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
+        if (script.Program is null) throw new UnsupportedEquipScriptException("no-program");
+        new Run(context, into).Statement(script.Program);
+    }
+
+    private sealed class Run(EquipmentScriptContext context, EquipmentBonusAccumulator into)
+    {
+        public void Statement(IrNode node)
         {
-            case IrKind.Block:
-                foreach (var child in node.Items) Statement(child, refine, option, ref total, extended, triggered);
-                return;
-            case IrKind.Command when node.Text == "bonus":
-                total += Bonus(node, refine, option);
-                return;
-            case IrKind.Command when node.Text is "bonus2" or "bonus3":
-                extended.Add(Bonus23(node, refine, option));
-                return;
-            case IrKind.Command when node.Text is "autobonus" or "autobonus2" or "autobonus3":
-                triggered.Add(AutoBonus(node));
-                return;
-            case IrKind.Command:
-                throw new UnsupportedEquipScriptException($"command:{node.Text}");
-            default:
-                throw new UnsupportedEquipScriptException($"statement:{node.Kind}");
+            switch (node.Kind)
+            {
+                case IrKind.Block:
+                    foreach (var child in node.Items) Statement(child);
+                    return;
+                case IrKind.Command when node.Text is "bonus" or "bonus2" or "bonus3" or "bonus4" or "bonus5":
+                    Bonus(node);
+                    return;
+                case IrKind.Command when node.Text is "autobonus" or "autobonus2" or "autobonus3":
+                    into.Triggered.Add(AutoBonus(node));
+                    return;
+                case IrKind.Command:
+                    throw new UnsupportedEquipScriptException($"command:{node.Text}");
+                default:
+                    throw new UnsupportedEquipScriptException($"statement:{node.Kind}");
+            }
         }
-    }
 
-    // autobonus/autobonus2/autobonus3 <bonus_script>,<rate>,<duration>[,<atk_type>[,<other_script>]]; (script.cpp
-    // BUILDIN_FUNC(autobonus/2/3), identical argument shape across all three - script.cpp:10128-10200+). The
-    // bonus_script/other_script arguments are ALREADY a lowered nested IrKind.Script node (ItemScriptLowerer
-    // recursively compiles the string at import time, never here). bonus_script's own inner Program must fully
-    // resolve as a BONUS script (recursively, through this SAME resolver) for the autobonus to be considered
-    // supported - fail-clearly: an autobonus whose bonus payload this resolver cannot account for rejects the
-    // WHOLE equip. other_script is NOT a bonus script at all (real pinned data: `{ specialeffect2
-    // EF_POTION_BERSERK; }` or empty `{}` - a pure client-visual trigger run via script_run_autobonus, pc.cpp),
-    // so it is carried as a typed-but-unvalidated PackScript for Feature 17/ClientEffect's own future dispatch
-    // to interpret, never run through the bonus-only vocabulary here. rate/duration/atk_type are plain Int
-    // literals in every real pinned autobonus script (never getrefine()/getrandomoptinfo() - these three script
-    // commands are evaluated once at EQUIP time, long before any attack roll, so a per-attack-dependent argument
-    // would be meaningless); a non-literal argument is correctly rejected as unsupported.
-    private static TriggeredBonusDefinition AutoBonus(IrNode node)
-    {
-        if (node.Items.Count is < 3 or > 5) throw new UnsupportedEquipScriptException($"{node.Text}-arguments");
-        var bonusScript = ResolveNestedBonusScript(node.Items[0]);
-        var rate = node.Items[1] is { Kind: IrKind.Int } rateNode ? (int)rateNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-rate-not-constant");
-        var duration = node.Items[2] is { Kind: IrKind.Int } durationNode ? (uint)durationNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-duration-not-constant");
-        var attackType = node.Items.Count > 3
-            ? node.Items[3] is { Kind: IrKind.Int } attackTypeNode ? (int)attackTypeNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-atk_type-not-constant")
-            : 0;
-        var otherScript = node.Items.Count > 4 ? NestedScript(node.Items[4], ItemScriptOwner.ClientEffect, PackScriptUses.ClientEffect) : null;
-        return new TriggeredBonusDefinition(bonusScript, rate, duration, attackType, otherScript);
-    }
-
-    // The nested bonus-script argument must be an already-lowered IrKind.Script (the normal case -
-    // ItemScriptLowerer wraps any string literal argument that looks like a script block); a plain non-script
-    // string argument (never seen in the real pinned data) is unsupported - this resolver never compiles a
-    // script string itself, only validates what the importer already lowered.
-    private static PackScript ResolveNestedBonusScript(IrNode node)
-    {
-        var nested = NestedScript(node, ItemScriptOwner.Item, PackScriptUses.Bonus);
-        // The nested script must itself fully resolve (same rules as any top-level equip script) for the
-        // autobonus as a whole to be considered supported - this call's only purpose is that validation; its
-        // return value is intentionally discarded (TriggeredBonusDefinition.BonusScript carries the SAME
-        // PackScript for Feature 17 to resolve again later, when the trigger actually fires).
-        Resolve(nested, 0, default, out _, out _);
-        return nested;
-    }
-
-    private static PackScript NestedScript(IrNode node, ItemScriptOwner owner, PackScriptUses uses)
-    {
-        if (node is not { Kind: IrKind.Script, Items: [var program] }) throw new UnsupportedEquipScriptException("autobonus-nested-script-not-lowered");
-        return new PackScript(node.Text ?? string.Empty, PackScriptSupport.Lowered, null, owner, uses, program);
-    }
-
-    // bonus <param>,<val>; (script.cpp BUILDIN_FUNC(bonus)): the param must be a plain constant; the value may be a
-    // constant/literal arithmetic expression over an Int literal, getrefine() and/or getrandomoptinfo() - a
-    // character-dependent or random value needs the general evaluator this resolver deliberately does not reuse
-    // (equip-time bonuses are static per item while equipped, never rolled per use).
-    private static EquipmentParamBonus Bonus(IrNode node, byte refine, InventoryOption option)
-    {
-        if (node.Items.Count != 2) throw new UnsupportedEquipScriptException("bonus-arguments");
-        var param = node.Items[0] is { Kind: IrKind.Const } constant ? constant.Number : throw new UnsupportedEquipScriptException("bonus-param-not-constant");
-        var delta = (int)Value(node.Items[1], refine, option);
-        return param switch
+        // Pinned BUILDIN_FUNC(bonus) for every arity (script.cpp): the argument count after the parameter picks pc_bonus
+        // (0 or 1 - a missing value is 0, which the flag cases ignore), pc_bonus2, pc_bonus3, pc_bonus4 or pc_bonus5.
+        private void Bonus(IrNode node)
         {
-            IroStatusEffectPackets.SpStr => new EquipmentParamBonus(Strength: delta, 0, 0, 0, 0, 0),
-            IroStatusEffectPackets.SpAgi => new EquipmentParamBonus(0, Agility: delta, 0, 0, 0, 0),
-            IroStatusEffectPackets.SpVit => new EquipmentParamBonus(0, 0, Vitality: delta, 0, 0, 0),
-            IroStatusEffectPackets.SpInt => new EquipmentParamBonus(0, 0, 0, Intelligence: delta, 0, 0),
-            IroStatusEffectPackets.SpDex => new EquipmentParamBonus(0, 0, 0, 0, Dexterity: delta, 0),
-            IroStatusEffectPackets.SpLuk => new EquipmentParamBonus(0, 0, 0, 0, 0, Luck: delta),
-            SpMaxHp => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxHp: delta),
-            SpMaxSp => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxSp: delta),
-            SpMaxHpRate => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxHpRate: delta),
-            SpMaxSpRate => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxSpRate: delta),
-            SpHpRecovRate => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, HpRecovRate: delta),
-            SpSpRecovRate => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, SpRecovRate: delta),
-            _ => throw new UnsupportedEquipScriptException($"bonus-param:{param}"),
-        };
-    }
+            var arity = node.Text is "bonus" ? 1 : node.Text![5] - '0';
+            var arguments = node.Items.Count - 1;
+            if (node.Items.Count == 0 || (arity == 1 ? arguments > 1 : arguments != arity)) throw new UnsupportedEquipScriptException($"{node.Text}-arguments");
+            if (node.Items[0] is not { Kind: IrKind.Const, Text: { } name } param) throw new UnsupportedEquipScriptException($"{node.Text}-param-not-constant");
+            var hand = context.Hand;
 
-    // bonus2 <param>,<subkey>,<val>; (script.cpp BUILDIN_FUNC(bonus2)) / bonus3 <param>,<subkey1>,<val>,<subkey2>;
-    // (BUILDIN_FUNC(bonus3) - pinned pc_bonus3's own per-case argument naming, e.g. pc.cpp:5235 `bonus3
-    // bSubRace,r,x,bf;` = (param, subkey1=race, VALUE=x, subkey2=bf): val is ALWAYS the 3rd argument for both
-    // forms, never the last - bonus3's trailing 4th argument is a second sub-classifier, not another value.
-    // Every sub-key argument must be a plain constant; the value follows the same rules as plain `bonus`.
-    // Uninterpreted here by design - see EquipmentExtendedBonus's own doc comment for the Feature 16/17 boundary.
-    private static EquipmentExtendedBonus Bonus23(IrNode node, byte refine, InventoryOption option)
-    {
-        var isBonus3 = node.Text == "bonus3";
-        var expectedArgs = isBonus3 ? 4 : 3;
-        if (node.Items.Count != expectedArgs) throw new UnsupportedEquipScriptException($"{node.Text}-arguments");
-        long Const(int index) => node.Items[index] is { Kind: IrKind.Const } c ? c.Number : throw new UnsupportedEquipScriptException($"{node.Text}-arg{index}-not-constant");
-        var param = Const(0);
-        var subKey1 = Const(1);
-        var delta = (int)Value(node.Items[2], refine, option);
-        var subKey2 = isBonus3 ? Const(3) : (long?)null;
-        return new EquipmentExtendedBonus(param, subKey1, subKey2, delta);
-    }
-
-    // script.cpp BUILDIN_FUNC(getrefine) with no arguments: always the currently-evaluating item's own refine value.
-    // BUILDIN_FUNC(getrandomoptinfo): reads the CURRENT random-option slot's own Id/Value/Param (script.cpp:24833-24858).
-    private static long Value(IrNode node, byte refine, InventoryOption option)
-    {
-        switch (node.Kind)
-        {
-            case IrKind.Int:
-                return node.Number;
-            case IrKind.Call when node.Text == "getrefine" && node.Items.Count == 0:
-                return refine;
-            case IrKind.Call when node.Text == "getrandomoptinfo" && node.Items.Count == 1:
-                if (option.Id == 0) return 0; // pinned: option.id==0 (no option) always yields 0, regardless of attribute.
-                var attribute = node.Items[0] is { Kind: IrKind.Const } attr ? attr.Number : throw new UnsupportedEquipScriptException("getrandomoptinfo-arg-not-constant");
-                return attribute switch
+            if (arity == 1)
+            {
+                var value = arguments == 0 ? 0 : SubKey(name, node.Items[1], node.Text);
+                if (PrimaryParam(name, value) is { } primary)
                 {
-                    RoaId => option.Id,
-                    RoaValue => option.Value,
-                    RoaParam => option.Param,
-                    _ => throw new UnsupportedEquipScriptException($"getrandomoptinfo-attribute:{attribute}"),
-                };
-            case IrKind.Unary when (IrOp)node.Number == IrOp.Neg:
-                return -Value(node.Items[0], refine, option);
-            case IrKind.Binary when (IrOp)node.Number is IrOp.Add or IrOp.Sub or IrOp.Mul or IrOp.Div:
-                var left = Value(node.Items[0], refine, option);
-                var right = Value(node.Items[1], refine, option);
-                if (right == 0 && (IrOp)node.Number == IrOp.Div) throw new UnsupportedEquipScriptException("bonus-value-division-by-zero");
-                return (IrOp)node.Number switch { IrOp.Add => left + right, IrOp.Sub => left - right, IrOp.Mul => left * right, _ => left / right };
-            default:
-                throw new UnsupportedEquipScriptException("bonus-value-not-constant");
+                    if (hand != EquipmentBonusHand.Arrow) into.AddParam(primary); // every param_bonus case: lr_flag != LR_FLAG_ARROW
+                    return;
+                }
+                if (!EquipmentBonusParameters.TryGet(name, out var canonical, out var parameter)) throw new UnsupportedEquipScriptException($"bonus-param:{name}");
+                into.Apply(canonical, parameter, hand, value);
+                return;
+            }
+
+            var first = SubKey(name, node.Items[1], node.Text);
+            if (arity is 2 or 3)
+            {
+                // bonus3's value is ALWAYS its 3rd argument (pc_bonus3 per-case naming, e.g. pc.cpp:5235 `bonus3 bSubRace,r,x,bf;`).
+                var value = (int)Value(node.Items[2]);
+                long? second = arity == 3 ? Value(node.Items[3]) : null;
+                into.Extended.Add(new EquipmentExtendedBonus(param.Number, first, second, value, hand));
+                return;
+            }
+            // bonus4/5: the 2nd argument may also be a skill name for bAutoSpellOnSkill (script.cpp BUILDIN_FUNC(bonus) case 4/5).
+            var rest = node.Items.Skip(2).Select((argument, index) => index == 0 && name == "bAutoSpellOnSkill" ? SubKey(name, argument, node.Text) : Value(argument));
+            into.Multi.Add(new EquipmentMultiBonus(param.Number, [first, .. rest], hand));
+        }
+
+        // The first argument after the parameter: a skill name for the skill-keyed parameters, a number otherwise.
+        private int SubKey(string param, IrNode node, string? command)
+        {
+            if (node.Kind != IrKind.Str) return (int)Value(node);
+            if (!SkillKeyed.Contains(param)) throw new UnsupportedEquipScriptException($"{command}-string-argument:{param}");
+            try { return Generated.Skills.GeneratedSkillRegistry.GetByName(node.Text!).SkillId; }
+            catch (NotSupportedException) { throw new UnsupportedEquipScriptException($"{command}-unknown-skill:{node.Text}"); }
+        }
+
+        // autobonus/autobonus2/autobonus3 <bonus_script>,<rate>,<duration>[,<atk_type>[,<other_script>]]; (script.cpp
+        // BUILDIN_FUNC(autobonus/2/3), identical argument shape across all three - script.cpp:10128-10200+). The
+        // bonus_script/other_script arguments are ALREADY a lowered nested IrKind.Script node (ItemScriptLowerer
+        // recursively compiles the string at import time, never here). bonus_script's own inner Program must fully
+        // resolve as a BONUS script (recursively, through this SAME resolver) for the autobonus to be considered
+        // supported - fail-clearly: an autobonus whose bonus payload this resolver cannot account for rejects the
+        // WHOLE equip. other_script is NOT a bonus script at all (real pinned data: `{ specialeffect2
+        // EF_POTION_BERSERK; }` or empty `{}` - a pure client-visual trigger run via script_run_autobonus, pc.cpp),
+        // so it is carried as a typed-but-unvalidated PackScript for Feature 17/ClientEffect's own future dispatch
+        // to interpret, never run through the bonus-only vocabulary here. rate/duration/atk_type are evaluated once at
+        // EQUIP time, long before any attack roll, through the same value rules as a bonus value.
+        private TriggeredBonusDefinition AutoBonus(IrNode node)
+        {
+            if (node.Items.Count is < 3 or > 5) throw new UnsupportedEquipScriptException($"{node.Text}-arguments");
+            var bonusScript = ResolveNestedBonusScript(node.Items[0]);
+            var rate = (int)Value(node.Items[1]);
+            var duration = (uint)Value(node.Items[2]);
+            var attackType = node.Items.Count > 3 ? (int)Value(node.Items[3]) : 0;
+            var otherScript = node.Items.Count > 4 ? NestedScript(node.Items[4], ItemScriptOwner.ClientEffect, PackScriptUses.ClientEffect) : null;
+            return new TriggeredBonusDefinition(bonusScript, rate, duration, attackType, otherScript);
+        }
+
+        // The nested bonus-script argument must be an already-lowered IrKind.Script; it is validated here by resolving it
+        // into a throw-away accumulator (TriggeredBonusDefinition.BonusScript carries the same PackScript for Feature 17 to
+        // run when the trigger fires).
+        private PackScript ResolveNestedBonusScript(IrNode node)
+        {
+            var nested = NestedScript(node, ItemScriptOwner.Item, PackScriptUses.Bonus);
+            Accumulate(nested, context, new EquipmentBonusAccumulator());
+            return nested;
+        }
+
+        private static PackScript NestedScript(IrNode node, ItemScriptOwner owner, PackScriptUses uses)
+        {
+            if (node is not { Kind: IrKind.Script, Items: [var program] }) throw new UnsupportedEquipScriptException("autobonus-nested-script-not-lowered");
+            return new PackScript(node.Text ?? string.Empty, PackScriptSupport.Lowered, null, owner, uses, program);
+        }
+
+        // Expressions over literals, script constants (already resolved to their pinned numbers by the importer), getrefine()
+        // and getrandomoptinfo(). script.cpp BUILDIN_FUNC(getrefine) with no arguments reads the currently-evaluating item's
+        // refine; BUILDIN_FUNC(getrandomoptinfo) the current random-option slot (script.cpp:24833-24858).
+        public long Value(IrNode node)
+        {
+            switch (node.Kind)
+            {
+                case IrKind.Int:
+                case IrKind.Const:
+                    return node.Number;
+                case IrKind.Call when node.Text == "getrefine" && node.Items.Count == 0:
+                    return context.Refine;
+                case IrKind.Call when node.Text == "getrandomoptinfo" && node.Items.Count == 1:
+                    var option = context.Option;
+                    if (option.Id == 0) return 0; // pinned: option.id==0 (no option) always yields 0, regardless of attribute.
+                    var attribute = node.Items[0] is { Kind: IrKind.Const } attr ? attr.Number : throw new UnsupportedEquipScriptException("getrandomoptinfo-arg-not-constant");
+                    return attribute switch
+                    {
+                        RoaId => option.Id,
+                        RoaValue => option.Value,
+                        RoaParam => option.Param,
+                        _ => throw new UnsupportedEquipScriptException($"getrandomoptinfo-attribute:{attribute}"),
+                    };
+                case IrKind.Unary when (IrOp)node.Number == IrOp.Neg:
+                    return -Value(node.Items[0]);
+                case IrKind.Binary when (IrOp)node.Number is IrOp.Add or IrOp.Sub or IrOp.Mul or IrOp.Div:
+                    var left = Value(node.Items[0]);
+                    var right = Value(node.Items[1]);
+                    if (right == 0 && (IrOp)node.Number == IrOp.Div) throw new UnsupportedEquipScriptException("bonus-value-division-by-zero");
+                    return (IrOp)node.Number switch { IrOp.Add => left + right, IrOp.Sub => left - right, IrOp.Mul => left * right, _ => left / right };
+                default:
+                    throw new UnsupportedEquipScriptException("bonus-value-not-constant");
+            }
         }
     }
+
+    // The pc_bonus cases that fold into sd->indexed_bonus.param_bonus (pc.cpp:3734-3742, 4290-4312: SP_STR..SP_LUK,
+    // SP_ALL_STATS, SP_AGI_VIT, SP_AGI_DEX_STR) or the HP/SP accumulators EquipmentParamBonus carries (sd->bonus.hp/sp,
+    // hprate/sprate, hprecov_rate/sprecov_rate).
+    private static EquipmentParamBonus? PrimaryParam(string name, int v) => PrimaryNames.GetValueOrDefault(name) switch
+    {
+        "bStr" => new EquipmentParamBonus(Strength: v, 0, 0, 0, 0, 0),
+        "bAgi" => new EquipmentParamBonus(0, Agility: v, 0, 0, 0, 0),
+        "bVit" => new EquipmentParamBonus(0, 0, Vitality: v, 0, 0, 0),
+        "bInt" => new EquipmentParamBonus(0, 0, 0, Intelligence: v, 0, 0),
+        "bDex" => new EquipmentParamBonus(0, 0, 0, 0, Dexterity: v, 0),
+        "bLuk" => new EquipmentParamBonus(0, 0, 0, 0, 0, Luck: v),
+        "bAllStats" => new EquipmentParamBonus(v, v, v, v, v, v),
+        "bAgiVit" => new EquipmentParamBonus(0, v, v, 0, 0, 0),
+        "bAgiDexStr" => new EquipmentParamBonus(v, v, 0, 0, v, 0),
+        "bMaxHP" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxHp: v),
+        "bMaxSP" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxSp: v),
+        "bMaxHPrate" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxHpRate: v),
+        "bMaxSPrate" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, MaxSpRate: v),
+        "bHPrecovRate" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, HpRecovRate: v),
+        "bSPrecovRate" => new EquipmentParamBonus(0, 0, 0, 0, 0, 0, SpRecovRate: v),
+        _ => null,
+    };
+
+    private static readonly Dictionary<string, string> PrimaryNames = new[]
+    {
+        "bStr", "bAgi", "bVit", "bInt", "bDex", "bLuk", "bAllStats", "bAgiVit", "bAgiDexStr", "bMaxHP", "bMaxSP", "bMaxHPrate", "bMaxSPrate", "bHPrecovRate", "bSPrecovRate",
+    }.ToDictionary(n => n, n => n, StringComparer.OrdinalIgnoreCase);
 }
