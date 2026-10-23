@@ -7,6 +7,8 @@ using Athena.Net.MapServer.Tests.Gameplay.Rules;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.Tests.World;
 using Athena.Net.MapServer.World;
+using Athena.Net.MapServer.World.Items;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 
@@ -14,7 +16,7 @@ namespace Athena.Net.MapServer.Tests.Gameplay.Reference;
 // Runs the pinned-rAthena golden fixtures against ONE region's concrete gameplay rules, composed through the production
 // factory. The two sealed subclasses give iRO and kRO each their own independently executed set of conformance assertions
 // over the same fixture inputs; the fixture values are never produced by the code under test.
-public abstract class RathenaReferenceConformanceTests(GameplayRegion region)
+public abstract partial class RathenaReferenceConformanceTests(GameplayRegion region)
 {
     protected GameplayRuleServices Rules { get; } = TestGameplayRules.Services(region);
 
@@ -305,6 +307,603 @@ public abstract class RathenaReferenceConformanceTests(GameplayRegion region)
         Assert.Equal(0, stats.HardDefense);
     }
 
+    // Scope boundary: an item mixing modeled bonuses with an unmodeled construct must reject the WHOLE
+    // equip, never silently apply just the modeled half - pinned db/re/item_db_equip.yml Id 1135
+    // "Cutlas": `skill "SM_BASH",5; bonus bStr,2; bonus bDef,1;` (the skill grant is Feature 18).
+    [Fact]
+    public void EquipmentStats_ItemMixingModeledAndUnmodeledBonus_IsUnresolvedNotPartiallyApplied()
+    {
+        const int cutlas = 1135;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cutlas, 1, 0x000002, true, 0, 0, 0)]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment); // never the bStr,2 / bDef,1 half silently applied
+    }
+
+    // Pinned db/re/item_db_equip.yml Id 1427 "Spear_Of_Excellent": `bonus2 bSkillAtk,"SM_MAGNUM",25; bonus bStr,2;`.
+    // BUILDIN_FUNC(bonus) resolves the skill name through skill_name2id (SM_MAGNUM = skill 7 in db/re/skill_db.yml) and
+    // pc_bonus2 keys sd->skillatk by it; the bStr half lands in param_bonus.
+    [Fact]
+    public void EquipmentStats_SkillNameKeyedBonus2_ResolvesTheSkillId_AndKeepsTheFlatHalf()
+    {
+        const int spearOfExcellent = 1427;
+        var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[spearOfExcellent]).EquipLocation;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, spearOfExcellent, 1, equipLocation, true, 0, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(2, equipment.ParamBonus.Strength);
+        var skillAtk = Assert.Single(equipment.ExtendedBonusesOrEmpty);
+        Assert.Equal((7L, 25), (skillAtk.SubKey1, skillAtk.Value));
+    }
+
+    // S5 bonus model: pinned db/re/item_db_equip.yml Id 2601 "Ring" (Both_Accessory, `bonus bStr,2;`) is a real equip
+    // item whose flat equip-script bonus must flow through TryResolveEquipment into the character's effective STR,
+    // proving the EquipmentBonusResolver integration end to end rather than only at the unit level.
+    //
+    // EXACT values, not positive-only: pinned status_calc_pc (status.cpp:4290-4301) bakes equipment into base_status
+    // BEFORE status_calc_bl_main ever applies a status delta on top - equipment and status effects are NOT two
+    // independent additive layers that each read the raw base separately (see IStatRules.ApplyEquipmentBonus's own
+    // doc comment for the full trace). This test is the direct regression for that architecture: a character with
+    // base STR=1 wearing the Ring (+2 STR) under Blessing (which ALSO changes STR, by +val1) must show
+    // Effective.Strength = 1+2+val1 (equipment AND status both present, additively), and the resulting BaseAttack must
+    // reflect STR=1+2+val1 throughout - a reintroduction of the original bug (equipment and status computed against
+    // two diverging copies of the base, status.cpp:5964's delta math canceling whichever contribution isn't shared)
+    // would make this fail by producing BaseAttack as if STR were only 1+val1 (equipment silently dropped) or 1+2
+    // (status silently dropped), never both at once.
+    [Fact]
+    public void EquipmentStats_RealRingWithFlatStrBonus_CombinesAdditivelyWithBlessingInEffectiveStrength()
+    {
+        const int ring = 2601;
+        var equipLocation = ((IEquippableItemDefinition)GeneratedItems.ById[ring]).EquipLocation;
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, ring, 1, equipLocation, true, 0, 0, 0)]);
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 2, 0, 0, 0, 0, 0), equipment.ParamBonus);
+
+        var state = new CharacterGameplayState(CharacterId: 1, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1,
+            BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
+            Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
+        var statuses = NewStatuses(new FakeTimeProvider());
+
+        // No equipment, no status: Effective.Strength is the raw base (1).
+        var bare = statuses.Capture(() => state);
+        Assert.Equal(1, bare.Effective.Strength);
+
+        // Equipment only (no status yet): Effective.Strength must be 1+2=3 - this is the line that was broken:
+        // Capture (and therefore Effective) previously never saw equipment.ParamBonus at all.
+        var withEquipmentOnly = statuses.Capture(() => state, equipment.ParamBonus);
+        Assert.Equal(3, withEquipmentOnly.Effective.Strength);
+        var derivedEquipmentOnly = Rules.Stats.CalculateDerivedStats(withEquipmentOnly, equipment);
+        var expectedBatkEquipmentOnly = BaseAtkFormula(level: 1, str: 3, dex: 1, luk: 1);
+        Assert.Equal(expectedBatkEquipmentOnly, derivedEquipmentOnly.BaseAttack);
+
+        // Equipment AND Blessing together: Blessing's val2 (== val1 for a PC target) adds to STR on top of the
+        // ALREADY-equipment-inclusive base - val1=10 is an arbitrary but fixed choice so val2=10 too.
+        statuses.Start(CharacterStatusEffectState.StatusIds.Blessing, durationMilliseconds: 60000, val1: 10);
+        var withBoth = statuses.Capture(() => state, equipment.ParamBonus);
+        Assert.Equal(1 + 2 + 10, withBoth.Effective.Strength); // base + equipment + status, all three present at once.
+        var derivedBoth = Rules.Stats.CalculateDerivedStats(withBoth, equipment);
+        // Blessing's val2 also adds to DEX (status.cpp:7059-7061), not just STR/INT - the BaseAtk formula
+        // reads DEX too, so the expected value must include that contribution as well.
+        var expectedBatkBoth = BaseAtkFormula(level: 1, str: 1 + 2 + 10, dex: 1 + 10, luk: 1);
+        Assert.Equal(expectedBatkBoth, derivedBoth.BaseAttack);
+    }
+
+    // Pinned status_base_atk, RENEWAL BL_PC non-ranged weapon, POW=0 (status.cpp:2475-2477) - the SAME formula
+    // IroStatRules/KroStatRules.BaseAtk implements privately; reproduced here as an independent reference
+    // calculation (not a call into the code under test) so this test is real external evidence, not a tautology.
+    private static int BaseAtkFormula(int level, int str, int dex, int luk) =>
+        Math.Clamp((str * 10 + dex * 10 / 5 + luk * 10 / 3 + level * 10 / 4) / 10, 0, ushort.MaxValue);
+
+    // S6 refine bonus, EXACT values (pinned db/re/refine.yml Group: Weapon, Level 1 RefineLevels:
+    // R1=200 R2=400 R3=600 R4=800 R5=1000 R10=2000 R20=6000 - confirmed by direct inspection, not
+    // re-derived from the same generated table under test). Pinned status.cpp:3957
+    // `wa->atk2 += info->bonus/100` divides the RAW tabulated value by 100 before accumulating - a
+    // level-1 Sword (1101, Attack: 25) at +5 contributes exactly 1000/100=10 refine ATK (NOT 1000),
+    // for a total WeaponAttack of exactly 25+10=35. This is the direct regression for the
+    // originally-reported /100 scaling defect (a raw-accumulation bug would have produced 1025).
+    [Theory]
+    [InlineData(0, 0)]    // no refine -> no bonus at all (never looked up, refine<=0).
+    [InlineData(1, 2)]    // 200/100=2
+    [InlineData(2, 4)]    // 400/100=4
+    [InlineData(3, 6)]    // 600/100=6
+    [InlineData(4, 8)]    // 800/100=8
+    [InlineData(5, 10)]   // 1000/100=10 - the report's own reproduction case.
+    [InlineData(10, 20)]  // 2000/100=20
+    [InlineData(20, 60)]  // 6000/100=60 - MAX_REFINE boundary.
+    public void EquipmentStats_RealRefinedWeapon_RefineAtkMatchesExactPinnedScaling(byte refine, int expectedRefineAtk)
+    {
+        const int sword = 1101; // WeaponLevel: 1, Attack: 25.
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, refine, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+
+        Assert.Equal(expectedRefineAtk, equipment.WeaponRefineAtk);
+        Assert.Equal(25 + expectedRefineAtk, equipment.WeaponAttack);
+    }
+
+    // A1 correction (supersedes the former "Defect 6" test, which was WRONG): the earlier conclusion
+    // read status_base_matk_min/max (status.cpp:2559-2591, the StatusMATK term alone) in isolation and
+    // missed that status_calc_bl_main's own RENEWAL MATK block (status.cpp:6283-6361) adds WeaponMATK
+    // and weapon-level variance on top for BL_PC: matk_min = StatusMATK + wMatk - variance, matk_max =
+    // StatusMATK + wMatk + variance, wMatk = rhw.matk (static MagicAttack + refine bonus, non-bow only),
+    // variance = rhw.matk * rhw.wlv / 10, PLUS an overrefine widening (matk_min++, matk_max +=
+    // overrefine-1) when the weapon's pinned RandomBonus (a deterministic per-level/refine maximum,
+    // never an RNG roll - see EquipmentStats's own doc comment) is nonzero. A refined weapon with zero
+    // static MagicAttack (Sword 1101) THEREFORE DOES change live player MagicAttackMin/MagicAttackMax -
+    // confirmed against VF-23, an independent executable-rAthena scenario (equips this exact Sword at
+    // refine 0/5/10 through the real equipment pass of status_calc_pc and the real status_calc_bl_main
+    // MATK path, not re-derived from the implementation under test).
+    [Theory]
+    [InlineData(0, 14, 14)]
+    [InlineData(5, 23, 25)]
+    [InlineData(10, 33, 44)] // includes the overrefine widening: refine 10's RandomBonus=900 -> overrefine 9.
+    public void CalculateDerivedStats_RefinedWeapon_MatchesVf23ReferenceMatkMinMax(int refine, int expectedMin, int expectedMax)
+    {
+        const int sword = 1101; // WeaponLevel: 1, Attack: 25, MagicAttack: 0 (no explicit field).
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: (byte)refine, 0, 0)]);
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-23"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(expectedMin, derived.MagicAttackMin);
+        Assert.Equal(expectedMax, derived.MagicAttackMax);
+    }
+
+    // Equipping nothing at all must still reproduce VF-23's own refine-0 StatusMATK-only baseline
+    // (no weapon term applies when EquipmentStats.Weapon is null), confirming the wMatk/variance/
+    // overrefine block above is correctly gated on an actual equipped weapon being present.
+    [Fact]
+    public void CalculateDerivedStats_NoWeaponEquipped_MatchesVf23StatusMatkBaseline()
+    {
+        var inventory = new CharacterInventorySnapshot([]);
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Null(equipment.Weapon);
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-23"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(14, derived.MagicAttackMin);
+        Assert.Equal(14, derived.MagicAttackMax);
+    }
+
+    // Discriminating rounding-order test (A3): Armor Level 1 Refine {3,7} (300/1000, both already
+    // multiples of 100) cannot actually distinguish "round once after summing" from "round per row and
+    // sum" - both land on 13 for those two numbers, as the test below this one's own comment already
+    // acknowledges. No real pinned item combines a resolvable (plain bStr/bAgi/bVit/bInt/bDex/bLuk-only,
+    // non-Gradable) equip script with ArmorLevel 2 at two refine levels whose Bonus values actually
+    // diverge under the two rounding orders - item_db_equip.yml's ArmorLevel-2 entries are either
+    // Gradable (rejected outright, enchant-grade multiplier unmodeled) or carry unsupported bonus script
+    // forms (bSMatk/bCon/skill-indexed bonus2, etc., none of which EquipmentBonusResolver parses). 2LvHat
+    // (400360: ArmorLevel 2, Refineable, no Jobs restriction, NO Script at all - resolves trivially with
+    // zero ParamBonus) is the real pinned item used here instead, carrying two rows at refine levels
+    // whose REAL pinned Armor Level 2 Bonus values (direct inspection of db/re/refine.yml, not re-derived
+    // from the table under test) genuinely diverge under the two rounding orders: Refine 1 Bonus=120,
+    // Refine 2 Bonus=240. Per-row: (120+50)/100 + (240+50)/100 = 1+2 = 3. Pinned (sum-then-round):
+    // (120+240+50)/100 = 410/100 = 4. These differ, so this test fails immediately if the implementation
+    // ever regresses to per-row rounding.
+    [Fact]
+    public void EquipmentStats_MultiPieceArmorRefineDefense_RealDivergingBonusValues_RoundsOnceAfterSummingAllRows()
+    {
+        const int hat = 400360; // 2LvHat: ArmorLevel 2, Defense 0 (unset), Refineable, no Jobs, no Script.
+        var row1 = new CharacterInventoryItem(1, 0, hat, 1, 0x000100, true, Refine: 1, 0, 0);
+        var row2 = new CharacterInventoryItem(2, 1, hat, 1, 0x000100, true, Refine: 2, 0, 0);
+        var inventory = new CharacterInventorySnapshot([row1, row2]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(120 + 240, equipment.ArmorRefineDefense);
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus); // no script on this item - confirms it contributes nothing else.
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        // Defense is unset on this item (defaults to 0 x2 rows = 0) plus the ONCE-rounded refine sum:
+        // (120+240+50)/100 = 4. A per-row-rounded regression would instead compute 0 + (1+2) = 3.
+        Assert.Equal(0 + (120 + 240 + 50) / 100, derived.HardDefense);
+    }
+
+    // Retained as a basic multi-row-accumulation regression even though 300/1000 cannot discriminate the
+    // two rounding orders (see the discriminating test immediately above, which uses real pinned values
+    // that do diverge): this still exercises summing across distinct inventory rows of the SAME item id,
+    // independent of slot-exclusivity, which the test above does not (its two rows occupy the same
+    // Head_Top bit so would conflict at actual equip time - TryResolveEquipment itself does not enforce
+    // slot exclusivity, that is CharacterEquipmentMutationService's own concern).
+    [Fact]
+    public void EquipmentStats_MultiPieceArmorRefineDefense_RoundsOnceAfterSummingAllRows()
+    {
+        const int cottonShirtSlotted = 2302; // ArmorLevel default 1 (no explicit field), Defense: 10, Slots: 1.
+        // TryResolveEquipment sums every row with Equip != 0 independently of slot-exclusivity
+        // (that is CharacterEquipmentMutationService's own concern at equip time) - two rows of the
+        // same real armor item on two different inventory slots validly exercise the "sum across
+        // rows, round once" accumulation this test targets.
+        var row1 = new CharacterInventoryItem(1, 0, cottonShirtSlotted, 1, 0x000010, true, Refine: 3, 0, 0);
+        var row2 = new CharacterInventoryItem(2, 1, cottonShirtSlotted, 1, 0x000010, true, Refine: 7, 0, 0);
+        var inventory = new CharacterInventorySnapshot([row1, row2]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(300 + 1000, equipment.ArmorRefineDefense);
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        // (refinedef+50)/100 applied ONCE to the SUM (1300+50)/100=13, truncated - plus the summed
+        // Defense (10+10=20) from both rows. Never two independently-rounded per-row contributions.
+        Assert.Equal(20 + (300 + 1000 + 50) / 100, derived.HardDefense);
+    }
+
+    // A3 "legitimately equippable combination across distinct slots": Cotton_Shirt (2301, Armor slot,
+    // Defense 10, ArmorLevel 1, no script) and Sandals (2401, Shoes slot, Defense 5, ArmorLevel 1, no
+    // script) worn together, each refined differently - a combination an actual character could equip
+    // simultaneously (distinct EquipLocation bits, no slot conflict), unlike the two rounding tests
+    // above which deliberately double up the SAME slot to isolate the accumulation math.
+    [Fact]
+    public void EquipmentStats_CottonShirtAndSandalsOnDistinctSlots_SumsBothRowsHardDefense()
+    {
+        const int cottonShirt = 2301;
+        const int sandals = 2401;
+        var armorRow = new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, Refine: 4, 0, 0); // Armor slot, Bonus 400.
+        var shoesRow = new CharacterInventoryItem(2, 1, sandals, 1, 0x000040, true, Refine: 6, 0, 0); // Shoes slot, Bonus 800.
+        var inventory = new CharacterInventorySnapshot([armorRow, shoesRow]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10 + 5, equipment.HardDefense); // Cotton_Shirt Defense 10 + Sandals Defense 5.
+        Assert.Equal(400 + 800, equipment.ArmorRefineDefense); // pinned Armor Level 1 Refine 4=400, Refine 6=800.
+
+        var state = StateFrom(RathenaReferenceFixture.LoadCommitted().Input("VF-01"));
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        var derived = Rules.Stats.CalculateDerivedStats(snapshot, equipment);
+
+        Assert.Equal(15 + (400 + 800 + 50) / 100, derived.HardDefense);
+    }
+
+    // S6 enchant grade (supersedes the former rejection test): EnchantGrade is this project's own
+    // 0-indexed e_enchantgrade byte (0=None..4=A, matching ItemGrantResolver's MaxEnchantGrade=4) -
+    // GeneratedEnchantGradeBonus.Grades indexes it directly. A graded Sword (1101, WeaponLevel 1) resolves
+    // successfully with NO grade term added, because enchant grade's real pinned data only tabulates
+    // Weapon Level 5 / Armor Level 2 at all (status.cpp:3961's own enchantgrade_info == nullptr case for
+    // every other level) - this is the correct behavior, not a silently-dropped bonus.
+    [Fact]
+    public void EquipmentStats_RefinedWeaponAtAnUntabulatedLevel_WithEnchantGrade_ResolvesWithNoGradeTerm()
+    {
+        const int sword = 1101; // WeaponLevel 1 - not tabulated in enchantgrade.yml at all.
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 3 /* B */, Revision = 0 })]); // pinned Weapon Level 1 Refine 5 Bonus=1000.
+
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10, equipment.WeaponRefineAtk); // 1000/100=10, no grade term added at an untabulated level.
+    }
+
+    // Pinned status.cpp:3961: `wa->atk2 += ((info->bonus/100) * enchantgrade_info->bonus) / 100` - the grade
+    // multiplier is ADDED on top of (not multiplied into) the plain refine bonus, using Weapon Level 5's real
+    // pinned Refine 1 Bonus=800 and Grade B's real pinned Bonus=100 (both direct inspection, not re-derived
+    // from the generated tables under test).
+    [Fact]
+    public void EquipmentStats_RealGradedWeaponAtItsOwnTabulatedLevel_AddsTheGradeMultiplierOnTopOfRefine()
+    {
+        const int axe = 28144; // 5LvBattle_Axe: WeaponLevel 5, Refineable, no script.
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 3 /* B */, Revision = 0 })]);
+        var ungraded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var gradedEquipment));
+        Assert.True(Rules.Stats.TryResolveEquipment(ungraded, GeneratedItems.ById, out var ungradedEquipment));
+
+        // Plain refine alone: 800/100 = 8. With Grade B (Bonus 100): 8 + (100 * 8 / 100) = 8 + 8 = 16.
+        Assert.Equal(8, ungradedEquipment.WeaponRefineAtk);
+        Assert.Equal(16, gradedEquipment.WeaponRefineAtk);
+    }
+
+    // Grade "None" (EnchantGrade=0) has a real pinned Bonus of 10 at Weapon Level 5 - small enough that the
+    // grade term's own `* bonus / 100` integer division truncates to 0 for a low refine bonus, proving the
+    // pinned formula's own truncation (not a bug) rather than a nonzero grade silently contributing nothing
+    // due to a sign/order mistake in this project's own implementation.
+    [Fact]
+    public void EquipmentStats_RealGradedWeapon_GradeNoneBonusTruncatesToZeroAtLowRefine()
+    {
+        const int axe = 28144;
+        var graded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 0 /* None */, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(graded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(8, equipment.WeaponRefineAtk); // 8 + (10*8/100 = 0) = 8.
+    }
+
+    // A grade byte beyond the pinned enum's own range (ENCHANTGRADE_A=4 is the maximum) is a data/generation
+    // invariant violation, not a legitimate persisted state - rejected explicitly rather than throwing an
+    // IndexOutOfRangeException from GeneratedEnchantGradeBonus.Grades.
+    [Fact]
+    public void EquipmentStats_EnchantGradeBeyondA_IsRejected_NeverThrows()
+    {
+        const int axe = 28144;
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, axe, 1, 0x000002, true, Refine: 1, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { EnchantGrade = 5, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // S7 cards: a card's own bonus script sums into the SAME param_bonus accumulator as the equip's own
+    // script (pinned pc_bonus's own card loop, pc.cpp) - cards are not a separate bonus category. Real
+    // pinned Thief_Bug_Card (4016, Locations: Armor, Script: `bonus bAgi,1;` - confirmed by direct
+    // inspection AND independently by dumping this item's own lowered IR tree, since Poring_Card (4001)
+    // turned out to carry a SECOND unsupported `bonus bFlee2,1;` line this resolver correctly rejects -
+    // not a bug, a real multi-line card script outside this slice's scope) inserted into Cotton_Shirt's
+    // (2301) Card0 slot.
+    [Fact]
+    public void EquipmentStats_RealCardInCard0Slot_AddsItsOwnBonusToParamBonus()
+    {
+        const int cottonShirt = 2301;
+        const int thiefBugCard = 4016;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = thiefBugCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, Agility: 1, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // Two different real cards in two different slots (Card0/Card1) of the same equip row both contribute -
+    // proving the loop sums every nonzero slot, not just the first. Thief_Bug_Card (4016: bonus bAgi,1;) and
+    // Desert_Wolf_Babe_Card (4023: bonus bInt,1;) - both single-line scripts, both direct inspection of the
+    // pinned source, not re-derived from the implementation under test.
+    [Fact]
+    public void EquipmentStats_TwoRealCardsInDifferentSlots_BothContributeToParamBonus()
+    {
+        const int cottonShirtSlotted = 2302; // Slots: 1 - TryResolveEquipment sums every persisted card slot regardless of the item's own Slots count (that gate is ItemCardInsertResolver's own concern at insert time).
+        const int thiefBugCard = 4016;
+        const int desertWolfBabeCard = 4023;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirtSlotted, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = thiefBugCard, Card1 = desertWolfBabeCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, Agility: 1, 0, Intelligence: 1, 0, 0), equipment.ParamBonus);
+    }
+
+    // A real card whose own script this resolver cannot fully account for must reject the WHOLE equip, not
+    // silently apply only the supported line(s): Vitata Card (4053) `skill "AL_HEAL",1; bonus bUseSPrate,25;`
+    // compounded into a Clip (2607, `bonus bMaxSP,10;`).
+    [Fact]
+    public void EquipmentStats_RealCardWithAnUnsupportedSecondBonusLine_IsRejected()
+    {
+        const int clip = 2607, vitataCard = 4053;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, clip, 1, 0x000008, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = vitataCard, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // Poring Card (4001) `bonus bLuk,2; bonus bFlee2,1;` in a Cotton Shirt: pc_bonus SP_FLEE2 adds val*10 to
+    // status->flee2 (pc.cpp:3822-3826), which status_calc_misc then extends by luk + 10 (perfect dodge in tenths). For a
+    // base-1 character (LUK 1) the card's LUK +2 gives luk 3: flee2 = 10 + 3 + 10 = 23.
+    [Fact]
+    public void EquipmentStats_PoringCard_AddsLuckAndTenPerfectFleeTenths()
+    {
+        const int cottonShirt = 2301, poringCard = 4001;
+        var carded = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = poringCard, Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(2, equipment.ParamBonus.Luck);
+        Assert.Equal(10, equipment.FlatBonusesOrEmpty.Get("bFlee2"));
+        var state = new CharacterGameplayState(CharacterId: 1, Version: 0, JobClass: 0, BaseLevel: 1, JobLevel: 1, BaseExperience: 0, JobExperience: 0,
+            CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
+        var snapshot = new CharacterStatusSnapshot(state, new EffectiveCharacterStats(1, 1, 1, 1, 1, 3, 0, 0), DateTimeOffset.UnixEpoch);
+        Assert.Equal(23, Rules.Stats.CalculateDerivedStats(snapshot, equipment).PerfectFlee);
+    }
+
+    // S7 random options: item_randomopt_db.yml Id 3 "VAR_STRAMOUNT" (`bonus bStr,getrandomoptinfo(ROA_VALUE);`)
+    // occupying a Cotton_Shirt's Option0 slot. The option's OWN persisted Value (not the row's Refine, which a
+    // random option never reads) becomes the Strength delta - confirmed via the real generated pack
+    // (GeneratedItems.RandomOptions[3]), not a hand-built fixture script.
+    [Fact]
+    public void EquipmentStats_RealRandomOptionInOption0Slot_UsesTheSlotsOwnPersistedValue()
+    {
+        const int cottonShirt = 2301;
+        const uint strAmount = 3; // VAR_STRAMOUNT
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption((short)strAmount, 4, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 4, 0, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // Two occupied random-option slots on the same row both contribute, summed into the same ParamBonus
+    // accumulator as cards/equip scripts - Id 3 VAR_STRAMOUNT (bStr) and Id 4 VAR_AGIAMOUNT (bAgi).
+    [Fact]
+    public void EquipmentStats_TwoRealRandomOptionsInDifferentSlots_BothContribute()
+    {
+        const int cottonShirt = 2301;
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption(3, 4, 0), Option1 = new InventoryOption(4, 2, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 4, Agility: 2, 0, 0, 0, 0), equipment.ParamBonus);
+    }
+
+    // An empty option slot (Id 0 - never a real item_randomopt_db.yml row) is skipped exactly like a zero card
+    // slot, never resolved against a nonexistent option id 0.
+    [Fact]
+    public void EquipmentStats_EmptyRandomOptionSlot_ContributesNothing()
+    {
+        const int cottonShirt = 2301;
+        var unoptioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(unoptioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus);
+    }
+
+    // An unknown random-option id (never a real item_randomopt_db.yml row - a data/generation invariant
+    // violation, never a legitimate persisted state) is rejected explicitly, matching every other "cannot
+    // fully account for this equipped state" rejection in this method.
+    [Fact]
+    public void EquipmentStats_UnknownRandomOptionId_IsRejected()
+    {
+        const int cottonShirt = 2301;
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption(short.MaxValue, 1, 0), Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // S7 bonus2/bonus3 extended bonuses: item_randomopt_db.yml Id 87 "RACE_TOLERACE_NOTHING"
+    // (`bonus2 bSubRace,RC_Formless,getrandomoptinfo(ROA_VALUE);`) accumulates into EquipmentStats.ExtendedBonuses
+    // - NOT into ParamBonus (bSubRace is not one of the 6 flat primary stats or the MaxHp/MaxSp family) - typed
+    // Feature 16 data, not yet consumed by any Feature 17 combat formula (see EquipmentExtendedBonus's own doc
+    // comment for the ownership boundary).
+    [Fact]
+    public void EquipmentStats_RealBonus2RandomOption_AccumulatesIntoExtendedBonuses_NotParamBonus()
+    {
+        const int cottonShirt = 2301;
+        const uint raceToleranceNothing = 87;
+        const long spSubRace = 1011;
+        const long rcFormless = 0;
+        var optioned = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Option0 = new InventoryOption((short)raceToleranceNothing, 15, 0), Revision = 0 })]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(optioned, GeneratedItems.ById, out var equipment));
+        Assert.Equal(EquipmentParamBonus.None, equipment.ParamBonus);
+        Assert.Equal([new EquipmentExtendedBonus(spSubRace, rcFormless, null, 15)], equipment.ExtendedBonusesOrEmpty);
+    }
+
+    // S7 combos: item_combos.yml's real Ear_Of_Devil's_Wing(5068, Equip=0x200, own script `bonus bStr,1;`) +
+    // Darkness_Helm_J(5653, Equip=0x100, no script) combo (`bonus bStr,1; bonus2 bAddClass,Class_All,5;`) - two
+    // distinct, independently equippable slots, proving ComboResolver.ActiveCombos fires when BOTH
+    // alternative-set items are equipped, the combo's own shared script sums into the SAME param_bonus/
+    // extendedBonuses accumulators as any equip/card script (bStr: 1 own + 1 combo = 2), and a combo mixing
+    // plain `bonus` with `bonus2` resolves both parts correctly.
+    [Fact]
+    public void EquipmentStats_RealTwoItemCombo_BothSlotsEquipped_ActivatesAndAddsItsBonus()
+    {
+        const int earOfDevilsWing = 5068;
+        const int darknessHelmJ = 5653;
+        const long spAddClass = 2064;
+        const long classAll = 6;
+        var combo = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, earOfDevilsWing, 1, 0x200, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+            new CharacterInventoryItem(2, 1, darknessHelmJ, 1, 0x100, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(combo, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 2, 0, 0, 0, 0, 0), equipment.ParamBonus);
+        Assert.Equal([new EquipmentExtendedBonus(spAddClass, classAll, null, 5)], equipment.ExtendedBonusesOrEmpty);
+    }
+
+    // The SAME combo, only ONE of its two items equipped - the combo must NOT activate (only the item's OWN
+    // bStr,1 bonus applies, never the combo's extra +1/bonus2), proving ActiveCombos genuinely requires every
+    // alternative-set member present, not just one.
+    [Fact]
+    public void EquipmentStats_RealTwoItemCombo_OnlyOneSlotEquipped_DoesNotActivate()
+    {
+        const int earOfDevilsWing = 5068;
+        var single = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, earOfDevilsWing, 1, 0x200, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(single, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(Strength: 1, 0, 0, 0, 0, 0), equipment.ParamBonus);
+        Assert.Empty(equipment.ExtendedBonusesOrEmpty);
+    }
+
+    // S7 combos via CARD slots: Succubus_Card(4218, own script `bonus bVit,-3; bonus bHPrecovRate,-20; bonus
+    // bMaxHP,1000;`) + Incubus_Card(4269, own script `bonus bInt,-3; bonus bSPrecovRate,-20; bonus bMaxSP,150;`),
+    // combo script `bonus bHPrecovRate,30; bonus bSPrecovRate,30; bonus bVit,4; bonus bInt,4;` - neither card is
+    // an equip-slot item itself (both pinned Card type), so this combo can ONLY activate through two cards
+    // inserted into (possibly different) equipped rows' card slots - proving ComboResolver's combined id pool
+    // genuinely includes card ids, not just each row's own ItemId (pinned pc_checkcombo's own card branch,
+    // pc.cpp:11873-11900). Exact math: Vit 4-3=1, Int 4-3=1, HpRecovRate 30-20=10, SpRecovRate 30-20=10,
+    // MaxHp 1000 (Succubus_Card only), MaxSp 150 (Incubus_Card only) - independently verified against the real
+    // generated pack before writing this assertion, not re-derived from the implementation under test.
+    [Fact]
+    public void EquipmentStats_RealCardOnlyCombo_BothCardsInserted_Activates()
+    {
+        const int cottonShirt = 2301;
+        const int cottonShirtSlotted = 2302;
+        const int succubusCard = 4218;
+        const int incubusCard = 4269;
+        var carded = new CharacterInventorySnapshot([
+            new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Card0 = succubusCard, Revision = 0 }),
+            new CharacterInventoryItem(2, 1, cottonShirtSlotted, 1, 0x000010, true, 0, 0, 0, Detail: ItemInstanceDetail.Empty with { Card0 = incubusCard, Revision = 0 }),
+        ]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(carded, GeneratedItems.ById, out var equipment));
+        Assert.Equal(new EquipmentParamBonus(0, 0, Vitality: 1, Intelligence: 1, 0, 0, MaxHp: 1000, MaxSp: 150, HpRecovRate: 10, SpRecovRate: 10), equipment.ParamBonus);
+    }
+
+    // A card id persisted in a card slot that does not actually resolve to a CardItemDefinition (a data/
+    // generation invariant violation - never a legitimate gameplay state) is rejected explicitly, matching
+    // every other "cannot fully account for this equipped state" rejection in this method.
+    [Fact]
+    public void EquipmentStats_NonCardItemIdInCardSlot_IsRejected()
+    {
+        const int cottonShirt = 2301;
+        const int sword = 1101; // a real item id, but NOT a card.
+        var invalid = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, 0, 0, 0,
+            Detail: ItemInstanceDetail.Empty with { Card0 = sword, Revision = 0 })]);
+
+        Assert.False(Rules.Stats.TryResolveEquipment(invalid, GeneratedItems.ById, out var equipment));
+        Assert.Equal(default, equipment);
+    }
+
+    // A4: equipped ammo (routine, common gameplay for several classes - archers equip arrows constantly) must
+    // NOT discard every other equipped item's contribution. Real pinned Arrow (1750, Type: Ammo, no script) worn
+    // alongside a refined Cotton_Shirt proves the armor's hard DEF/refine bonus still resolves correctly with
+    // ammo equipped - before this fix, TryResolveEquipment's switch had no AmmoItemDefinition case at all, so it
+    // fell to `default: return false`, zeroing the Cotton_Shirt's contribution too.
+    [Fact]
+    public void EquipmentStats_AmmoEquippedAlongsideArmor_DoesNotDiscardArmorContribution()
+    {
+        const int arrow = 1750;
+        const int cottonShirt = 2301;
+        var armorRow = new CharacterInventoryItem(1, 0, cottonShirt, 1, 0x000010, true, Refine: 4, 0, 0);
+        var ammoRow = new CharacterInventoryItem(2, 1, arrow, 1, 0x008000, true, 0, 0, 0);
+        var inventory = new CharacterInventorySnapshot([armorRow, ammoRow]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.Equal(10, equipment.HardDefense); // Cotton_Shirt's Defense still counted.
+        Assert.Equal(400, equipment.ArmorRefineDefense); // pinned Armor Level 1 Refine 4=400.
+    }
+
+    // A4: a left-hand (dual-wield) weapon - a real, currently-reachable state via
+    // CharacterEquipmentMutationService's own EQP_ARMS logic - is a known, unmodeled contribution (no
+    // left-hand/dual-wield combat support in this project yet, see BasicAttackRangeResolver's own doc comment),
+    // not an unresolvable one. It must not discard the right-hand weapon's own refine contribution.
+    [Fact]
+    public void EquipmentStats_LeftHandWeaponAlongsideRightHandWeapon_DoesNotDiscardRightHandContribution()
+    {
+        const int sword = 1101;
+        var rightHand = new CharacterInventoryItem(1, 0, sword, 1, 0x000002, true, Refine: 5, 0, 0);
+        var leftHand = new CharacterInventoryItem(2, 1, sword, 1, 0x000020, true, 0, 0, 0); // EQI_HAND_L bit only.
+        var inventory = new CharacterInventorySnapshot([rightHand, leftHand]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment));
+        Assert.NotNull(equipment.Weapon); // the right-hand sword still resolves as THE weapon.
+        Assert.Equal(1000, equipment.WeaponRefineAtk * 100); // pinned Weapon Level 1 Refine 5 Bonus=1000, still counted.
+    }
+
+    // A4: shadow gear's static Defense is modeled data (ShadowGearItemDefinition.Defense, documented to feed hard
+    // DEF like armor) that TryResolveEquipment's switch previously had no case for at all, discarding it AND every
+    // other equipped item's contribution. No real pinned ShadowGear item has a resolvable equip script (every one
+    // in db/re/item_db_equip.yml uses bMaxHP/bSkillAtk/bSkillUseSPrate forms EquipmentBonusResolver does not
+    // parse), so this one assertion uses a minimal synthetic fixture - documented here, not fabricated to dodge a
+    // real counterexample that does not exist in the pinned data.
+    [Fact]
+    public void EquipmentStats_ShadowGearDefense_CountsTowardHardDefense_SyntheticFixture()
+    {
+        var shadowGear = new ShadowGearItemDefinition(90001, "Synthetic_Shadow_Armor", "Synthetic Shadow Armor",
+            Stackable: false, ClientViewId: 0, new WorldSourceInfo("synthetic", "n/a", "n/a", 0), Defense: 7, EquipLocation: 0x000010);
+        var items = new Dictionary<int, ItemDefinition>(GeneratedItems.ById) { [shadowGear.Id] = shadowGear };
+        var inventory = new CharacterInventorySnapshot([new CharacterInventoryItem(1, 0, shadowGear.Id, 1, 0x000010, true, 0, 0, 0)]);
+
+        Assert.True(Rules.Stats.TryResolveEquipment(inventory, items, out var equipment));
+        Assert.Equal(7, equipment.HardDefense);
+    }
+
     public static TheoryData<int> KnifeTargets => [0, 1, 2];
 
     // Reference: a Knife-wielding Novice's non-critical, non-miss damage values against real mobs. Accuracy and
@@ -467,7 +1066,7 @@ public sealed class RathenaReferenceFixtureValidationTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22", "VF-23"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
     [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());

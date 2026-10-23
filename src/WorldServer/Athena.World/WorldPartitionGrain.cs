@@ -7,7 +7,7 @@ using Athena.Net.World.Runtime;
 
 namespace Athena.Net.World;
 
-public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovementPathProvider movementPathProvider, TimeProvider timeProvider, IMapCollisionProvider collisionProvider, WorldMonsterTouchedWindowOptions? touchedWindowOptions = null) : Grain, IWorldPartitionGrain
+public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovementPathProvider movementPathProvider, TimeProvider timeProvider, IMapCollisionProvider collisionProvider, WorldMonsterTouchedWindowOptions? touchedWindowOptions = null, WorldGroundItemOptions? groundItemOptions = null) : Grain, IWorldPartitionGrain
 {
     private readonly Dictionary<string, MapRuntime> _maps = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, string> _mapByCharacter = [];
@@ -43,6 +43,25 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     // for as long as any player remains registered on that map, since unloading it would force a
     // spurious resync (fresh epoch) on every currently-connected observer for no reason.
     private readonly Dictionary<string, WorldPlayerMapSimulation> _playerSimulations = new(StringComparer.OrdinalIgnoreCase);
+    // Feature 16 S2/S3: one WorldGroundItemMapSimulation per map, created lazily on first touch -
+    // same "never pre-materialize state for a map nobody has touched" convention as the two
+    // dictionaries above. Deliberately never unloaded by the touched-window policy (see that type's
+    // own doc comment for why): a map with zero current players can still legitimately hold a ground
+    // item nobody has picked up yet.
+    private readonly Dictionary<string, WorldGroundItemMapSimulation> _groundItemSimulations = new(StringComparer.OrdinalIgnoreCase);
+    // Ground items share the SAME global client-visible actor-ID namespace every player/monster/
+    // NPC actor already draws from (GroundItemId is literally the wire-facing "groundActorId" field
+    // - see ai/iro-2026-wire.md's ground-item wire evidence section) - a private per-map counter
+    // would risk numerically colliding with a real player/monster/NPC ActorId on the SAME map.
+    // LeasedBlockActorIdAllocator (re-lease-on-exhaustion, many small one-at-a-time allocations) is
+    // the correct fit here - unlike LoadMonsterSpawnsAsync's own exact-size batch lease (ground-item
+    // drops happen one at a time, unpredictably, never as a wholesale-rebuilt batch) - exactly the
+    // same shape MapServer's own NPC/warp allocator already uses for the identical reason (see
+    // WorldActorIdAllocator's own doc comment). One instance shared across every map this partition
+    // owns, created lazily on first use.
+    private LeasedBlockActorIdAllocator? _groundItemActorIdAllocator;
+    private LeasedBlockActorIdAllocator GroundItemActorIdAllocator => _groundItemActorIdAllocator ??= new LeasedBlockActorIdAllocator(
+        (blockSize, _) => GrainFactory.GetGrain<IActorIdBlockAuthorityGrain>(ActorIdBlockAuthorityGrainKey.WellKnownKey).LeaseBlockAsync($"world-ground-items:{PartitionId}", blockSize));
     private Orleans.Runtime.IGrainTimer? _monsterTickTimer;
     private DateTimeOffset? _lastMonsterTickAt;
     private string PartitionId => this.GetPrimaryKeyString();
@@ -95,6 +114,14 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (_playerSimulations.TryGetValue(mapId, out var simulation)) return simulation;
         simulation = new WorldPlayerMapSimulation(mapId);
         _playerSimulations[mapId] = simulation;
+        return simulation;
+    }
+
+    private WorldGroundItemMapSimulation GroundItemSimulation(string mapId)
+    {
+        if (_groundItemSimulations.TryGetValue(mapId, out var simulation)) return simulation;
+        simulation = new WorldGroundItemMapSimulation(mapId, timeProvider, groundItemOptions?.Lifetime, groundItemOptions?.UnresolvedClaimDeadline, groundItemOptions?.DropDedupWindow);
+        _groundItemSimulations[mapId] = simulation;
         return simulation;
     }
 
@@ -772,6 +799,76 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         if (current.PresenceId != update.PresenceId) return Task.FromResult(new WorldPresenceLifeStateResult(WorldPresenceLifeStateStatus.StalePresence));
         Map(current.MapId).Players[current.CharacterId] = current with { IsAlive = update.IsAlive };
         return Task.FromResult(new WorldPresenceLifeStateResult(WorldPresenceLifeStateStatus.Updated));
+    }
+
+    // Feature 16 S2/S3: ground-item lifecycle RPCs. See WorldGroundItemMapSimulation's own doc
+    // comment for the claim-before-grant exclusivity mechanism these thin wrappers expose. Every
+    // method except DropGroundItemAsync awaits nothing, so each is a single uninterruptible grain
+    // turn exactly like ApplyMonsterDamageAsync above - two concurrent ClaimGroundItemAsync calls
+    // for the same item can never interleave. DropGroundItemAsync itself DOES await (the shared
+    // actor-ID allocator, which may need to lease a fresh block from a separate grain) - see its own
+    // doc comment for why this is still race-free despite that await.
+    //
+    // GroundItemId is allocated from the SAME global client-visible actor-ID namespace every player/
+    // monster/NPC actor already draws from (see GroundItemActorIdAllocator's own doc comment) -
+    // allocation happens AFTER confirming this exact DropId is not already a dedup hit (so a retry
+    // never burns an id for nothing), but the dedup CHECK-then-ALLOCATE-then-COMMIT sequence spans
+    // an await, which could in principle let a concurrent call for the SAME DropId interleave between
+    // the check and the commit. WorldGroundItemMapSimulation.Drop's own dedup check at commit time
+    // (immediately before actually inserting the entry) is what makes this safe regardless: if two
+    // concurrent calls for the same DropId both pass the early TryGetExistingDrop check, both
+    // allocate an id, but only the FIRST to reach Drop's own synchronous commit actually inserts an
+    // entry - the second's Drop call re-checks _dropDedup (now populated) and correctly returns
+    // AlreadyDropped instead, at the cost of one wasted (never reused, but harmless - the shared
+    // allocator's domain is enormous) actor-ID allocation on the loser.
+    public async Task<WorldGroundItemDropResult> DropGroundItemAsync(WorldGroundItemDrop drop)
+    {
+        var mapId = RequireOwnedMap(drop.MapId);
+        var simulation = GroundItemSimulation(mapId);
+        if (simulation.TryGetExistingDrop(drop.DropId, out var existingId))
+            return new WorldGroundItemDropResult(WorldGroundItemDropStatus.AlreadyDropped, existingId);
+
+        var groundItemId = await GroundItemActorIdAllocator.AllocateAsync();
+        return simulation.Drop(drop with { MapId = mapId }, groundItemId);
+    }
+
+    public Task<WorldGroundItemClaimResult> ClaimGroundItemAsync(WorldGroundItemClaim claim)
+    {
+        var mapId = RequireOwnedMap(claim.Item.MapId);
+        var simulation = GroundItemSimulation(mapId);
+        if (!claim.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemClaimResult(WorldGroundItemClaimStatus.StaleEpoch, null));
+        return Task.FromResult(simulation.Claim(claim));
+    }
+
+    public Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference)
+    {
+        var mapId = RequireOwnedMap(reference.Item.MapId);
+        var simulation = GroundItemSimulation(mapId);
+        if (!reference.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemCompletionResult(WorldGroundItemCompletionStatus.StaleEpoch));
+        return Task.FromResult(simulation.Complete(reference));
+    }
+
+    public Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference)
+    {
+        var mapId = RequireOwnedMap(reference.Item.MapId);
+        var simulation = GroundItemSimulation(mapId);
+        if (!reference.Item.Epoch.Equals(simulation.Epoch))
+            return Task.FromResult(new WorldGroundItemCompletionResult(WorldGroundItemCompletionStatus.StaleEpoch));
+        return Task.FromResult(simulation.Release(reference));
+    }
+
+    public Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId)
+    {
+        mapId = RequireOwnedMap(mapId);
+        return Task.FromResult(GroundItemSimulation(mapId).BuildSnapshot());
+    }
+
+    public Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId)
+    {
+        mapId = RequireOwnedMap(mapId);
+        return Task.FromResult(GroundItemSimulation(mapId).BuildPage(cursor));
     }
 
     private string RequireOwnedMap(string mapId)

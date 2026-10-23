@@ -954,5 +954,91 @@ diffed byte-for-byte against what Athena actually sends, rather than only trusti
 derivation. Do not mark this Verified, and do not change the current layout, without such a
 capture - this is an explicit, reported evidence gap, not a resolved finding.
 
+## Verified ground-item appearance/pickup/removal wire evidence (G108 capture)
+
+Source: `G108.pcapng` (stock iRO client, port 4501, provided by the user as two derived JSON
+evidence exports - raw per-frame TCP payloads plus a pre-filtered ground-item correlation -
+independently re-verified byte-for-byte against the raw export before anything below was recorded;
+sha256 of the original pcap is in the evidence export's own header). The capture's raw bytes are
+NOT committed to this repository (see "Capture handling" below) - only the verified field findings
+are recorded here.
+
+Two full ground-item lifecycles are present and were independently decoded field-by-field from the
+raw TCP payload bytes (not taken on faith from any derived summary):
+
+- Actor `0x000171D4`, item 914: appearance only (frame 83048), removal with no observed pickup by
+  this client (frame 83064) - a bystander-visible item someone else (or nobody) picked up/expired.
+- Actor `0x00016EBD`, item 705: appearance (frame 83195), this client's own pickup request (frame
+  83238), inventory grant ack (frame 83239), removal (frame 83241) - a complete, correlated
+  self-pickup sequence.
+
+### `0x0ADD` S2C, 24 bytes - floor-item appearance
+
+Confirmed by independent re-parse of both captured instances:
+- `packetType.W` (offset 0) = `0x0ADD`.
+- `groundActorId.L` (offset 2, u32 LE) - a stable per-ground-item id, distinct from any
+  character/monster ActorId space; reused unchanged across this packet, the pickup request, and the
+  removal packet for the SAME dropped item.
+- `itemId.L` (offset 6, u32 LE) - confirmed against both samples' independently-known item ids
+  (914 and 705) by direct arithmetic on the raw bytes, not assumed from the evidence export.
+- `x.W` (offset 16, u16 LE) and `y.W` (offset 18, u16 LE) - confirmed self-consistent plain
+  (non-bit-packed) coordinates: sample 1 decodes to (300, 214), sample 2 to (271, 196), matching the
+  evidence export's independently-asserted (271, 196) for the second sample.
+
+Unresolved (only two samples exist; do not guess further without more captures):
+- Offsets 10-15 (6 bytes) and offsets 20-23 (4 bytes): byte-level content differs between the two
+  samples in a way not yet explained (candidates include subX/subY fractional position, a drop
+  "owner" bitmask/flag, stack count, or a per-client visibility subtype) - NOT identified, not
+  guessed at, and not implemented.
+- Whether this is `ZC_ITEM_FALL_ENTRY` or an equivalent current-PACKETVER name/alias is not
+  confirmed from source; only the wire shape above is established.
+
+### `0x0362` C2S, 6 application bytes + 1 opaque trailer byte - pickup request
+
+- `packetType.W` (offset 0) = `0x0362`.
+- `groundActorId.L` (offset 2, u32 LE) - matches the appearance packet's `groundActorId` exactly
+  for the picked-up item (`0x00016EBD` in the captured sample).
+- A 7th wire byte follows on the MapServer connection (captured value `0xcd`); this is the SAME
+  opaque per-connection trailer byte already documented throughout this file for other MapServer
+  C2S packets (e.g. `0x00A7` item-use, `0x0112` skill-up) - it is NOT part of this packet's
+  application payload and must never be interpreted as a pickup-request field.
+
+### `0x0B41` S2C, 70 bytes - inventory grant ack
+
+No new finding: this capture's instance (clientIndex=5, amount=1, itemId=705, offset 10=1
+identified, offset 32=3, offset 33=success) matches `IroMonsterCombatPackets.BuildItemPickupAck`
+(`src/MapServer/Net/IroMonsterCombatPackets.cs`) byte-for-byte against this project's own ALREADY
+IMPLEMENTED and already-tested serializer (used today for container/quest-drop grants). A ground-
+item pickup grant can reuse this exact existing packet unchanged; `itemType: 3` (the existing
+callers' own convention) is independently corroborated by this capture, not merely assumed.
+
+### `0x00A1` S2C, 6 bytes - floor-item removal
+
+- `packetType.W` (offset 0) = `0x00A1`.
+- `groundActorId.L` (offset 2, u32 LE) - matches the corresponding appearance packet's
+  `groundActorId` exactly in both captured instances (one pickup-caused removal, one removal with
+  no observed pickup by this client - a vanish/expiry/other-player-pickup case this single capture
+  cannot distinguish).
+
+### Evidence boundary
+
+What this capture does NOT establish, and must not be assumed:
+- `0x0ADD`'s unresolved 10 bytes (see above).
+- Whether `0x00A1` carries a reason code distinguishing pickup/expiry/other-player-pickup (it does
+  not appear to, at 6 bytes total, but only two samples exist).
+- `0x009D` (candidate existing-floor-item visibility/bootstrap packet, per the external Atlas
+  reference the user supplied) - not present in this capture at all; its role is unconfirmed by any
+  evidence this project holds directly.
+- Drop-side framing (what the server sends when a monster death or a player's own discard creates a
+  new ground item nobody has seen yet) - this capture only shows appearance/pickup/removal of items
+  that already existed when the capture started or appeared from an unknown cause; no monster-death
+  or player-discard moment was captured.
+- Any ownership/loot-lock window semantics - not observable from wire bytes alone.
+
+Do not extend `0x0ADD`'s field layout, invent a removal reason code, or implement `0x009D` without a
+further capture. The authoritative ground-item lifecycle (drop/claim/expiry) implemented in
+`src/MapServer/World/` and `src/WorldServer/` is server-side-only and does not depend on any of the
+above; wire projection for it uses exactly and only the four packets confirmed above.
+
 ## Capture handling
 Official captures can contain credentials, account/session identifiers, bearer/JWT-like tokens, and other sensitive authentication material. Never commit unsanitized PCAPs or raw token dumps to the repository.

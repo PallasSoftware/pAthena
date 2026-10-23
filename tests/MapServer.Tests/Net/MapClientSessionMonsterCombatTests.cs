@@ -9,6 +9,7 @@ using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.World;
+using MapServer.Tests.Testing;
 using Athena.Net.World.Contracts;
 
 namespace Athena.Net.MapServer.Tests.Net;
@@ -82,46 +83,6 @@ public sealed class MapClientSessionMonsterCombatTests
     // those, in first-added order. DurableId is CharServer's row identity, never a runtime slot -
     // the caller (CharacterInventorySession/MapClientSession) is solely responsible for turning
     // IsNewRow+DurableId into a runtime SlotIndex via CharacterInventorySnapshot.WithNewItem.
-    private sealed class RecordingInventoryPersistence(uint existingRowCount = 0) : ICharacterInventoryPersistence
-    {
-        private readonly Dictionary<int, uint> _amounts = new();
-        private readonly Dictionary<int, uint> _durableIds = new();
-        private readonly List<int> _newRowOrder = [];
-        public bool FailNextCall { get; set; }
-
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-        {
-            if (FailNextCall)
-            {
-                FailNextCall = false;
-                return Task.FromResult(InventoryAddPersistenceResult.Failed());
-            }
-
-            _amounts.TryGetValue(itemId, out var current);
-            var updated = current + amount;
-            _amounts[itemId] = updated;
-
-            var newRowIndex = _newRowOrder.IndexOf(itemId);
-            var isNewRow = newRowIndex < 0;
-            if (isNewRow)
-            {
-                newRowIndex = _newRowOrder.Count;
-                _newRowOrder.Add(itemId);
-            }
-            if (!_durableIds.TryGetValue(itemId, out var durableId))
-            {
-                durableId = existingRowCount + (uint)newRowIndex + 1;
-                _durableIds[itemId] = durableId;
-            }
-
-            return Task.FromResult(new InventoryAddPersistenceResult(true, updated, durableId, Equip: 0, Identified: true, Refine: 0, Favorite: 0, Bound: 0, isNewRow));
-        }
-
-        // Not exercised by this file's reward-path tests (they only ever add items) - a minimal
-        // stub is sufficient here, matching this fixture's existing narrow scope.
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken) =>
-            Task.FromResult(InventoryConsumePersistenceResult.Failed());
-    }
 
     private static byte[] AttackPacket(uint targetActorId)
     {
@@ -200,7 +161,7 @@ public sealed class MapClientSessionMonsterCombatTests
     private static int MinWeaponAtkRoll(int min, int max) => min;
 
     private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, MobInstance Target)> SetupAsync(
-        RecordingInventoryPersistence inventoryPersistence, CharacterQuestStatus questState, ICharacterInventoryListPersistence? inventoryListPersistence = null,
+        InMemoryInventoryOperations inventoryPersistence, CharacterQuestStatus questState,
         CharacterGameplayState? gameplayState = null, TimeProvider? timeProvider = null, Func<int, int, int>? rollWeaponAtk = null,
         MobDefinition? mobDefinition = null, GameplayRateOptions? rates = null, string characterName = "")
     {
@@ -223,7 +184,7 @@ public sealed class MapClientSessionMonsterCombatTests
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(rollWeaponAtk));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat(rollWeaponAtk));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
@@ -237,7 +198,7 @@ public sealed class MapClientSessionMonsterCombatTests
             "int_land", 75, 51, WorldMapRegistry.Tutorial,
             questPersistence: questPersistence, gameplayStatePersistence: gameplayPersistence,
             accountId: AccountId, charId: CharId, monsterProjections: monsterProjections, combat: combat,
-            inventoryPersistence: inventoryPersistence, inventoryListPersistence: inventoryListPersistence,
+            inventoryOperations: inventoryPersistence,
             timeProvider: timeProvider, rates: rates, combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", 75, 51, 0, 0, 0, CharacterName: characterName));
@@ -250,17 +211,6 @@ public sealed class MapClientSessionMonsterCombatTests
         return (client, stream, session, run, target);
     }
 
-    private sealed class FixedInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        private CharacterInventorySnapshot _current = initial;
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) => Task.FromResult(CharacterInventoryReadResult.Success(_current));
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t)
-        {
-            var items = _current.Items.Select(i => i.DurableId == durableId ? i with { Equip = equip } : i).ToList();
-            _current = new CharacterInventorySnapshot(items);
-            return Task.FromResult(true);
-        }
-    }
 
     private sealed class FixedCellSelector(ushort x, ushort y) : IMobSpawnCellSelector
     {
@@ -274,7 +224,7 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_QuestActive_KillsMonster_GrantsWood_ThenRemovesActor()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
+        var inventoryPersistence = new InMemoryInventoryOperations();
         var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
@@ -344,7 +294,7 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_TargetNeverDiscoveredByThisSession_SendsDamageButNotHpInfo()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
+        var inventoryPersistence = new InMemoryInventoryOperations();
         // WeakFreshNovice so the attack is guaranteed non-lethal (this test asserts on the
         // ordinary hit sequence only, never the death/vanish sequence).
         var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice());
@@ -371,7 +321,7 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_QuestNotActive_KillsMonster_NoWoodPacketSent()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
+        var inventoryPersistence = new InMemoryInventoryOperations();
         var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent);
         using var _ = client;
 
@@ -419,7 +369,7 @@ public sealed class MapClientSessionMonsterCombatTests
             new WorldSourceInfo("rAthena", "e985006171d2eb320ee512a653f4c83aea3d81b6", "legacy/rathena/db/re/mob_db.yml", 136));
         var rates = new GameplayRateOptions { BaseExpRate = 500, JobExpRate = 200 };
         var (client, stream, session, run, target) = await SetupAsync(
-            new RecordingInventoryPersistence(), CharacterQuestStatus.Absent,
+            new InMemoryInventoryOperations(), CharacterQuestStatus.Absent,
             gameplayState: WeakFreshNovice(), mobDefinition: poring, rates: rates);
         using var _ = client;
 
@@ -485,7 +435,7 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_AlreadyDeadMonster_DoesNotAwardWoodTwice()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
+        var inventoryPersistence = new InMemoryInventoryOperations();
         var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
@@ -566,10 +516,9 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_WithEquippedKnife_KillsMonster_UsingWeaponAwareDamage()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1); // Knife already occupies slot 0.
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active, inventoryListPersistence);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -605,10 +554,9 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_UnequipKnifeMidSession_ReturnsToUnarmedCombat_WithoutReconnecting()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, WeakFreshNovice());
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, WeakFreshNovice());
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -655,10 +603,9 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_ReequipKnifeMidSession_ReturnsToWeaponAwareCombat_WithoutReconnecting()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1); // Knife already occupies slot 0.
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active, inventoryListPersistence);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -704,13 +651,12 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_NonWeaponItemInRightHandSlot_RejectsAttack_NoWireResponseAtAll()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence();
         // Wood (6008, EtcItemDefinition) is never equippable in real pinned item_db data; a row
         // carrying Equip=EQP_HAND_R for it can only represent corrupted/invariant-violating
         // authoritative state, which is exactly the case this test exercises.
         var invalidInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 6008, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(invalidInventory);
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active, inventoryListPersistence);
+        var inventoryPersistence = new InMemoryInventoryOperations(invalidInventory);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -757,15 +703,14 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_KillsTwoMonsters_WoodStacksInStableFourthSlot_RuntimeSnapshotUpdatesImmediately_ExistingEquipmentSlotsUnaffected()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 3);
         var startingInventory = new CharacterInventorySnapshot(
         [
             new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0), // Knife, equipped (slot 0)
             new CharacterInventoryItem(DurableId: 2, SlotIndex: 1, 2301, 1, 0x000010, true, 0, 0, 0), // Cotton Shirt, equipped (slot 1)
             new CharacterInventoryItem(DurableId: 3, SlotIndex: 2, 23484, 1, 0, true, 0, 0, 0), // First Aid Box, unequipped (slot 2)
         ]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(startingInventory);
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active, inventoryListPersistence);
+        var inventoryPersistence = new InMemoryInventoryOperations(startingInventory);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -838,12 +783,11 @@ public sealed class MapClientSessionMonsterCombatTests
         // died and real respawn/second-instance timing is unrelated to the inventory-consistency
         // fix under test (requirement 5/9: stack increment preserves slot, no new row).
         var woodDurableId = session.Inventory!.Items.Single(i => i.ItemId == 6008).DurableId;
-        var secondAddResult = await new CharacterInventorySession(AccountId, CharId, inventoryPersistence)
-            .AddItemAsync(GeneratedItems.Wood, 1, CancellationToken.None);
-        Assert.True(secondAddResult.Success);
-        Assert.False(secondAddResult.IsNewRow); // Same durable row, not a new one.
-        Assert.Equal(woodDurableId, secondAddResult.DurableId);
-        Assert.Equal(2u, secondAddResult.Item!.Value.Amount);
+        var secondAdd = await session.InventoryService!.GrantAsync(GeneratedItems.Wood, 1, CancellationToken.None);
+        Assert.True(secondAdd.Succeeded);
+        var (placedRow, added) = Assert.Single(secondAdd.Placements());
+        Assert.IsType<Athena.Net.Shared.Inventory.AddToStackMutation>(Assert.Single(secondAdd.Mutations)); // Same durable row, not a new one.
+        Assert.Equal((woodDurableId, 3u, 1u, 2u), (placedRow.DurableId, placedRow.SlotIndex, added, placedRow.Amount));
 
         client.Close();
         await run.WaitAsync(TimeSpan.FromSeconds(5));
@@ -855,7 +799,7 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_KillsMonster_PersistenceFailure_DoesNotMutateRuntimeSnapshot_DoesNotNotifyClient()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence { FailNextCall = true };
+        var inventoryPersistence = new InMemoryInventoryOperations { DropRequests = 100 };
         var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Active);
         using var _ = client;
 
@@ -911,7 +855,7 @@ public sealed class MapClientSessionMonsterCombatTests
     public async Task Attack_LethalHit_WithExpNoLevelUp_PersistsOnce_SendsProgressionPacketsBeforeDeathVanish()
     {
         var (client, stream, session, run, target) = await SetupAsync(
-            new RecordingInventoryPersistence(), CharacterQuestStatus.Absent, mobDefinition: ExpBearingPoring());
+            new InMemoryInventoryOperations(), CharacterQuestStatus.Absent, mobDefinition: ExpBearingPoring());
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -970,7 +914,7 @@ public sealed class MapClientSessionMonsterCombatTests
     public async Task Attack_LethalHit_ExpPersistenceFails_StillVanishesMonster_NoProgressionPackets_StateUnchanged()
     {
         var (client, stream, session, run, target) = await SetupAsync(
-            new RecordingInventoryPersistence(), CharacterQuestStatus.Absent, mobDefinition: ExpBearingPoring());
+            new InMemoryInventoryOperations(), CharacterQuestStatus.Absent, mobDefinition: ExpBearingPoring());
         using var _ = client;
         _lastGameplayPersistence!.FailUpdates = true;
 
@@ -1074,11 +1018,10 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_OneRepeatRequest_ProducesMultipleHits_WithoutAnotherClientPacket()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -1109,11 +1052,10 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_RepeatedHits_RespectSourceBackedMinimumInterval()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -1148,11 +1090,10 @@ public sealed class MapClientSessionMonsterCombatTests
         // WeakFreshNovice + Knife deals enough damage per hit that G_PORING's 55 HP dies within a
         // few repeat hits (not the first) - proving the loop stops issuing damage events once the
         // target is dead, rather than merely "the test stopped attacking".
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -1198,9 +1139,8 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_NewTargetRequest_ReplacesPriorRepeatTarget()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
 
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -1226,7 +1166,7 @@ public sealed class MapClientSessionMonsterCombatTests
         combatState.Register(targetA.Map, epoch, targetA.ActorId, new WorldMonsterIncarnationId(targetA.IncarnationId.Value));
         combatState.Register(targetB.Map, epoch, targetB.ActorId, new WorldMonsterIncarnationId(targetB.IncarnationId.Value));
         _lastCombatState = combatState;
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat(MinWeaponAtkRoll));
         var fakeWorld = new FakeCombatWorldRuntime();
         _lastFakeWorld = fakeWorld;
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(targetA.Map, epoch, combatState, registry.AllInstances, fakeWorld);
@@ -1239,7 +1179,7 @@ public sealed class MapClientSessionMonsterCombatTests
             "int_land", 75, 51, WorldMapRegistry.Tutorial,
             questPersistence: questPersistence, gameplayStatePersistence: gameplayPersistence,
             accountId: AccountId, charId: CharId, monsterProjections: monsterProjections, combat: combat,
-            inventoryPersistence: inventoryPersistence, inventoryListPersistence: inventoryListPersistence,
+            inventoryOperations: inventoryPersistence,
             timeProvider: clock, combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", 75, 51, 0, 0, 0));
@@ -1298,11 +1238,10 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_DuplicateRepeatRequestsSameTarget_DoNotCreateConcurrentAttackLoops()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -1367,9 +1306,8 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_MovementRequest_CancelsActiveRepeatAttack()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
         // Step 6 cutover: HandleIroMovementAsync now resolves every fresh movement request through
         // _distributedWorld.MovePlayerAsync (World-authoritative movement) whenever _distributedWorld
@@ -1379,7 +1317,7 @@ public sealed class MapClientSessionMonsterCombatTests
         // it, which only happens when EnterPlayerWorldAsync's own BuildCurrentPresence check passes -
         // requiring a non-empty CharacterName, unlike every other test in this file that never
         // exercises movement at all.
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll, characterName: "TestNovice");
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll, characterName: "TestNovice");
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });
@@ -1414,11 +1352,10 @@ public sealed class MapClientSessionMonsterCombatTests
     [Fact]
     public async Task Attack_SessionDisposal_CancelsOutstandingRepeatState_NoOrphanTask()
     {
-        var inventoryPersistence = new RecordingInventoryPersistence(existingRowCount: 1);
         var knifeInventory = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 1201, 1, 0x000002, true, 0, 0, 0)]);
-        var inventoryListPersistence = new FixedInventoryListPersistence(knifeInventory);
+        var inventoryPersistence = new InMemoryInventoryOperations(knifeInventory);
         var clock = new ControllableTimeProvider();
-        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, inventoryListPersistence, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
+        var (client, stream, session, run, target) = await SetupAsync(inventoryPersistence, CharacterQuestStatus.Absent, gameplayState: WeakFreshNovice(), timeProvider: clock, rollWeaponAtk: MinWeaponAtkRoll);
         using var _ = client;
 
         await stream.WriteAsync(new byte[] { 0x7d, 0x00, 0xaa });

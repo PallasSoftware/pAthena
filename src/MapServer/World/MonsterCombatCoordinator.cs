@@ -15,7 +15,12 @@ public readonly record struct MonsterAttackOutcome(
     bool IsMiss,
     bool KilledByThisHit,
     bool EngagementAcquired,
-    IReadOnlyList<QuestDropOutcome> QuestDrops);
+    IReadOnlyList<QuestDropOutcome> QuestDrops,
+    // Regular mob_db Drops (mob.cpp's common-drop loop, run AFTER quest/script-granted drops - see
+    // MobDropResolver's own doc comment). Unlike QuestDrops (granted straight to the killer's
+    // inventory - a distinct pinned getitem-direct special case), these are ground items: the
+    // caller resolves this list into World.DropGroundItemAsync calls, never a direct grant.
+    IReadOnlyList<MobDropOutcome> MobDrops);
 
 // A calculated candidate hit - the damage formula's own result, computed against the target's
 // static definition only (no local HP/lethality guess any more - World alone decides both, via
@@ -36,7 +41,7 @@ public readonly record struct MonsterAttackCandidate(uint Damage, bool IsMiss, b
 //
 // Depends only on ICombatRules - this class never knows or asks which gameplay ruleset
 // (Renewal/PreRenewal) is active.
-public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, ICombatRules combatRules)
+public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, MobDropResolver mobDrops, ICombatRules combatRules)
 {
     // Computes the damage formula's result against the target's static definition - no HP lookup,
     // no lethality guess, no store access of any kind. The caller (MapClientSession) sends this
@@ -67,6 +72,11 @@ public sealed class MonsterCombatCoordinator(QuestDropResolver questDrops, IComb
         IReadOnlyList<QuestDropOutcome> drops = result.KilledByThisHit && attackerQuestStatus is not null
             ? questDrops.ResolveDrops(attackerQuestStatus, target.MobId)
             : [];
-        return new MonsterAttackOutcome(accepted, result.HpBefore, result.HpAfter, isMiss, result.KilledByThisHit, engagementAcquired, drops);
+        // mob.cpp's common-drop loop runs for every lethal hit regardless of quest state (unlike
+        // quest drops, it has no quest-status precondition) - see MobDropResolver's own doc comment.
+        IReadOnlyList<MobDropOutcome> mobDropOutcomes = result.KilledByThisHit && target.StaticMob.Drops is { Count: > 0 } entries
+            ? mobDrops.ResolveDrops(entries)
+            : [];
+        return new MonsterAttackOutcome(accepted, result.HpBefore, result.HpAfter, isMiss, result.KilledByThisHit, engagementAcquired, drops, mobDropOutcomes);
     }
 }

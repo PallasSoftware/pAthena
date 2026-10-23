@@ -16,4 +16,9 @@
   <ItemGroup>
     <ProjectReference Include="../../tools/WorldDataImporter/WorldDataImporter.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The MapServer item-script evaluator, compiled against the importer's own pack types so the data-driven fixture test can run a
+         freshly converted script end to end (this project cannot reference MapServer.csproj, see ItemPipelineDataDrivenFixtureTests). -->
+    <Compile Include="../../src/MapServer/World/Items/ItemScriptEvaluator.cs" Link="Linked/ItemScriptEvaluator.cs" />
+  </ItemGroup>
 </Project>

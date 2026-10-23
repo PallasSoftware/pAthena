@@ -1451,6 +1451,12 @@ first COLUMN-0 `#`-commented-out line interrupting it — real pinned data has b
 column-0 `#...`-or-blank line without ending the block (the comment/blank lines are still captured,
 but harmless — the entry-matching regexes only match genuine `Name: value`/`- Item:` lines).
 
+The regex scanner described above has since been replaced: `MobDataCompiler` now reads
+`mob_db.yml` with `RathenaYaml` into `YamlMap` blocks (the reader `ItemDatabaseLoader` uses), which
+strips ` #` trailing comments and treats `#` lines as blank structurally. The port is pinned to the
+old scanner's complete 2,675-mob output by `MobDatabaseParserRegressionTests`
+(`tests/WorldDataImporter.Tests/Reference/mob-db-parsed.jsonl.gz`).
+
 Mob definitions are generated once, stateless/deterministic, into the shared global
 `GeneratedMobs` (`internal static partial class`). `generate-mobs` enumerates every effective block
 in pinned `db/re/mob_db.yml`; runtime compatibility never filters source-data generation. Output is
@@ -1484,8 +1490,15 @@ files are never deleted:
 ```bash
 dotnet run --project tools/WorldDataImporter/WorldDataImporter.csproj -- generate-mobs \
   --rathena-root legacy/rathena --rathena-commit e985006171d2eb320ee512a653f4c83aea3d81b6 \
-  --output src/MapServer/Generated/GameData/Mobs
+  --output src/MapServer/Generated/GameData/Mobs \
+  --pack src/MapServer/Generated/Assets/Mobs/AthenaMobs.bin
 ```
+
+The mob data lives in `AthenaMobs.bin` (loaded by `MobCatalog`). Each `GeneratedMobs.Monsters.<range>.cs` is a compiled
+facade of one-line `GeneratedMobs.<Name> => MobCatalog.Current.ById[<id>]` properties, so a removed mob still breaks
+every generated reference at compile time. The same pass writes the complete readable definitions to
+`Readable/GeneratedMobs.Monsters.<range>.cs`, which `MapServer.csproj` excludes from compilation. Add
+`--custom-mobs data/custom/mobs` to include custom definitions (see `data/custom/README.md`).
 
 Keep three independent claims explicit: (1) source representation is 2,675/2,675, (2) generated
 production data is 2,675/2,675 with exact ID-set equality, and (3) runtime capability remains

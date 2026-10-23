@@ -90,7 +90,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         // RecordingWorldRuntime's own feed) and an explicit player-feed tick (via a real
         // MapTcpServer) are required for either session to ever become locally visible at all.
         var runtime = new RecordingWorldRuntime();
-        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
             EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(),
             players, coordinator, WorldVisibilityOptions.Default, new PlayerFeedProjectionRegistry(), Rules: TestGameplayRules.Services());
         var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), world, runtime);
@@ -170,7 +170,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         var players = new PlayerPresenceRegistry();
         var coordinator = new PlayerVisibilityCoordinator(players);
         var runtime = new RecordingWorldRuntime();
-        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
             EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(),
             players, coordinator, WorldVisibilityOptions.Default, new PlayerFeedProjectionRegistry(), Rules: TestGameplayRules.Services());
         var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), world, runtime);
@@ -213,7 +213,7 @@ public sealed class MapClientSessionPlayerPresenceTests
         var players = new PlayerPresenceRegistry();
         var coordinator = new PlayerVisibilityCoordinator(players);
         var runtime = new RecordingWorldRuntime();
-        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
             EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(),
             players, coordinator, WorldVisibilityOptions.Default, new PlayerFeedProjectionRegistry(), Rules: TestGameplayRules.Services());
         var server = new MapTcpServer(new MapConfigStore(new MapConfig(), "unused"), new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), world, runtime);

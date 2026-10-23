@@ -86,6 +86,40 @@ public sealed class CharacterHealServiceTests
         Assert.Equal(State(), session.State);
     }
 
+    // A heal requested while another mutation (a monster hit) is in flight must heal the state that mutation leaves behind, not
+    // overwrite it with a value computed from the pre-hit read: 20 HP - 15 damage + 10 heal = 15, never 30.
+    [Fact]
+    public async Task HealDuringAConcurrentHit_HealsOnTopOfTheHit()
+    {
+        var store = new Store(State());
+        var session = new CharacterGameplayStateSession(7, State(), store);
+        var release = new TaskCompletionSource();
+        store.BeforeUpdate = release.Task;
+
+        var hit = session.MutateAsync(current => current with { CurrentHp = current.CurrentHp - 15 }, default);
+        var heal = new CharacterHealService(session).HealAsync(10, 0, default);
+        store.BeforeUpdate = null;
+        release.SetResult();
+        await hit;
+        var result = await heal;
+
+        Assert.Equal(15U, result!.Value.After.CurrentHp);
+        Assert.Equal(15U, session.State.CurrentHp);
+    }
+
+    // status_heal returns before any change for a dead target (status.cpp:1812-1813).
+    [Fact]
+    public async Task DeadCharacterIsNotHealed()
+    {
+        var dead = State() with { CurrentHp = 0 };
+        var store = new Store(dead);
+        var session = new CharacterGameplayStateSession(7, dead, store);
+        var result = await new CharacterHealService(session).HealAsync(10, 10, default);
+        Assert.False(result!.Value.HpChanged);
+        Assert.False(result.Value.SpChanged);
+        Assert.Equal(0, store.Updates);
+    }
+
     private static CharacterGameplayState State() => new(9, 0, 0, 1, 1, 0, 0, 20, 11, 40, 20, 48, 0, 1, 1, 1, 1, 1, 1);
 
     private sealed class Store(CharacterGameplayState state) : ICharacterGameplayStatePersistence
@@ -94,12 +128,14 @@ public sealed class CharacterHealServiceTests
         public bool Fail { get; init; }
         public int Updates { get; private set; }
         public Task<CharacterGameplayState?> GetAsync(uint accountId, uint characterId, CancellationToken cancellationToken) => Task.FromResult<CharacterGameplayState?>(_state);
-        public Task<CharacterGameplayState?> UpdateAsync(uint accountId, CharacterGameplayState expected, CharacterGameplayState updated, CancellationToken cancellationToken)
+        public Task? BeforeUpdate { get; set; }
+        public async Task<CharacterGameplayState?> UpdateAsync(uint accountId, CharacterGameplayState expected, CharacterGameplayState updated, CancellationToken cancellationToken)
         {
+            if (BeforeUpdate is { } gate) await gate;
             Updates++;
-            if (Fail || expected.Version != _state.Version) return Task.FromResult<CharacterGameplayState?>(null);
+            if (Fail || expected.Version != _state.Version) return null;
             _state = updated with { Version = expected.Version + 1 };
-            return Task.FromResult<CharacterGameplayState?>(_state);
+            return _state;
         }
     }
 }

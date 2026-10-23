@@ -21,6 +21,13 @@ internal sealed class RathenaLexer(string source, string sourceFile, int startLi
     {
         SkipTrivia(); var start = Position();
         if (Current == '\0') return Token(TokenKind.EndOfFile, start);
+        if (Current == '0' && Peek(1) is 'x' or 'X' && Uri.IsHexDigit(Peek(2)))
+        {
+            Advance(); Advance();
+            while (Uri.IsHexDigit(Current)) Advance();
+            var hex = source[start.Offset.._offset];
+            return new(TokenKind.Integer, hex, Span(start), long.Parse(hex.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture));
+        }
         if (char.IsDigit(Current)) { while (char.IsDigit(Current)) Advance(); var text = source[start.Offset.._offset]; return new(TokenKind.Integer, text, Span(start), long.Parse(text, CultureInfo.InvariantCulture)); }
         if (Current == '"') return String(start);
         if (IsVariableStart()) return Word(start, true);

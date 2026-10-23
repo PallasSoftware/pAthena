@@ -10,6 +10,7 @@ using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
+using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.Net;
 
@@ -43,25 +44,7 @@ public sealed class MapClientSessionCombatRangeTests
         }
     }
 
-    private sealed class FixedInventoryListPersistence(CharacterInventorySnapshot initial) : ICharacterInventoryListPersistence
-    {
-        private CharacterInventorySnapshot _current = initial;
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) => Task.FromResult(CharacterInventoryReadResult.Success(_current));
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t)
-        {
-            var items = _current.Items.Select(i => i.DurableId == durableId ? i with { Equip = equip } : i).ToList();
-            _current = new CharacterInventorySnapshot(items);
-            return Task.FromResult(true);
-        }
-    }
 
-    private sealed class RecordingInventoryPersistence : ICharacterInventoryPersistence
-    {
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken) =>
-            Task.FromResult(new InventoryAddPersistenceResult(true, amount, DurableId: 2, Equip: 0, Identified: true, Refine: 0, Favorite: 0, Bound: 0, IsNewRow: true));
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken) =>
-            Task.FromResult(InventoryConsumePersistenceResult.Failed());
-    }
 
     // Strong enough to one/few-shot kill G_PORING's 55 HP armed with the Knife, keeping tests
     // fast/deterministic - matches MapClientSessionMonsterCombatTests' own StrongNovice fixture.
@@ -168,22 +151,21 @@ public sealed class MapClientSessionCombatRangeTests
         _lastEpoch = epoch;
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat(rollWeaponAtk));
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat(rollWeaponAtk));
         var fakeWorld = new FakeCombatWorldRuntime();
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         _lastProjections = monsterProjections;
         _lastFakeWorld = fakeWorld;
 
         var gameplayPersistence = new RecordingGameplayStatePersistence(gameplayState ?? StrongNovice());
-        var inventoryListPersistence = new FixedInventoryListPersistence(KnifeEquipped());
-        var inventoryPersistence = new RecordingInventoryPersistence();
+        var inventoryOperations = new InMemoryInventoryOperations(KnifeEquipped());
 
         var session = new MapClientSession(
             1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true,
             "int_land", playerX, playerY, WorldMapRegistry.Tutorial,
             gameplayStatePersistence: gameplayPersistence,
             accountId: AccountId, charId: CharId, monsterProjections: monsterProjections, combat: combat,
-            inventoryPersistence: inventoryPersistence, inventoryListPersistence: inventoryListPersistence,
+            inventoryOperations: inventoryOperations,
             timeProvider: timeProvider, collisionProvider: collisionProvider, combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", playerX, playerY, 0, 0, 0));

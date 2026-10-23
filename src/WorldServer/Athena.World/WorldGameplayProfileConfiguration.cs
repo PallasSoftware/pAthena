@@ -10,7 +10,9 @@ namespace Athena.Net.World;
 
 // The World's own, immutable gameplay profile for this deployment. Every silo of one World must be started with the same
 // values (ATHENA_WORLD_GAMEPLAY_REGION / ATHENA_WORLD_GAMEPLAY_RULESET); a silo whose profile differs from the cluster's fails
-// to start (see AddWorldGameplayProfile). The World never learns its profile from a MapServer.
+// to start (see AddWorldGameplayProfile). The World never learns its profile from a MapServer. One deployment runs exactly one
+// immutable profile for its lifetime - mixed-region clusters and concurrent conflicting-profile startups are not a supported
+// deployment scenario, so a mismatched silo simply fails to start; there is no negotiation between differently configured silos.
 public sealed record WorldGameplayProfileOptions(WorldGameplayProfile Profile)
 {
     // Peer verification (see WorldGameplayProfilePeers): how long a peer's metadata may stay unavailable before it counts as a
@@ -80,8 +82,8 @@ public static class WorldGameplayProfilePeers
     }
 }
 
-// Re-checks the peers while the silo runs, which closes the join race (two differently configured silos starting at the same
-// time each see the other as not yet active): both end up Active, see each other's metadata and the newer one stops, failing closed.
+// Re-checks the peers while the silo runs, so a peer that joins after this silo's own startup check (and so was never seen by
+// it) is still caught: a mismatched peer stops this silo closed instead of leaving a mixed cluster running undetected.
 internal sealed class WorldGameplayProfileMonitor(
     WorldGameplayProfileOptions options, ISiloMetadataCache cache, ISiloStatusOracle oracle, ILocalSiloDetails local,
     IHostApplicationLifetime lifetime, ILogger<WorldGameplayProfileMonitor> logger) : BackgroundService
@@ -105,24 +107,19 @@ internal sealed class WorldGameplayProfileMonitor(
         catch (OperationCanceledException) { }
     }
 
-    // Only the NEWER silo of a disagreeing pair stops (SiloAddress.Generation is its start time): a misconfigured newcomer must not
-    // take down the established cluster, and when two silos joined together exactly one of them - the same one on both sides - stops.
     private string? Evaluate(DateTime now)
     {
         var peers = oracle.GetApproximateSiloStatuses(onlyActive: true).Keys;
         var result = WorldGameplayProfilePeers.Check(options.Profile, local.SiloAddress, peers, cache);
-        if (result.Mismatch is not null) return IAmNewerThan(result.MismatchPeer!) ? result.Mismatch : null;
+        if (result.Mismatch is not null) return result.Mismatch;
         foreach (var gone in _pendingSince.Keys.Except(result.Pending).ToList()) _pendingSince.Remove(gone);
         foreach (var peer in result.Pending)
         {
-            if (!_pendingSince.TryAdd(peer, now) || now - _pendingSince[peer] < options.PeerMetadataTimeout || !IAmNewerThan(peer)) continue;
+            if (!_pendingSince.TryAdd(peer, now) || now - _pendingSince[peer] < options.PeerMetadataTimeout) continue;
             return $"silo {peer} did not publish gameplay-profile metadata within {options.PeerMetadataTimeout}";
         }
         return null;
     }
-
-    private bool IAmNewerThan(SiloAddress peer) =>
-        local.SiloAddress.Generation != peer.Generation ? local.SiloAddress.Generation > peer.Generation : string.CompareOrdinal(local.SiloAddress.ToString(), peer.ToString()) > 0;
 }
 
 public static class WorldGameplayProfileSiloExtensions
@@ -130,7 +127,7 @@ public static class WorldGameplayProfileSiloExtensions
     // Registers this silo's configured profile and proves the cluster agrees on it, in two independent layers:
     // 1. Silo metadata (authoritative): the profile is published with UseSiloMetadata. At startup every active peer must be
     //    verified as equal - a mismatch, or metadata that stays unavailable past the timeout, fails startup. While running, a
-    //    monitor repeats the check so peers that joined concurrently are still caught (fail closed).
+    //    monitor repeats the check so a peer that joins later and mismatches is still caught (fail closed).
     // 2. The cluster-wide profile grain, which answers from the configuration of the silo hosting the activation. It is only a
     //    secondary check: where it is activated is a placement detail and proves nothing about the other silos.
     public static ISiloBuilder AddWorldGameplayProfile(this ISiloBuilder siloBuilder, WorldGameplayProfileOptions options)

@@ -104,6 +104,8 @@ internal static class ItemDataCompiler
         ["Left_Accessory"] = 0x000080,
         ["Head_Top"] = 0x000100,
         ["Head_Mid"] = 0x000200,
+        // EQP_ARMS = EQP_HAND_R|EQP_HAND_L (mmo.hpp): two-handed weapons (e.g. 2hSword/2hStaff/Bow).
+        ["Both_Hand"] = 0x000002 | 0x000020,
     };
 
     // Attack/WeaponLevel/SubType/Locations/AliasName are general item_db_equip.yml columns (see

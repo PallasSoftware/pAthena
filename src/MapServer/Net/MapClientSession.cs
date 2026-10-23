@@ -8,13 +8,14 @@ using Athena.Net.MapServer.Gameplay.Rates;
 using Athena.Net.MapServer.Gameplay.Rules;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
 using Athena.Net.MapServer.World.GeneratedScripts;
 using Athena.Net.Shared.MapIdentity;
 using Athena.Net.World.Contracts;
 
 namespace Athena.Net.MapServer.Net;
 
-public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayerPresenceObserver
+public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayerPresenceObserver, Athena.Net.MapServer.World.Items.IItemEffectHost
 {
     private static readonly Dictionary<short, int> PacketLengths = new()
     {
@@ -39,6 +40,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         [PacketConstants.IroCzReqWearEquip] = PacketConstants.IroCzReqWearEquipLength,
         [PacketConstants.IroCzReqTakeoffEquip] = PacketConstants.IroCzReqTakeoffEquipLength,
         [PacketConstants.IroCzUseItem] = PacketConstants.IroCzUseItemLength,
+        [PacketConstants.IroCzItemPickupRequest] = PacketConstants.IroCzItemPickupRequestLength,
         [PacketConstants.IroCzSkillLevelUp] = PacketConstants.IroCzSkillLevelUpLength,
         [PacketConstants.IroCzStatusUp] = PacketConstants.IroCzStatusUpLength,
     };
@@ -49,8 +51,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private readonly ICharacterPositionPersistence _positionPersistence;
     private readonly ICharacterQuestPersistence _questPersistence;
     private readonly ICharacterGameplayStatePersistence _gameplayStatePersistence;
-    private readonly ICharacterInventoryListPersistence _inventoryListPersistence;
-    private readonly ICharacterInventoryPersistence _inventoryPersistence;
+    private readonly ICharacterInventoryOperations _inventoryOperations;
     private readonly ICharacterSkillPersistence _skillPersistence;
     private readonly WorldMapRegistry _worldMapRegistry;
     // Step 6 cutover: the World-authoritative monster projection (position/movement/lifecycle/
@@ -420,9 +421,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private CharacterGameplayStateSession? _gameplayState;
     // The one authoritative CharInventory read (see CharacterInventorySnapshot's own doc
     // comment). Equipment is derived from this - never a second independent CharServer read.
-    private CharacterInventorySnapshot? _inventory;
+    private CharacterInventoryService? _inventoryService;
+    private CharacterInventorySnapshot? _inventory => _inventoryService?.Snapshot;
     private CharacterEquipmentSnapshot? _equipment;
     private readonly CharacterStatusEffectState _statusEffects;
+    private readonly Athena.Net.MapServer.World.Items.ItemUseCooldowns _itemUseCooldowns;
     // The deployment's regional gameplay rules (composed once at startup); this session only ever sees the abstractions.
     private readonly GameplayRuleServices _rules;
     private readonly TimeProvider _timeProvider;
@@ -468,8 +471,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterFeedProjectionRegistry? monsterProjections = null,
         IMovementPathProvider? movementPathProvider = null,
         MonsterCombatCoordinator? combat = null,
-        ICharacterInventoryPersistence? inventoryPersistence = null,
-        ICharacterInventoryListPersistence? inventoryListPersistence = null,
+        ICharacterInventoryOperations? inventoryOperations = null,
         ICharacterSkillPersistence? skillPersistence = null,
         IMapCollisionProvider? collisionProvider = null,
         GameplayRateOptions? rates = null,
@@ -490,8 +492,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _positionPersistence = positionPersistence ?? charConnector;
         _questPersistence = questPersistence ?? charConnector;
         _gameplayStatePersistence = gameplayStatePersistence ?? charConnector;
-        _inventoryPersistence = inventoryPersistence ?? charConnector;
-        _inventoryListPersistence = inventoryListPersistence ?? charConnector;
+        _inventoryOperations = inventoryOperations ?? charConnector;
         _skillPersistence = skillPersistence ?? charConnector;
         _worldMapRegistry = worldMapRegistry;
         _monsterProjections = monsterProjections;
@@ -511,6 +512,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _onAuthenticated = onAuthenticated;
         _rules = gameplayRules ?? throw new ArgumentNullException(nameof(gameplayRules), "A MapClientSession requires the deployment's gameplay rules.");
         _statusEffects = new CharacterStatusEffectState(_timeProvider, _rules.StatusEffects, _rules.Stats);
+        _itemUseCooldowns = new Athena.Net.MapServer.World.Items.ItemUseCooldowns(_timeProvider);
     }
 
     // Test-facing constructor. Still defaults to WorldMapRegistry.Tutorial when no registry is
@@ -535,8 +537,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         MonsterFeedProjectionRegistry? monsterProjections = null,
         IMovementPathProvider? movementPathProvider = null,
         MonsterCombatCoordinator? combat = null,
-        ICharacterInventoryPersistence? inventoryPersistence = null,
-        ICharacterInventoryListPersistence? inventoryListPersistence = null,
+        ICharacterInventoryOperations? inventoryOperations = null,
         ICharacterSkillPersistence? skillPersistence = null,
         IMapCollisionProvider? collisionProvider = null,
         GameplayRateOptions? rates = null,
@@ -561,15 +562,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             monsterProjections,
             movementPathProvider,
             combat,
-            inventoryPersistence,
             // Defaults to a successful "confirmed empty inventory" read, NOT the production
             // default (falling through to charConnector, a disconnected CharServerConnector in
             // tests, whose GetInventoryAsync always returns Failed() and would make
             // CompleteIroAuthenticationAsync fail auth for every test that doesn't care about
             // inventory/equipment). Tests that need to exercise specific inventory rows or a
-            // failed read must pass inventoryListPersistence explicitly, same as
+            // failed read must pass inventoryOperations explicitly, same as
             // gameplayStatePersistence.
-            inventoryListPersistence ?? AlwaysEmptyInventoryListPersistence.Instance,
+            inventoryOperations ?? AlwaysEmptyInventoryOperations.Instance,
             // Same reasoning as inventoryListPersistence above, for skills.
             skillPersistence ?? AlwaysEmptySkillPersistence.Instance,
             collisionProvider,
@@ -662,12 +662,15 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // melee-range check, actor visibility) always observes the character's ACTUAL current cell
     // rather than a stale destination from the last movement packet.
     internal ushort CurrentX { get { SyncPositionToNow(); return _x; } }
+    // The ground items this session can see (server-side; projection is Protocol-pending-capture - see GroundItemSessionVisibility).
+    internal GroundItemSessionVisibility GroundItems { get; } = new();
     internal ushort CurrentY { get { SyncPositionToNow(); return _y; } }
     internal Guid? WorldMovementId => _worldMovementId;
     internal ScriptExecutionState? ActiveScriptState => _scriptExecutionSession?.State;
     internal string? ActiveGeneratedScriptEntityId => _generatedScriptEntityId;
     internal CharacterGameplayStateSession? GameplayState => _gameplayState;
     internal CharacterInventorySnapshot? Inventory => _inventory;
+    internal CharacterInventoryService? InventoryService => _inventoryService;
     internal CharacterEquipmentSnapshot? Equipment => _equipment;
     internal CharacterStatusEffectState StatusEffects => _statusEffects;
 
@@ -801,6 +804,21 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _ = SendNotifyActorInitAsync(CancellationToken.None);
     }
 
+    // The slots and weight the character may use right now (pc_additem's inputs): the base inventory size and status_calc_weight's maximum from the
+    // job, allocated STR and the carry skills. Mount, Mado gear and item bonuses are folded in as those systems arrive.
+    private InventoryLimits CurrentInventoryLimits()
+    {
+        if (_gameplayState is not { } gameplay) return new InventoryLimits(InventoryBaseSlots, uint.MaxValue);
+        int SkillLevel(ushort id) => gameplay.Skills.Learned.FirstOrDefault(skill => skill.SkillId == id)?.Level ?? 0;
+        var maxWeight = _rules.Inventory.MaxWeight(new MaxWeightInput(gameplay.State.JobClass, gameplay.State.Strength,
+            IncreaseCarryLevel: SkillLevel(McIncCarrySkillId), AllIncreaseCarryLevel: SkillLevel(AllIncCarrySkillId)));
+        return new InventoryLimits(InventoryBaseSlots, maxWeight);
+    }
+
+    private const uint InventoryBaseSlots = 100;           // mmo.hpp INVENTORY_BASE_SIZE; expansions arrive with the capacity packet
+    private const ushort McIncCarrySkillId = 36;           // MC_INCCARRY (Enlarge Weight Limit)
+    private const ushort AllIncCarrySkillId = 681;         // ALL_INCCARRY
+
     internal async Task CompleteIroAuthenticationAsync(MapAuthOkData authOk)
     {
         var state = await _gameplayStatePersistence.GetAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
@@ -810,7 +828,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             HandleAuthFail(); return;
         }
 
-        var inventoryRead = await _inventoryListPersistence.GetInventoryAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
+        var inventoryRead = await _inventoryOperations.GetInventoryAsync(authOk.AccountId, authOk.CharId, _sessionCancellation.Token);
         if (!inventoryRead.Succeeded)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Character inventory load failed accountId={authOk.AccountId} charId={authOk.CharId}.");
@@ -849,8 +867,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // authenticated, and that a null Equipment.RightHandItemId means authoritatively
         // unarmed, never "unknown". CharacterEquipmentSnapshot is derived from the SAME
         // inventory read - never a second independent CharServer fetch.
-        _inventory = inventoryRead.Snapshot;
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory!);
+        _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!, _rules.Inventory, GeneratedItems.ById, CurrentInventoryLimits);
+        await ExpireDueRentalsAsync(_sessionCancellation.Token);
+        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;
         _direction = authOk.Direction;
@@ -934,10 +953,11 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // this becomes observable; not changing the status architecture as part of this PR.
     private async Task ProcessDueStatusExpirationsAsync(CancellationToken cancellationToken)
     {
-        var before = _gameplayState is null ? default : _statusEffects.RecalculateBeforeExpiration(_gameplayState.State);
+        var equipmentBonus = CurrentEquipmentParamBonus();
+        var before = _gameplayState is null ? default : _statusEffects.RecalculateBeforeExpiration(_gameplayState.State, equipmentBonus);
         var due = _statusEffects.ExpireDue(_timeProvider.GetUtcNow());
         if (due.Count == 0 || _gameplayState is null) return;
-        var after = _statusEffects.Recalculate(_gameplayState.State);
+        var after = _statusEffects.Recalculate(_gameplayState.State, equipmentBonus);
 
         foreach (var status in due)
         {
@@ -1534,6 +1554,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             case PacketConstants.IroCzUseItem when _iroAuthRequested:
                 await HandleIroUseItemRequestAsync(packet, cancellationToken);
                 break;
+            case PacketConstants.IroCzItemPickupRequest when _iroAuthRequested:
+                await HandleIroItemPickupRequestAsync(packet, cancellationToken);
+                break;
             case PacketConstants.IroCzSkillLevelUp when _iroAuthRequested:
                 await HandleIroSkillLevelUpRequestAsync(packet, cancellationToken);
                 break;
@@ -1669,8 +1692,27 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _y = movement.CurrentY;
     }
 
+    // The currently-equipped EquipmentParamBonus, for CharacterStatusEffectState's own equipment-
+    // then-status layering (IStatRules.ApplyEquipmentBonus's own doc comment). CharacterEquipmentMutationService's
+    // CanResolveAfter gate means a NEWLY-equipped state can never fail TryResolveEquipment - this can
+    // still legitimately return false for a loadout persisted before that gate existed (or restored
+    // directly in the database); that narrow, explicitly-diagnosed case falls back to
+    // EquipmentParamBonus.None (no equipment stat bonus) rather than crashing every status read, and is
+    // logged loudly exactly like TryGetCombatSnapshotAsync's own unresolved-equipment diagnostic.
+    private Athena.Net.MapServer.World.Items.EquipmentParamBonus CurrentEquipmentParamBonus()
+    {
+        if (_inventory is not { } inventory) return default;
+        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment, EquipmentWearer())) return equipment.ParamBonus;
+        MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; equipment stat bonus is not applied to this status read.");
+        return default;
+    }
+
+    // The wearer equipment scripts read (BaseLevel, readparam, getskilllv) - the authoritative session state.
+    private Athena.Net.MapServer.World.Items.EquipmentCharacter? EquipmentWearer() =>
+        _gameplayState is { } gameplay ? new(gameplay.State, gameplay.Skills, _sex) : null;
+
     // One consistent (gameplay state, effective stats) pair - see CharacterStatusEffectState.Capture.
-    private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State);
+    private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State, CurrentEquipmentParamBonus());
 
     private int CurrentCellDurationMs()
     {
@@ -2881,37 +2923,70 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                     continue;
                 }
 
-                var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-                var addResult = await inventorySession.AddItemAsync(itemDefinition, (uint)drop.Count, cancellationToken);
-                if (!addResult.Success || addResult.Item is not { } addedRow || _inventory is not { } inventory)
+                var grant = _inventoryService is null ? null : await _inventoryService.GrantAsync(itemDefinition, (uint)drop.Count, cancellationToken);
+                if (grant is not { Succeeded: true })
                 {
                     MapLogger.Warning($"[iRO MAP DEBUG] Inventory persistence failed for itemId={drop.ItemId}; not notifying client.");
                     continue;
                 }
 
-                _inventory = addResult.IsNewRow
-                    ? inventory.WithNewItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound)
-                    : inventory.WithUpdatedItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound);
-                _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
+                _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+                foreach (var (row, added) in grant.Placements())
+                {
+                    var clientIndex = (ushort)(row.SlotIndex + 2);
+                    var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)added, itemDefinition.Id, itemType: 3);
+                    MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 itemId={itemDefinition.Id} count={added} clientIndex={clientIndex}");
+                    await WriteAsync(pickupPacket, cancellationToken);
+                }
+            }
 
-                var slotIndex = _inventory.Items.Single(i => i.DurableId == addResult.DurableId).SlotIndex;
-                var clientIndex = (ushort)(slotIndex + 2);
-                var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)drop.Count, itemDefinition.Id, itemType: 3);
-                MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 itemId={itemDefinition.Id} count={drop.Count} clientIndex={clientIndex}");
-                await WriteAsync(pickupPacket, cancellationToken);
+            // Regular mob_db Drops (mob.cpp's common-drop loop, run AFTER quest drops - see
+            // MobDropResolver's own doc comment): unlike quest drops, these become GROUND items, not
+            // a direct grant - World is the sole ground-item authority (see WorldGroundItemMapSimulation).
+            // DropId is deterministic from this exact kill's own life identity (map+epoch+actor+
+            // incarnation, which World already guarantees is unique per kill) plus the drop's own index
+            // within this kill's outcome - a retried RPC for the SAME kill event can never duplicate loot.
+            if (_distributedWorld is not null)
+            {
+                var (mobX, mobY) = targetSnapshot.GetPosition();
+                for (var dropIndex = 0; dropIndex < outcome.MobDrops.Count; dropIndex++)
+                {
+                    var mobDrop = outcome.MobDrops[dropIndex];
+                    var dropId = DeriveGroundItemDropId(life, dropIndex);
+                    var ownership = new WorldGroundItemOwnership(_charId, OwnerWindowMs: 3000); // pinned item_first_get_time default.
+                    var dropResult = await _distributedWorld.DropGroundItemAsync(
+                        new WorldGroundItemDrop(_mapName, mobX, mobY, new WorldGroundItemContent(mobDrop.Item.Id, mobDrop.Amount, mobDrop.StealProtected), ownership, dropId),
+                        cancellationToken);
+                    MapLogger.Info($"[iRO MAP DEBUG] Mob drop itemId={mobDrop.Item.Id} amount={mobDrop.Amount} groundItemId={dropResult.GroundItemId} status={dropResult.Status} map={_mapName} x={mobX} y={mobY}");
+                }
             }
 
             // DEBUG-LOG-ONLY: quest-drop inventory persistence (a CharServer round trip per drop) runs
             // after the vanish but while _attackExecutionGate is still held, so it can delay the NEXT
             // attack turn/fixpos even though the death already reached the client.
             CombatTiming.Log("LETHAL AFTERMATH",
-                $"actorId={life.ActorId} questDrops={questDropsProcessed} questDropsPersistAndWriteMs={CombatTiming.F(CombatTiming.ElapsedMsSince(questDropsStartedAt))} lethalTailTotalMs={CombatTiming.F(CombatTiming.ElapsedMsSince(lethalTailStartedAt))}");
+                $"actorId={life.ActorId} questDrops={questDropsProcessed} mobDrops={outcome.MobDrops.Count} questDropsPersistAndWriteMs={CombatTiming.F(CombatTiming.ElapsedMsSince(questDropsStartedAt))} lethalTailTotalMs={CombatTiming.F(CombatTiming.ElapsedMsSince(lethalTailStartedAt))}");
         }
         catch
         {
             if (lethalCommitLife is { } leaked) CompleteLethalInFlight(leaked, markProjected: false);
             throw;
         }
+    }
+
+    // World already guarantees (MapId, SimulationEpoch, ActorId, IncarnationId) uniquely identifies
+    // ONE monster life - no two kills, ever, across the life of this map simulation, can share all
+    // four values (see WorldMonsterLifeReference's own doc comment). Hashing that identity plus this
+    // drop's own index within the kill's outcome list yields a DropId that is: (a) deterministic -
+    // a retried RPC for the exact same kill always recomputes the identical value, so
+    // WorldGroundItemMapSimulation's own DropId dedup (see its doc comment) recognizes the retry and
+    // never creates a duplicate; (b) distinct across different drop entries of the SAME kill (the
+    // index); (c) effectively never colliding with an unrelated kill (SHA-256 over the full identity).
+    private static Guid DeriveGroundItemDropId(WorldMonsterLifeReference life, int dropIndex)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes($"{life.MapId}|{life.SimulationEpoch.Value}|{life.ActorId}|{life.IncarnationId.Value}|{dropIndex}");
+        var hash = System.Security.Cryptography.SHA256.HashData(bytes);
+        return new Guid(hash.AsSpan(0, 16));
     }
 
     // The shared allocate-then-first-dispatch implementation (§1 of the substep-9 plan): allocates a
@@ -3380,14 +3455,26 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         {
             SyncPositionToNow();
             var isWalking = _movement?.IsMoving ?? false;
-            // Hard DEF comes from the equipped armor rows; an equipped item this pass cannot account for makes the
-            // player an unresolvable target (mirrors the unresolved-weapon abort) rather than silently wearing "no DEF".
-            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats))
+            // Hard DEF comes from the equipped armor rows. CharacterEquipmentMutationService's
+            // CanResolveAfter gate means a NEWLY-equipped state can never reach this branch; an
+            // unsupported loadout here can only be one persisted before that gate existed (or
+            // restored directly in the database). An otherwise-valid player must never become
+            // untargetable to every monster on the map because of that narrow, pre-existing
+            // condition - fall back to EquipmentStats.default (no DEF/weapon/param contribution)
+            // rather than returning null, with a loud diagnostic so the degradation is actionable,
+            // never silent.
+            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats, EquipmentWearer()))
             {
-                MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; player is not a valid combat target.");
-                return null;
+                MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; combat snapshot omits equipment contribution.");
+                equipmentStats = default;
             }
-                        return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, _rules.Stats.CalculateDerivedStats(snapshot, equipmentStats).SoftDefense, equipmentStats.HardDefense);
+            // Pinned status.cpp:4096 `base_status->def += (refinedef+50)/100`: the authoritative hard
+            // DEF a live monster attack must use is CalculateDerivedStats's OWN HardDefense result
+            // (armor DEF + refine bonus, truncated once over the summed contribution), never the raw
+            // equipmentStats.HardDefense (armor DEF alone, pre-refine) - using the latter silently drops
+            // every refined armor's DEF contribution from live incoming-damage reduction.
+            var derived = _rules.Stats.CalculateDerivedStats(snapshot, equipmentStats);
+            return new PlayerCombatSnapshot(_accountId, _mapName, _x, _y, snapshot.State.CurrentHp > 0, isWalking, snapshot.State.BaseLevel, stats.Vitality, stats.Agility, derived.SoftDefense, derived.HardDefense);
         }
         finally { _movementGate.Release(); }
     }
@@ -3549,6 +3636,40 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _pendingLifeState = null;
     }
 
+    // Pinned pc_inventory_rentals (pc.cpp:1200-1225), called at login/reconnect - see
+    // RentalExpiryResolver's own doc comment for the exact scope/timing this reproduces and the
+    // one documented difference (no continuously-ticking re-announce timer; an in-session expiry
+    // is instead caught at the NEXT login/reconnect). Every already-due rental row is removed in
+    // ONE durable operation (never one CharServer round trip per row) - if that operation does not
+    // succeed, the stale rows simply remain in the live snapshot and are retried on the next
+    // reconnect; nothing here can leave the snapshot internally inconsistent. Client notification
+    // (clif_rental_expired/0x0299, clif_rental_time/0x0298) has no capture evidence yet (see
+    // ai/iro-2026-wire.md) and is Protocol-pending-capture - the durable removal itself is fully
+    // authoritative and independent of it.
+    private async Task ExpireDueRentalsAsync(CancellationToken cancellationToken)
+    {
+        if (_inventoryService is null) return;
+        var nowUnixSeconds = (uint)_timeProvider.GetUtcNow().ToUnixTimeSeconds();
+        var expired = RentalExpiryResolver.FindExpired(_inventoryService.Snapshot, nowUnixSeconds);
+        if (expired.Count == 0) return;
+
+        var change = await _inventoryService.ExecuteAsync(InventoryOperationKind.Expire, inventory =>
+        {
+            var mutations = new List<Athena.Net.Shared.Inventory.InventoryMutation>();
+            foreach (var due in expired)
+            {
+                var row = inventory.Items.FirstOrDefault(i => i.DurableId == due.DurableId);
+                if (row is not null) mutations.Add(InventoryPlanner.RemoveFromRow(row, row.Amount));
+            }
+            return mutations.Count == 0 ? null : mutations;
+        }, cancellationToken);
+
+        if (change.Succeeded)
+            MapLogger.Info($"[iRO MAP DEBUG] Expired {expired.Count} due rental item(s) at login for accountId={_accountId} charId={_charId}.");
+        else
+            MapLogger.Warning($"[iRO MAP DEBUG] Rental-expiry persistence failed (status={change.Status}) for accountId={_accountId} charId={_charId}; will retry on next reconnect.");
+    }
+
     // Pinned clif_parse_UseItem (clif.cpp:12077-12106) -> pc_useitem (pc.cpp:6450-6576).
     // n = server_index(index) (client index - 2, matching every other equip/unequip/pickup
     // path's convention) - the client supplies intent only; the authoritative item is resolved
@@ -3557,13 +3678,16 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // itself never re-validates the field - the request is scoped to sd via fd - but Athena's
     // packet still carries it, so it is checked defensively rather than ignored).
     //
-    // This slice supports exactly one traced source-backed effect: a Type: Usable item whose
-    // pinned item_db Script is a getitem-only container (ItemDataCompiler.TryParseGetItemScript,
-    // e.g. First Aid Box 23484) - GeneratedItems.UsableItemDefinition.Grants is non-empty only
-    // for that narrow case. Any other resolved item (a different Usable with no Grants, a
-    // Healing/DelayConsume item, an unknown/non-usable slot) is rejected without mutation -
-    // implementing their real effects (itemheal, itemskill, status, etc.) is explicitly out of
-    // scope; this handler must never guess or fake a result for them.
+    // Two source-backed effect shapes are executed:
+    //   1. A Type: Usable item whose pinned item_db Script is a getitem-only container (e.g. First Aid
+    //      Box 23484) - UsableItemDefinition.Grants - consumed and granted in ONE durable operation.
+    //   2. Any other Healing/Usable/Cash item (pc_isUseitem's consumable types, pc.cpp:6288-6289)
+    //      whose lowered script the generic ItemScriptEvaluator can run in full (itemheal,
+    //      percentheal, sc_start, ...). The script is planned BEFORE anything is consumed, so an
+    //      item it cannot run completely (itemskill -> F18, callfunc -> F20, an uncataloged
+    //      command, ...) is rejected without mutation and logged with the blocking construct -
+    //      never consumed for a partial or faked effect. DelayConsume items stay rejected (their
+    //      ack/consume order differs and their scripts are itemskill, Feature 18).
     //
     // Ordering follows this project's own validate -> persist -> update runtime state -> notify
     // rule (AGENTS.md), which is ALSO consistent with pinned pc_useitem's own real ordering for
@@ -3586,93 +3710,237 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             return;
         }
 
-        if (itemDefinition is not UsableItemDefinition { Grants.Count: > 0 } usable)
+        Athena.Net.MapServer.World.Items.ItemScriptPlan? scriptPlan = null;
+        if (itemDefinition is UsableItemDefinition { Grants.Count: > 0 } usable)
+        {
+            // Fail closed on an incomplete container implementation: FirstaidBox10 (23485), for
+            // example, has a pinned getitem grant for 23486 ("Firstaid_Box_15"), which is
+            // intentionally not yet generated. Consuming the container and granting only the
+            // resolvable subset would silently destroy the source item and leave the character
+            // short the ungrantable one - never acceptable. Every grant must resolve BEFORE any
+            // consume/persist/notify happens, so an unimplemented container is rejected outright
+            // (no consume, no ack, no partial grants) while a fully-generated container (e.g.
+            // FirstAidBox/23484) remains fully executable.
+            foreach (var grant in usable.Grants)
+            {
+                if (!GeneratedItems.ById.ContainsKey(grant.ItemId))
+                {
+                    MapLogger.Warning(
+                        $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has an unimplemented grant itemId={grant.ItemId}; container use is out of scope until all grants are generated.");
+                    return;
+                }
+            }
+        }
+        else if (itemDefinition is HealingItemDefinition or UsableItemDefinition or CashItemDefinition)
+        {
+            scriptPlan = Athena.Net.MapServer.World.Items.ItemScriptEvaluator.Plan(itemDefinition.Meta?.Script, (min, max) => Random.Shared.NextInt64(min, max + 1));
+            if (!scriptPlan.Executable)
+            {
+                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} script is not executable yet ({scriptPlan.Unsupported}).");
+                return;
+            }
+
+        }
+        else
         {
             MapLogger.Warning(
                 $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has no source-backed use effect implemented in this slice.");
             return;
         }
 
-        // Fail closed on an incomplete container implementation: FirstaidBox10 (23485), for
-        // example, has a pinned getitem grant for 23486 ("Firstaid_Box_15"), which is
-        // intentionally not yet generated. Consuming the container and granting only the
-        // resolvable subset would silently destroy the source item and leave the character
-        // short the ungrantable one - never acceptable. Every grant must resolve BEFORE any
-        // consume/persist/notify happens, so an unimplemented container is rejected outright
-        // (no consume, no ack, no partial grants) while a fully-generated container (e.g.
-        // FirstAidBox/23484) remains fully executable.
-        foreach (var grant in usable.Grants)
+        // Pinned clif_parse_UseItem (clif.cpp:12084-12087): a dead character cannot use items - containers included.
+        if (_gameplayState is not { State.CurrentHp: > 0 } living)
         {
-            if (!GeneratedItems.ById.ContainsKey(grant.ItemId))
-            {
-                MapLogger.Warning(
-                    $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has an unimplemented grant itemId={grant.ItemId}; container use is out of scope until all grants are generated.");
-                return;
-            }
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} character is dead or has no gameplay state.");
+            return;
+        }
+        // Pinned pc_isUseitem's wearer gates, in its order: sex, elv/elvmax, pc_job_can_use_item, pc_isItemClass.
+        if (itemDefinition.Meta is { } useMeta
+            && ((useMeta.Sex != Athena.Net.MapServer.World.Items.ItemMetadata.BothSexes && useMeta.Sex != _sex)
+                || (useMeta.EquipLevelMin != 0 && living.State.BaseLevel < useMeta.EquipLevelMin)
+                || (useMeta.EquipLevelMax != 0 && living.State.BaseLevel > useMeta.EquipLevelMax)
+                || !ItemClassEligibility.CanUse(useMeta, (Athena.Net.MapServer.Generated.Jobs.JobClass)living.State.JobClass)))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} not usable by this character (sex/level/job/class).");
+            return;
         }
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var consumeResult = await inventorySession.ConsumeItemAsync(row.DurableId, 1, cancellationToken);
-        if (!consumeResult.Success)
+        // Pinned pc_itemcd_check (pc.cpp:14766-14785), reached from pc_useitem before any consume/script/ack (pc.cpp:6506):
+        // an item whose item_db Delay.Status names a shared SC_ group rejects use outright while that group's cooldown is
+        // still running - checked and (on success) armed BEFORE the atomic consume/grant below, matching pc_useitem's own
+        // ordering (the real cd check happens ahead of clif_useitemack/run_script, not after).
+        // shortcut: no clif_msg_value(MSI_ITEM_REUSE_LIMIT_SECOND) reply is sent on rejection yet (this project does not
+        // model that packet); upgrade once a verified stock-iRO capture of the reply exists.
+        if (itemDefinition.Meta is { HasDelayGroup: true } meta)
+        {
+            if (_itemUseCooldowns.Remaining(meta.DelayGroupKey) is { } remaining)
+            {
+                MapLogger.Warning(
+                    $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} delayGroup={meta.DelayGroupKey} still on cooldown for {remaining.TotalMilliseconds}ms.");
+                return;
+            }
+            _itemUseCooldowns.Start(meta.DelayGroupKey, TimeSpan.FromMilliseconds(meta.DelayDurationMilliseconds));
+        }
+
+        // Pinned nouse_mapflag gate (itemdb_isNoEquip, pc.cpp:6510-6517): an item whose item_db no_equip bitmask
+        // restricts "normal maps" (bit 1) is rejected outright - no consume, no grant, no script run - on every map
+        // this project can currently place a character on (no PVP/GvG/Battleground/WOE:TE/zone map-flag state exists
+        // yet, so every reachable map is "normal" in rAthena's own sense; see ItemMetadata.RestrictedOnNormalMaps).
+        // shortcut: the client-visible clif_msg(MSI_IMPOSSIBLE_USEITEM_AREA) rejection reply is not sent - no verified
+        // stock-iRO capture of that packet exists yet (ai/iro-2026-wire.md has no evidence for it). The server-side
+        // rejection itself (no consume, no grant) is enforced regardless; upgrade once a real capture exists.
+        if (itemDefinition.Meta is { RestrictedOnNormalMaps: true })
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} is restricted on normal maps (nouse_mapflag).");
+            return;
+        }
+
+        // The container is consumed and every grant is created in ONE durable operation: either the character ends with the box gone and
+        // all its contents, or nothing changed. (Previously the box was consumed first and grants followed one by one, so a failure part way
+        // destroyed the box and delivered only some of the contents.)
+        InventoryPlanner.GrantRequest[] grants;
+        if (itemDefinition is UsableItemDefinition { Grants: { Count: > 0 } containerGrants })
+        {
+            grants = containerGrants.Select(grant => new InventoryPlanner.GrantRequest(GeneratedItems.ById[grant.ItemId], grant.Amount)).ToArray();
+        }
+        else if (scriptPlan is not null && scriptPlan.Effects.Any(Athena.Net.MapServer.World.Items.ItemScriptEvaluator.IsGrant))
+        {
+            // getitem/getgroupitem must grant in the SAME durable operation as the consume (ItemGrantResolver's own contract):
+            // either the used item is gone and every grant exists, or nothing changed - never a consumed item with a partial grant.
+            var grantEffects = scriptPlan.Effects.Where(Athena.Net.MapServer.World.Items.ItemScriptEvaluator.IsGrant);
+            var resolved = Athena.Net.MapServer.World.Items.ItemGrantResolver.Resolve(
+                grantEffects, GeneratedItems.ById, Athena.Net.MapServer.World.Items.ItemCatalog.Current.Groups,
+                Athena.Net.MapServer.World.Items.ItemGroupPools.Shared, _rules.Inventory, _charId,
+                (uint)_timeProvider.GetUtcNow().ToUnixTimeSeconds(), (min, max) => Random.Shared.NextInt64(min, max + 1));
+            if (resolved.Unsupported is not null)
+            {
+                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} grant unresolvable ({resolved.Unsupported}).");
+                return;
+            }
+            grants = [.. resolved.Grants];
+        }
+        else
+        {
+            grants = [];
+        }
+        var use = _inventoryService is null ? null : await _inventoryService.ConsumeAndGrantAsync(row.DurableId, 1, grants, InventoryOperationKind.Use, cancellationToken);
+        if (use is not { Succeeded: true })
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Item-use persistence failed for itemId={row.ItemId} durableId={row.DurableId}; not notifying client.");
             return;
         }
 
-        // Persistence succeeded - update the authoritative runtime snapshot BEFORE granting the
-        // container's items or notifying the client (same rule the reward path already follows).
-        // RowDeleted leaves a HOLE at this row's former runtime slot (WithoutDurableId) - it does
-        // NOT compact/renumber later rows, mirroring pinned pc_delitem exactly; a later grant may
-        // reuse that exact hole via WithNewItem.
-        _inventory = consumeResult.RowDeleted
-            ? inventory.WithoutDurableId(row.DurableId)
-            : inventory.WithUpdatedItem(row.DurableId, row.ItemId, consumeResult.NewAmount, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
+        _equipment = CharacterEquipmentSnapshot.FromInventory(use.Snapshot);
+        var consumedAmount = use.Results[0].Row?.Amount ?? 0;
         MapLogger.Info(
-            $"[iRO MAP DEBUG] Item-use consumed itemId={row.ItemId} durableId={row.DurableId} newAmount={consumeResult.NewAmount} rowDeleted={consumeResult.RowDeleted}.");
+            $"[iRO MAP DEBUG] Item-use consumed itemId={row.ItemId} durableId={row.DurableId} newAmount={consumedAmount} rowDeleted={use.Results[0].Deleted}.");
 
-        var ackPacket = IroUseItemPackets.BuildUseItemAck(request.ClientIndex, itemDefinition.ClientViewId, _accountId, consumeResult.NewAmount, success: true);
+        var ackPacket = IroUseItemPackets.BuildUseItemAck(request.ClientIndex, itemDefinition.ClientViewId, _accountId, consumedAmount, success: true);
         await WriteAsync(ackPacket, cancellationToken);
 
-        // Execute the source-backed getitem grants (script.cpp BUILDIN_FUNC(getitem)) - each
-        // grant is a normal authoritative inventory add through the SAME CharacterInventorySession/
-        // runtime-snapshot-update path the quest-drop reward loop already uses, including the
-        // SAME IsNewRow-driven slot assignment (first free slot - reusing the hole just left by
-        // this same consume, mirroring pinned pc_additem's own array-search behavior). A grant
-        // referencing an item id absent from the generated registry is a data/generation gap,
-        // logged and skipped rather than guessed at (matching the existing quest-drop convention)
-        // - it does NOT abort the remaining grants, since each is an independent getitem call in
-        // the pinned script, not a single atomic operation.
-        foreach (var grant in usable.Grants)
+        foreach (var (placedRow, added) in use.Placements())
         {
-            if (!GeneratedItems.ById.TryGetValue(grant.ItemId, out var grantedItem))
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] Item-use grant references unregistered itemId={grant.ItemId}; skipping.");
-                continue;
-            }
-
-            var grantResult = await inventorySession.AddItemAsync(grantedItem, grant.Amount, cancellationToken);
-            if (!grantResult.Success || grantResult.Item is not { } grantedRow)
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] Item-use grant persistence failed for itemId={grant.ItemId}; skipping.");
-                continue;
-            }
-
-            _inventory = grantResult.IsNewRow
-                ? _inventory.WithNewItem(grantResult.DurableId, grantedRow.ItemId, grantedRow.Amount, grantedRow.Equip, grantedRow.Identified, grantedRow.Refine, grantedRow.Favorite, grantedRow.Bound)
-                : _inventory.WithUpdatedItem(grantResult.DurableId, grantedRow.ItemId, grantedRow.Amount, grantedRow.Equip, grantedRow.Identified, grantedRow.Refine, grantedRow.Favorite, grantedRow.Bound);
-            _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
-            var grantSlotIndex = _inventory.Items.Single(i => i.DurableId == grantResult.DurableId).SlotIndex;
-            var grantClientIndex = (ushort)(grantSlotIndex + 2);
-            // Pinned clif_additem (clif.cpp): p.nameid = client_nameid(actual item), p.type =
-            // itemtype(actual item) - never a hardcoded constant. Uses the SAME item-type mapper
-            // IroInventoryListPackets uses for full-inventory serialization, so a grant's pickup
+            var placedItem = GeneratedItems.ById[placedRow.ItemId];
+            var grantClientIndex = (ushort)(placedRow.SlotIndex + 2);
+            // Pinned clif_additem (clif.cpp): p.nameid = client_nameid(actual item), p.type = itemtype(actual item) - never a hardcoded
+            // constant. Uses the SAME item-type mapper IroInventoryListPackets uses for full-inventory serialization, so a grant's pickup
             // packet and its later reconnect/full-list packet can never disagree on item type.
-            var grantPickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)grant.Amount, grantedItem.ClientViewId, IroInventoryListPackets.ItemType(grantedItem));
-            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for item-use grant itemId={grant.ItemId} count={grant.Amount} clientIndex={grantClientIndex}");
+            var grantPickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)added, placedItem.ClientViewId, IroInventoryListPackets.ItemType(placedItem));
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for item-use grant itemId={placedRow.ItemId} count={added} clientIndex={grantClientIndex}");
             await WriteAsync(grantPickupPacket, cancellationToken);
+        }
+
+        // pc_useitem runs the item script after the ack and pc_delitem (pc.cpp:6535-6536 then 6558). The item is already durably
+        // consumed here; a later effect persistence failure is logged by the effect itself, never rolled back into the inventory
+        // (consume-first matches the reference and can never duplicate an effect without its cost).
+        if (scriptPlan is not null) await Athena.Net.MapServer.World.Items.ItemScriptEvaluator.ExecuteAsync(scriptPlan, this, cancellationToken);
+    }
+
+    // Verified 0x0362 pickup request (see IroItemPickupRequestPacket, ai/iro-2026-wire.md). The
+    // client supplies only GroundActorId (World's own minted ground-item identity) - every other
+    // fact (item identity/amount, eligibility, exclusivity) is resolved server-side against World's
+    // authoritative ground-item state, never trusted from the client.
+    //
+    // Full cross-server pipeline, exactly the project's own validate -> persist -> update runtime
+    // state -> notify rule:
+    //   1. ClaimGroundItemAsync: an exclusive reservation in World - resolves two racing pickups to
+    //      exactly one winner (see WorldGroundItemMapSimulation's own doc comment). A non-Claimed/
+    //      AlreadyClaimed result (AlreadyClaimedByOther, NotFound, NotEligible, StaleEpoch) ends the
+    //      attempt here with NO durable mutation attempted at all.
+    //   2. GrantAsync, with a DETERMINISTIC operationId derived from this claim's own ClaimId - a
+    //      retried grant for the SAME claim always replays through CharServer's idempotency log
+    //      instead of risking a duplicate (see CharacterInventoryService.GrantAsync's own
+    //      operationId doc comment).
+    //   3a. Grant succeeded -> CompleteGroundItemClaimAsync (permanently removes the item in World)
+    //       -> 0x0B41 inventory ack (the SAME existing serializer every other grant path already
+    //       uses) -> 0x00A1 floor-item removal ack to this session.
+    //   3b. Grant produced a CONFIRMED no-mutation outcome (Rejected - the planner declined
+    //       synchronously, no request ever reached CharServer) -> ReleaseGroundItemClaimAsync (the
+    //       item returns to Available for anyone, including this same character later).
+    //   3c. Grant's outcome is UNKNOWN (InDoubt/Unavailable/Conflict) -> the claim is left exactly as
+    //       is, deliberately NEVER released - per this project's own ephemeral-world-state policy
+    //       (see WorldGroundItemMapSimulation's ClaimDeadlineUtc doc comment), an unresolved claim is
+    //       eventually reaped by PERMANENT REMOVAL, never silently handed to a different character -
+    //       a duplicate grant is strictly worse than one permanently lost ground item.
+    private async Task HandleIroItemPickupRequestAsync(byte[] packet, CancellationToken cancellationToken)
+    {
+        if (!IroItemPickupRequestPacket.TryParse(packet, out var request)) return;
+        if (_distributedWorld is null || _inventoryService is null) return;
+
+        var epochSnapshot = await _distributedWorld.GetGroundItemsAsync(_mapName, cancellationToken);
+        var reference = new WorldGroundItemReference(_mapName, epochSnapshot.Epoch, request.GroundActorId);
+        var claimId = Guid.NewGuid();
+        var claim = await _distributedWorld.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, _charId, claimId), cancellationToken);
+        if (claim.Status is not (WorldGroundItemClaimStatus.Claimed or WorldGroundItemClaimStatus.AlreadyClaimed))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} status={claim.Status}.");
+            return;
+        }
+
+        if (!GeneratedItems.ById.TryGetValue(claim.Content!.ItemId, out var itemDefinition))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} references unregistered itemId={claim.Content.ItemId}.");
+            return;
+        }
+
+        // A player-dropped item keeps its instance (refine, cards, options, grade, unique id): pinned map_addflooritem copies the
+        // whole struct item and pc_additem only clears equip/equipSwitch (pc.cpp:6045-6054).
+        var template = CharacterItemDropService.PickupTemplate(claim.Content);
+        if (template is not null && template.ItemId != (uint)claim.Content.ItemId)
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} instance itemId={template.ItemId} disagrees with content itemId={claim.Content.ItemId}.");
+            await _distributedWorld.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(reference, claimId), cancellationToken); // nothing durable was attempted
+            return;
+        }
+        var grant = await _inventoryService.GrantAsync(
+            [new InventoryPlanner.GrantRequest(itemDefinition, claim.Content.Amount, template)], InventoryOperationKind.Add, cancellationToken, claimId);
+        var claimReference = new WorldGroundItemClaimReference(reference, claimId);
+        if (grant.Succeeded)
+        {
+            await _distributedWorld.CompleteGroundItemClaimAsync(claimReference, cancellationToken);
+
+            _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+            foreach (var (placedRow, added) in grant.Placements())
+            {
+                var placedItem = GeneratedItems.ById[placedRow.ItemId];
+                var grantClientIndex = (ushort)(placedRow.SlotIndex + 2);
+                var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(grantClientIndex, (ushort)added, placedItem.ClientViewId, IroInventoryListPackets.ItemType(placedItem));
+                MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for ground-item pickup itemId={placedRow.ItemId} count={added} clientIndex={grantClientIndex}");
+                await WriteAsync(pickupPacket, cancellationToken);
+            }
+
+            await WriteAsync(IroGroundItemPackets.BuildFloorItemRemoval(request.GroundActorId), cancellationToken);
+        }
+        else if (grant.Status == InventoryChangeStatus.Rejected)
+        {
+            // Confirmed: the planner declined synchronously, no request ever reached CharServer - safe to release.
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup grant rejected (no room/invalid) for groundActorId={request.GroundActorId}; releasing claim.");
+            await _distributedWorld.ReleaseGroundItemClaimAsync(claimReference, cancellationToken);
+        }
+        else
+        {
+            // Unknown outcome (InDoubt/Unavailable/Conflict) - never release; see this method's own doc comment.
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup grant outcome unknown (status={grant.Status}) for groundActorId={request.GroundActorId}; claim left unresolved.");
         }
     }
 
@@ -3775,7 +4043,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // Every response field comes from ONE snapshot of the state this request committed (result.After) paired with the
         // statuses active at that instant - not from gameplayState.State, which a concurrent mutation may already have moved.
         // plus = battle_status - status.* (clif_couplestatus), so it carries job bonuses and temporary buffs alike.
-        var committed = _statusEffects.Capture(() => result.After);
+        var committed = _statusEffects.Capture(() => result.After, CurrentEquipmentParamBonus());
         var plusValue = EffectiveStatBonus(stat, committed.State, committed.Effective);
         await WriteAsync(IroStatusEffectPackets.BuildCoupleStatus(wireStatusId, result.NewValue, plusValue), cancellationToken);
 
@@ -3820,8 +4088,18 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_inventory is not { } inventory || request.ClientIndex < 2) return;
         var slotIndex = (uint)(request.ClientIndex - 2);
 
-        var service = new CharacterEquipmentMutationService(_accountId, _charId, _inventoryListPersistence);
-        var (outcome, updated) = await service.EquipAsync(inventory, slotIndex, request.Position, GeneratedItems.ById, cancellationToken);
+        if (_inventoryService is null || _gameplayState is not { } gameplayState) return;
+        // Pinned answers an ammo equip with 0x013C (clif_arrowequip) + clif_arrow_fail, never 0x0999; neither is captured for
+        // stock iRO yet, so ammo keeps the pre-existing fail ack here. The server mechanic itself (CharacterEquipmentMutationService)
+        // supports ammo; only this projection is Protocol-pending-capture.
+        if (inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex) is { } requested && GeneratedItems.ById.GetValueOrDefault(requested.ItemId) is AmmoItemDefinition)
+        {
+            await WriteAsync(IroEquipmentMutationPackets.BuildEquipAck(request.ClientIndex, 0, PacketConstants.EquipAckResultFail), cancellationToken);
+            return;
+        }
+        var service = new CharacterEquipmentMutationService(_inventoryService, _rules.Stats);
+        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, gameplayState.State.BaseLevel, _sex,
+            (Athena.Net.MapServer.Generated.Jobs.JobClass)gameplayState.State.JobClass, cancellationToken, gameplayState.Skills);
         if (outcome is not { } equipOutcome) return; // invalid slot/index - pc_equipitem sends no ack either (clif.cpp:12154-12156 early-out)
 
         var result = equipOutcome.Result switch
@@ -3834,7 +4112,6 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         if (equipOutcome.Result != EquipMutationResult.Success || updated is null) return;
 
-        _inventory = updated;
         _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
         await RefreshPresencePublicAppearanceAsync(cancellationToken);
         await SendSelfWeaponAppearanceAsync(cancellationToken);
@@ -3852,8 +4129,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         var targetItemId = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.ItemId;
         var oldEquip = inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex)?.Equip;
-        var service = new CharacterEquipmentMutationService(_accountId, _charId, _inventoryListPersistence);
-        var (outcome, updated) = await service.UnequipAsync(inventory, slotIndex, cancellationToken);
+        if (_inventoryService is null) return;
+        var service = new CharacterEquipmentMutationService(_inventoryService, _rules.Stats);
+        var (outcome, updated) = await service.UnequipAsync(slotIndex, cancellationToken);
         if (outcome is not { } unequipOutcome)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] Unequip rejected (unknown slotIndex={slotIndex}); no ack sent.");
@@ -3865,7 +4143,6 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         if (unequipOutcome.Success && updated is not null)
         {
-            _inventory = updated;
             _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
             await RefreshPresencePublicAppearanceAsync(cancellationToken);
             MapLogger.Info("[iRO MAP DEBUG] Sending 0x01D7 (post-unequip appearance update).");
@@ -4356,16 +4633,71 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // matches the heal amount, not any skilleffect argument in Captain's script.
     async Task INpcScriptHost.HealAsync(int hp, int sp, CancellationToken cancellationToken)
     {
+        var result = await HealAndSyncAsync(hp, sp, cancellationToken) ?? throw new InvalidOperationException("Heal persistence failed.");
+        if (result.HpChanged && hp > 0) await WriteAsync(IroStatusEffectPackets.BuildUseSkillVisual(IroStatusEffectPackets.AlHeal, hp, _accountId, _generatedScriptActorId), cancellationToken);
+    }
+
+    // The one HP/SP heal path of this session (NPC `heal`, item itemheal/percentheal/heal): CharacterHealService's per-character
+    // mutation - the same CharacterGameplayStateSession lock and CharServer compare-and-swap a monster hit goes through - then
+    // the self SP_HP/SP_SP update (0x00B0 params 5/7, clif_updatestatus, which pc_heal sends for a non-effect heal, pc.cpp:10677-10680).
+    // No parameter packet is sent when the mutation left HP/SP unchanged (e.g. an already-full heal) - there is nothing to
+    // synchronize. Null when persistence rejected the mutation.
+    private async Task<CharacterHealResult?> HealAndSyncAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
         var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
-        var result = await new CharacterHealService(state).HealAsync(hp, sp, cancellationToken)
-            ?? throw new InvalidOperationException("Heal persistence failed.");
-        // No parameter packet is sent when the mutation left HP/SP unchanged (e.g. an
-        // already-full heal) - there is nothing to synchronize. This mirrors the existing
-        // GrantExperienceAsync policy of only emitting packets for fields that actually
-        // changed; it is not Captain-specific behavior.
+        if (await new CharacterHealService(state).HealAsync(hp, sp, cancellationToken) is not { } result) return null;
         if (result.HpChanged) await WriteAsync(IroCharacterProgressionPackets.Parameter(5, result.After.CurrentHp), cancellationToken);
         if (result.SpChanged) await WriteAsync(IroCharacterProgressionPackets.Parameter(7, result.After.CurrentSp), cancellationToken);
-        if (result.HpChanged && hp > 0) await WriteAsync(IroStatusEffectPackets.BuildUseSkillVisual(IroStatusEffectPackets.AlHeal, hp, _accountId, _generatedScriptActorId), cancellationToken);
+        return result;
+    }
+
+    private static readonly ushort SmRecovery = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("SM_RECOVERY").SkillId;
+    private static readonly ushort MgSpRecovery = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("MG_SRECOVERY").SkillId;
+    private static readonly ushort AmLearningPotion = Athena.Net.MapServer.Generated.Skills.GeneratedSkillRegistry.GetByName("AM_LEARNINGPOTION").SkillId;
+
+    // pc_itemheal's inputs from this character's authoritative state: battle_status VIT/INT (base + active statuses, one
+    // coherent snapshot), learned recovery skills, and an active SC_INCHEALRATE.
+    async Task Athena.Net.MapServer.World.Items.IItemEffectHost.ItemHealAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
+        var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
+        var effective = _statusEffects.Capture(() => state.State, CurrentEquipmentParamBonus()).Effective;
+        var incHealRate = _statusEffects.TryGet(ItemHealFormula.IncHealRateStatusId, out var incHeal) ? incHeal.Val1 : 0;
+        var (healHp, healSp) = ItemHealFormula.ItemHeal(hp, sp, effective.Vitality, effective.Intelligence,
+            state.Skills.CurrentLevel(SmRecovery), state.Skills.CurrentLevel(MgSpRecovery), state.Skills.CurrentLevel(AmLearningPotion), incHealRate);
+        await ItemEffectHealAsync(healHp, healSp, cancellationToken);
+    }
+
+    async Task Athena.Net.MapServer.World.Items.IItemEffectHost.PercentHealAsync(int hpRate, int spRate, CancellationToken cancellationToken)
+    {
+        var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
+        var (healHp, healSp) = ItemHealFormula.PercentHeal(state.State.MaxHp, state.State.MaxSp, hpRate, spRate);
+        await ItemEffectHealAsync(healHp, healSp, cancellationToken);
+    }
+
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.HealAsync(int hp, int sp, CancellationToken cancellationToken) => ItemEffectHealAsync(hp, sp, cancellationToken);
+
+    // The item is already consumed when its effects run, so a rejected heal is reported, not thrown into the packet loop.
+    private async Task ItemEffectHealAsync(int hp, int sp, CancellationToken cancellationToken)
+    {
+        if (await HealAndSyncAsync(hp, sp, cancellationToken) is null)
+            MapLogger.Warning($"[iRO MAP DEBUG] Item heal hp={hp} sp={sp} was not persisted (gameplay-state compare-and-swap rejected) for charId={_charId}.");
+    }
+
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.StartStatusAsync(ushort statusId, int durationMilliseconds, int val1, int val2, int val3, CancellationToken cancellationToken) =>
+        StartStatusAndSyncAsync(statusId, durationMilliseconds, val1, val2, val3, cancellationToken);
+
+    // sc_end: CharacterStatusEffectState.End makes the status due now and the expiration driver ends it (0x0196 + stat resync).
+    Task Athena.Net.MapServer.World.Items.IItemEffectHost.EndStatusAsync(ushort statusId, CancellationToken cancellationToken)
+    {
+        if (_statusEffects.End(statusId)) WakeStatusExpiration();
+        return Task.CompletedTask;
+    }
+
+    // Best-effort wake of the expiration loop: SemaphoreFullException means a wake is already pending (the loop will re-read
+    // NextExpiration when it consumes it); the signal may also already be disposed if the session is tearing down concurrently.
+    private void WakeStatusExpiration()
+    {
+        try { _statusExpirationSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
     }
 
     // Pinned legacy/rathena/src/map/script.cpp BUILDIN_FUNC(specialeffect2) calls
@@ -4394,17 +4726,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // ai/iro-2026-wire.md and CharacterStatusEffectState's remarks for the exact val1/val2
     // derivation). Other statusIds apply only server-side state, matching the generic,
     // non-Captain-specific policy used throughout this host.
-    async Task INpcScriptHost.StartStatusAsync(int statusId, int durationMilliseconds, int val1, CancellationToken cancellationToken)
+    Task INpcScriptHost.StartStatusAsync(int statusId, int durationMilliseconds, int val1, CancellationToken cancellationToken) =>
+        StartStatusAndSyncAsync((ushort)statusId, durationMilliseconds, val1, 0, 0, cancellationToken);
+
+    // The one status-start path of this session (NPC and item sc_start alike).
+    private async Task StartStatusAndSyncAsync(ushort id, int durationMilliseconds, int val1, int val2, int val3, CancellationToken cancellationToken)
     {
-        var id = (ushort)statusId;
         // A weaker start over a stronger active status is a reference no-op (status_change_start returns
         // before any icon/stat side effect), so nothing is re-sent to the client.
-        if (_statusEffects.Start(id, durationMilliseconds, val1) == StatusStartOutcome.Retained) return;
-        // Wake the expiration loop: this may have moved the next deadline earlier. Best-effort -
-        // SemaphoreFullException means a wake is already pending (the loop hasn't consumed it
-        // yet), which is fine, it will re-read NextExpiration fresh when it does; the signal may
-        // also already be disposed if the session is tearing down concurrently.
-        try { _statusExpirationSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
+        if (_statusEffects.Start(id, durationMilliseconds, val1, val2, val3) == StatusStartOutcome.Retained) return;
+        // Wake the expiration loop: this may have moved the next deadline earlier.
+        WakeStatusExpiration();
         if (!_statusEffects.TryGet(id, out var status)) return;
         var actorId = _accountId;
 
@@ -4458,44 +4790,27 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // the partial-failure condition loudly so it is never silently swallowed.
     async Task<bool> INpcScriptHost.DeleteItemAsync(int itemId, uint amount, CancellationToken cancellationToken)
     {
-        if (_inventory is not { } inventory) return false;
+        if (_inventoryService is not { } service) return false;
 
-        var matchingRows = inventory.Items.Where(item => item.ItemId == itemId).OrderBy(item => item.DurableId).ToArray();
-        var available = (uint)matchingRows.Sum(item => (long)item.Amount);
-        if (available < amount)
+        // Every matching row is consumed in ONE durable operation: delitem either removes the whole amount or changes nothing (there is no
+        // partial consumption to roll back any more). Rows are consumed in ascending DurableId order, pc_delitem's array-scan order.
+        var slotsBefore = service.Snapshot.Items.ToDictionary(item => item.DurableId, item => item.SlotIndex);
+        var removal = await service.RemoveByItemIdAsync(itemId, amount, cancellationToken);
+        if (!removal.Succeeded)
         {
-            MapLogger.Warning($"[iRO MAP DEBUG] delitem rejected: itemId={itemId} requested={amount} available={available}.");
+            MapLogger.Warning($"[iRO MAP DEBUG] delitem rejected: itemId={itemId} requested={amount} status={removal.Status}.");
             return false;
         }
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var remaining = amount;
-        foreach (var row in matchingRows)
+        // A row's runtime slot never changes while it exists, so the slots captured before the operation are the ones the client knows.
+        _equipment = CharacterEquipmentSnapshot.FromInventory(removal.Snapshot);
+        for (var i = 0; i < removal.Mutations.Count; i++)
         {
-            if (remaining == 0) break;
-            var consumeAmount = Math.Min(remaining, row.Amount);
-
-            var consumeResult = await inventorySession.ConsumeItemAsync(row.DurableId, consumeAmount, cancellationToken);
-            if (!consumeResult.Success)
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] delitem persistence failed mid-loop for itemId={itemId} durableId={row.DurableId}; {amount - remaining} of {amount} already consumed and NOT rolled back.");
-                return false;
-            }
-
-            _inventory = consumeResult.RowDeleted
-                ? _inventory.WithoutDurableId(row.DurableId)
-                : _inventory.WithUpdatedItem(row.DurableId, row.ItemId, consumeResult.NewAmount, row.Equip, row.Identified, row.Refine, row.Favorite, row.Bound);
-            _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-            remaining -= consumeAmount;
-
-            // ZC_DELETE_ITEM_FROM_BODY (0x07FA) - sent per-row, immediately after that row's own
-            // authoritative persistence/snapshot update, using THAT row's own client-facing slot
-            // (SlotIndex + 2, same transform GetItemAsync uses a few lines below for 0x0B41) and
-            // THAT row's own consumed amount, never the total requested amount. See
-            // sailor-packet-export.txt frame 7291 / IroMonsterCombatPackets.BuildDeleteItemFromBody.
-            var deleteClientIndex = (ushort)(row.SlotIndex + 2);
-            var deletePacket = IroMonsterCombatPackets.BuildDeleteItemFromBody((ushort)deleteClientIndex, (ushort)consumeAmount, PacketConstants.ZcDeleteItemFromBodyReasonScriptDelitem);
-            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x07FA for delitem itemId={itemId} durableId={row.DurableId} amount={consumeAmount} clientIndex={deleteClientIndex}");
+            var mutation = (RemoveFromRowMutation)removal.Mutations[i];
+            var slotIndex = slotsBefore[mutation.DurableId];
+            var deleteClientIndex = (ushort)(slotIndex + 2);
+            var deletePacket = IroMonsterCombatPackets.BuildDeleteItemFromBody(deleteClientIndex, (ushort)mutation.Amount, PacketConstants.ZcDeleteItemFromBodyReasonScriptDelitem);
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x07FA for delitem itemId={itemId} durableId={mutation.DurableId} amount={mutation.Amount} clientIndex={deleteClientIndex}");
             await WriteAsync(deletePacket, cancellationToken);
         }
 
@@ -4526,26 +4841,23 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             return false;
         }
 
-        if (_inventory is not { } inventory) return false;
+        if (_inventoryService is not { } service) return false;
 
-        var inventorySession = new CharacterInventorySession(_accountId, _charId, _inventoryPersistence);
-        var addResult = await inventorySession.AddItemAsync(itemDefinition, amount, cancellationToken);
-        if (!addResult.Success || addResult.Item is not { } addedRow)
+        var grant = await service.GrantAsync(itemDefinition, amount, cancellationToken);
+        if (!grant.Succeeded)
         {
             MapLogger.Warning($"[iRO MAP DEBUG] getitem persistence failed for itemId={itemId}; not notifying client.");
             return false;
         }
 
-        _inventory = addResult.IsNewRow
-            ? inventory.WithNewItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound)
-            : inventory.WithUpdatedItem(addResult.DurableId, addedRow.ItemId, addedRow.Amount, addedRow.Equip, addedRow.Identified, addedRow.Refine, addedRow.Favorite, addedRow.Bound);
-        _equipment = CharacterEquipmentSnapshot.FromInventory(_inventory);
-
-        var slotIndex = _inventory.Items.Single(i => i.DurableId == addResult.DurableId).SlotIndex;
-        var clientIndex = (ushort)(slotIndex + 2);
-        var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)amount, itemDefinition.ClientViewId, IroInventoryListPackets.ItemType(itemDefinition));
-        MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for getitem itemId={itemId} count={amount} clientIndex={clientIndex}");
-        await WriteAsync(pickupPacket, cancellationToken);
+        _equipment = CharacterEquipmentSnapshot.FromInventory(grant.Snapshot);
+        foreach (var (row, added) in grant.Placements())
+        {
+            var clientIndex = (ushort)(row.SlotIndex + 2);
+            var pickupPacket = IroMonsterCombatPackets.BuildItemPickupAck(clientIndex, (ushort)added, itemDefinition.ClientViewId, IroInventoryListPackets.ItemType(itemDefinition));
+            MapLogger.Info($"[iRO MAP DEBUG] Sending 0x0B41 for getitem itemId={itemId} count={added} clientIndex={clientIndex}");
+            await WriteAsync(pickupPacket, cancellationToken);
+        }
         return true;
     }
 
@@ -6121,17 +6433,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // inventoryListPersistence parameter). Always reports a successful read with an empty
     // inventory (confirmed unarmed), so tests that never pass inventoryListPersistence
     // explicitly still authenticate successfully.
-    private sealed class AlwaysEmptyInventoryListPersistence : ICharacterInventoryListPersistence
+    private sealed class AlwaysEmptyInventoryOperations : ICharacterInventoryOperations
     {
-        internal static readonly AlwaysEmptyInventoryListPersistence Instance = new();
+        internal static readonly AlwaysEmptyInventoryOperations Instance = new();
         private static readonly CharacterInventoryReadResult Empty =
             CharacterInventoryReadResult.Success(new CharacterInventorySnapshot(Array.Empty<CharacterInventoryItem>()));
 
         public Task<CharacterInventoryReadResult> GetInventoryAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
             => Task.FromResult(Empty);
 
-        public Task<bool> SetItemEquipAsync(uint accountId, uint characterId, uint slotIndex, uint equip, CancellationToken cancellationToken)
-            => Task.FromResult(false);
+        public Task<Athena.Net.Shared.Inventory.InventoryOperationResponse?> ExecuteAsync(Athena.Net.Shared.Inventory.InventoryOperationRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<Athena.Net.Shared.Inventory.InventoryOperationResponse?>(null);
     }
 
     // Test-only default for the internal test-facing constructor (see its skillPersistence

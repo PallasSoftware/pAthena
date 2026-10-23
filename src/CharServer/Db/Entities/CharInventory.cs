@@ -1,6 +1,6 @@
 namespace Athena.Net.CharServer.Db.Entities;
 
-public sealed class CharInventory
+public sealed class CharInventory : IItemRowColumns
 {
     public uint Id { get; set; }
     public uint CharId { get; set; }
@@ -35,4 +35,5 @@ public sealed class CharInventory
     public ulong UniqueId { get; set; }
     public uint EquipSwitch { get; set; }
     public byte EnchantGrade { get; set; }
+    public uint Revision { get; set; }
 }

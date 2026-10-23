@@ -64,6 +64,201 @@ public interface IWorldPartitionGrain : IGrainWithStringKey
     Task<WorldMonsterAttackedResult> NotifyMonsterAttackedAsync(WorldMonsterAttackedCommand command);
     Task<WorldMonsterAttackWindowResult> ValidateMonsterAttackWindowAsync(WorldMonsterAttackWindowQuery query);
     Task<WorldPresenceLifeStateResult> UpdatePresenceLifeStateAsync(WorldPresenceLifeStateUpdate update);
+
+    // Feature 16 S2/S3: the World-authoritative ground-item lifecycle (drop, exclusive pickup claim,
+    // commit/release, lazy expiry). Ordinary ground items are ephemeral world state - never persisted
+    // to SQL - living on this same coarse per-map authority, exactly like monster/player simulation
+    // state (no per-ground-item grain). See WorldGroundItemMapSimulation's own doc comment for why a
+    // claim is a separate, exclusive reservation step BEFORE the caller ever asks CharServer to grant
+    // the item: that ordering is what makes two players racing the same pickup resolve to exactly one
+    // winner without any cross-server lock. Durable persistence (CharServer inventory) is a completely
+    // separate idempotency domain, deliberately kept decoupled - see DropGroundItemAsync's own doc
+    // comment for the full crash/retry contract this split produces.
+    Task<WorldGroundItemDropResult> DropGroundItemAsync(WorldGroundItemDrop drop);
+    Task<WorldGroundItemClaimResult> ClaimGroundItemAsync(WorldGroundItemClaim claim);
+    Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference);
+    Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference);
+    Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId);
+    // The per-map sequenced ground-item visibility feed (same epoch/sequence/snapshot-bootstrap shape as
+    // PollPlayerFeedAsync): every MapServer replica polls it so a bystander on ANY replica learns a drop appeared or vanished.
+    Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Feature 16 S2/S3: ground-item lifecycle. GroundItemId is minted by World (per-map monotonic,
+// never reused within one map's current epoch - see WorldGroundItemMapSimulation.Epoch) and is the
+// SAME identity value the (separately tracked, capture-verified) 0x0ADD/0x0362/0x00A1 wire fields
+// call `groundActorId` (see ai/iro-2026-wire.md's "Verified ground-item appearance/pickup/removal
+// wire evidence" section) - but this contract itself carries no packet IDs or byte layouts, only
+// the protocol-independent domain identity and state (see this project's own protocol-boundary
+// rule: packet concerns stay at the MapServer-facing edge, never inside a World/domain contract).
+// ---------------------------------------------------------------------------------------------
+
+// A ground item's content, independent of its position/lifecycle - what a pickup eventually grants.
+// ItemId is the resolved item_db id (never an AegisName) - the caller (MapServer, which owns the
+// item catalog) resolves any source AegisName before this ever reaches World, matching the existing
+// boundary rule that generated/reference item data belongs to MapServer, not Athena.World.
+[GenerateSerializer]
+public sealed record WorldGroundItemContent(
+    [property: Id(0)] int ItemId,
+    [property: Id(1)] uint Amount,
+    // Pinned mob_db/item_db Drops can mark a specific drop entry StealProtected (steal-protected
+    // loot, a normal rAthena concept distinct from this item's OWN ground ownership/loot-lock
+    // window below) - carried here as plain data so a future combat-side consumer can read it;
+    // this contract does not itself interpret it as an eligibility rule and does not consider it in
+    // ClaimGroundItemAsync.
+    [property: Id(2)] bool StealProtected = false,
+    // A player-dropped item's full instance (refine, cards, options, grade, bound, expiry, unique id) as MapServer's own
+    // durable-row encoding; opaque to World, which only carries it to whoever picks the item up. Null for fresh loot.
+    [property: Id(3)] byte[]? InstanceRow = null);
+
+// Drop ownership/loot-lock window (pinned first_attack_loot_bonus / item_first_get_time family -
+// see the plan doc's own "Pinned battle configuration" section): for OwnerWindowMs after CreatedAt,
+// only OwnerCharacterId may claim the item; ClaimGroundItemAsync itself enforces this (see that
+// method's own doc comment) - a caller never needs to re-check eligibility locally. OwnerCharacterId
+// is null for an item with no exclusive owner (e.g. a player's own discarded item - anyone may pick
+// it up immediately), in which case OwnerWindowMs is ignored.
+[GenerateSerializer]
+public sealed record WorldGroundItemOwnership(
+    [property: Id(0)] uint? OwnerCharacterId,
+    [property: Id(1)] int OwnerWindowMs = 0);
+
+[GenerateSerializer]
+public sealed record WorldGroundItemDrop(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] ushort X,
+    [property: Id(2)] ushort Y,
+    [property: Id(3)] WorldGroundItemContent Content,
+    [property: Id(4)] WorldGroundItemOwnership Ownership,
+    // Caller-minted idempotency key for the DROP itself (distinct from a claim's own idempotency -
+    // see WorldGroundItemClaim.ClaimId): a MapServer-local retry of the SAME logical drop (e.g. a
+    // monster-death drop resolution retried after a transient RPC failure) must never create two
+    // ground items for one logical drop. Deterministic and caller-chosen (e.g. derived from the
+    // killed monster's WorldMonsterLifeReference + drop-table index), never a fresh Guid per retry.
+    [property: Id(5)] Guid DropId);
+
+public enum WorldGroundItemDropStatus { Dropped, AlreadyDropped, MapNotFound }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemDropResult(
+    [property: Id(0)] WorldGroundItemDropStatus Status,
+    // Present for both Dropped and AlreadyDropped (the already-existing item's own id) - never
+    // present for MapNotFound.
+    [property: Id(1)] uint? GroundItemId);
+
+// The full identity a claim-lifecycle call must present. Epoch guards against a stale caller
+// addressing a map simulation instance that no longer exists (same rationale as
+// WorldMonsterLifeReference.SimulationEpoch) - ground-item state is cheap enough that, unlike
+// monster simulation, it is never unloaded by a touched-window policy, but the epoch still changes
+// if the grain itself is reactivated fresh (process restart), so a pre-restart GroundItemId can
+// never collide with an unrelated post-restart item that happens to reuse the same small id.
+[GenerateSerializer]
+public sealed record WorldGroundItemReference(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] WorldSimulationEpoch Epoch,
+    [property: Id(2)] uint GroundItemId);
+
+[GenerateSerializer]
+public sealed record WorldGroundItemClaim(
+    [property: Id(0)] WorldGroundItemReference Item,
+    [property: Id(1)] uint CharacterId,
+    // The claiming caller's own idempotency key: a retry of the SAME logical pickup attempt (lost
+    // ack, transient RPC failure) resends the SAME ClaimId - World recognizes it as the existing
+    // claim rather than a competing one, even from the SAME character. A genuinely NEW pickup
+    // attempt (a fresh client request) mints a fresh ClaimId.
+    [property: Id(2)] Guid ClaimId);
+
+public enum WorldGroundItemClaimStatus
+{
+    /// <summary>This claim now exclusively holds the item; the caller may proceed to grant it durably.</summary>
+    Claimed,
+    /// <summary>The SAME ClaimId already holds this item (a safe retry) - proceed exactly as for Claimed.</summary>
+    AlreadyClaimed,
+    /// <summary>A DIFFERENT claim (any ClaimId/CharacterId) already holds this item - the caller lost the race.</summary>
+    AlreadyClaimedByOther,
+    /// <summary>The item does not exist (never existed, already picked up and completed, or expired).</summary>
+    NotFound,
+    /// <summary>The item exists but is still within another character's exclusive ownership/loot-lock window.</summary>
+    NotEligible,
+    StaleEpoch,
+}
+
+[GenerateSerializer]
+public sealed record WorldGroundItemClaimResult(
+    [property: Id(0)] WorldGroundItemClaimStatus Status,
+    // Present only for Claimed/AlreadyClaimed - the content the caller must now durably grant.
+    [property: Id(1)] WorldGroundItemContent? Content);
+
+[GenerateSerializer]
+public sealed record WorldGroundItemClaimReference(
+    [property: Id(0)] WorldGroundItemReference Item,
+    [property: Id(1)] Guid ClaimId);
+
+public enum WorldGroundItemCompletionStatus
+{
+    /// <summary>The claim was completed (item permanently removed) or released (item returned to Available) exactly now.</summary>
+    Applied,
+    /// <summary>Already completed/released by an earlier call with the SAME ClaimId - a safe replay, nothing changed.</summary>
+    AlreadyApplied,
+    /// <summary>No such claim is currently held by this ClaimId (never claimed, or held by a different ClaimId) - the caller's own bug or a genuinely stale retry racing a NEWER claim.</summary>
+    NotFound,
+    /// <summary>The reference's own Epoch does not match this map's CURRENT ground-item simulation epoch (same fencing ClaimGroundItemAsync already applies) - a caller addressing a reactivated/rebuilt simulation it does not actually hold a claim against.</summary>
+    StaleEpoch,
+}
+
+[GenerateSerializer]
+public sealed record WorldGroundItemCompletionResult([property: Id(0)] WorldGroundItemCompletionStatus Status);
+
+// A plain point-in-time projection of one map's currently-visible (unclaimed OR claimed-but-not-
+// yet-completed - a claimed item is still physically present until Complete) ground items - used
+// for diagnostics and as the bootstrap/resync Snapshot of the ground-item feed below.
+[GenerateSerializer]
+public sealed record WorldGroundItemView(
+    [property: Id(0)] uint GroundItemId,
+    [property: Id(1)] ushort X,
+    [property: Id(2)] ushort Y,
+    [property: Id(3)] WorldGroundItemContent Content,
+    [property: Id(4)] DateTimeOffset CreatedAtUtc,
+    [property: Id(5)] DateTimeOffset ExpiresAtUtc);
+
+[GenerateSerializer]
+public sealed record WorldGroundItemSnapshot(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] WorldSimulationEpoch Epoch,
+    [property: Id(2)] IReadOnlyList<WorldGroundItemView> Items);
+
+// Ground-item visibility feed. Appeared carries the full view; Removed only the id and why it left. A claim or a released
+// claim is not a visibility change (the item stays physically present until Complete), so neither appends an entry.
+// GroundItemIds are never reused within an epoch, so a Removed id is final: a consumer never resurrects it.
+public enum WorldGroundItemFeedEntryKind { Appeared, Removed }
+
+public enum WorldGroundItemRemovalReason { PickedUp, Expired, ClaimAbandoned }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemFeedEntry(
+    [property: Id(0)] long Sequence,
+    [property: Id(1)] WorldGroundItemFeedEntryKind Kind,
+    [property: Id(2)] uint GroundItemId,
+    [property: Id(3)] WorldGroundItemView? Item,
+    [property: Id(4)] WorldGroundItemRemovalReason? Reason);
+
+[GenerateSerializer]
+public readonly record struct WorldGroundItemFeedCursor(
+    [property: Id(0)] WorldSimulationEpoch Epoch,
+    [property: Id(1)] long Sequence);
+
+public enum WorldGroundItemFeedStatus { Ready, ResyncRequired }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemFeedPage(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] WorldSimulationEpoch Epoch,
+    [property: Id(2)] WorldGroundItemFeedStatus Status,
+    [property: Id(3)] IReadOnlyList<WorldGroundItemView>? Snapshot,
+    [property: Id(4)] IReadOnlyList<WorldGroundItemFeedEntry>? Entries,
+    [property: Id(5)] long AsOfSequence)
+{
+    public bool ResyncRequired => Status != WorldGroundItemFeedStatus.Ready;
 }
 
 [GenerateSerializer]

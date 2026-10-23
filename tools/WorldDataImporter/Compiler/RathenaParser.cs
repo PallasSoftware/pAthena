@@ -7,7 +7,11 @@ internal sealed class RathenaParser
     private readonly IReadOnlyList<SyntaxToken> _tokens;
     private readonly List<CompilerDiagnostic> _diagnostics;
     private int _index;
-    public RathenaParser(string source, string file, int startLine = 1) { var lexer = new RathenaLexer(source, file, startLine); _tokens = lexer.Lex(); _diagnostics = [.. lexer.Diagnostics]; }
+    private readonly IReadOnlySet<string>? _builtinCommands;
+    // builtinCommands (optional): names of the pinned script engine's buildin commands. rAthena decides at a statement start whether an
+    // identifier is a command by looking it up, so "percentheal -100,-100;" is a command call while "x -1;" is not; without the set the
+    // parser keeps its previous (NPC) behavior.
+    public RathenaParser(string source, string file, int startLine = 1, IReadOnlySet<string>? builtinCommands = null) { _builtinCommands = builtinCommands; var lexer = new RathenaLexer(source, file, startLine); _tokens = lexer.Lex(); _diagnostics = [.. lexer.Diagnostics]; }
 
     public CompilationUnitSyntax ParseCompilationUnit()
     {
@@ -29,7 +33,19 @@ internal sealed class RathenaParser
         if (Is("return")) return ParseReturn();
         if (Is("goto")) return ParseGoto();
         if (Current.Kind == TokenKind.Identifier && Peek(1).Kind == TokenKind.Colon) { var name = Next(); var colon = Next(); return new LabelStatementSyntax(name.Text, name.Text.StartsWith("On", StringComparison.Ordinal), new(name.Span.Start, colon.Span.End)); }
-        if (Current.Kind == TokenKind.Identifier && Peek(1).Kind is not TokenKind.OpenParen && !IsExpressionOperator(Peek(1).Kind)) return ParseCommand();
+        var signedCommand = Current.Kind == TokenKind.Identifier && Peek(1).Kind is TokenKind.Plus or TokenKind.Minus && _builtinCommands?.Contains(Current.Text) == true;
+        var incrementedVariable = Current.Kind == TokenKind.Identifier && Peek(1).Kind is TokenKind.PlusPlus or TokenKind.MinusMinus;
+        if (Current.Kind == TokenKind.Identifier && !incrementedVariable && Peek(1).Kind is not TokenKind.OpenParen && (signedCommand || !IsExpressionOperator(Peek(1).Kind))) return ParseCommand();
+        // "heal(1-Hp),0;" / "getexp (a)?b:c,0;": a buildin command whose first argument starts with '('. When the call-looking prefix is
+        // not followed by ';' the statement is that command with an argument list (rAthena resolves it by the buildin lookup).
+        if (_builtinCommands is not null && Current.Kind == TokenKind.Identifier && Peek(1).Kind == TokenKind.OpenParen && _builtinCommands.Contains(Current.Text))
+        {
+            var savedIndex = _index; var savedDiagnostics = _diagnostics.Count;
+            ParseExpression();
+            var endsStatement = Current.Kind == TokenKind.Semicolon;
+            _index = savedIndex; _diagnostics.RemoveRange(savedDiagnostics, _diagnostics.Count - savedDiagnostics);
+            if (!endsStatement) return ParseCommand();
+        }
         var expression = ParseExpression(); var end = Match(TokenKind.Semicolon); return new ExpressionStatementSyntax(expression, new(expression.Span.Start, end.Span.End));
     }
 

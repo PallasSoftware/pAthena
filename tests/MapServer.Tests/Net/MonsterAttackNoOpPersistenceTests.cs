@@ -65,7 +65,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
     }
 
     private static MapServerWorld MakeWorld() => new(
-        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
         EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     // Boots a real authenticated, World-visible session on `MapId` at (100,100) backed by the spy.

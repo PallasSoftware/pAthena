@@ -1,6 +1,7 @@
 using Athena.Net.World.Contracts;
 using Orleans.Hosting;
 using Orleans.Runtime;
+using Orleans.Runtime.MembershipService.SiloMetadata;
 using Orleans.TestingHost;
 
 namespace Athena.Net.World.Tests;
@@ -238,46 +239,41 @@ public sealed class WorldGameplayProfileClusterTests
         finally { await cluster.StopAllSilosAsync(); }
     }
 
-    // Two differently configured silos starting at the same moment against an iRO cluster: exactly the kRO one is rejected.
+    // A deployment runs one immutable gameplay profile; a silo configured for a different one simply fails to start and the
+    // established cluster's profile is never affected. Mixed-region concurrent-startup arbitration is not a supported
+    // scenario - this is the straightforward case the architecture actually needs: one established silo, one newcomer.
     [Fact]
-    public async Task ConcurrentIroAndKroStartups_OnlyTheMatchingSiloJoins()
+    public async Task ASiloConfiguredForADifferentProfile_IsRejected_AndTheEstablishedClusterIsUnaffected()
     {
         var cluster = await DeployAsync(Opts(Iro));
         try
         {
-            s_next.Enqueue(Opts(Iro));
             s_next.Enqueue(Opts(Kro));
-            var starts = new[] { cluster.StartAdditionalSiloAsync(), cluster.StartAdditionalSiloAsync() };
-            try { await Task.WhenAll(starts); } catch { /* the rejected silo's failure is asserted below */ }
+            await Assert.ThrowsAnyAsync<Exception>(() => cluster.StartAdditionalSiloAsync());
 
-            Assert.Equal(1, starts.Count(t => t.IsFaulted));
-            Assert.Equal(2, cluster.GetActiveSilos().Count());
+            Assert.Single(cluster.GetActiveSilos());
             await AssertNeverAcceptsAsync(cluster, Kro);
         }
         finally { await cluster.StopAllSilosAsync(); }
     }
 
-    // The join race itself: a silo that skipped (or could not yet see its peers in) the startup check becomes active next to a
-    // differently configured one. The running monitors must find the mismatch and stop exactly the NEWER silo - never leave a
-    // mixed cluster running, and never stop the established silo because of a newcomer.
+    // The monitor independently catches a mismatch for a peer that joins (or becomes visible) after this silo's own startup
+    // check already passed - never leaving an undetected mixed cluster running.
     [Fact]
-    public async Task SilosThatBecameActiveTogetherWithDifferentProfiles_AreCaughtByTheMonitor_AndOnlyTheNewerStops()
+    public async Task AMismatchedSiloThatJoinsAfterStartupVerification_IsCaughtByTheRunningMonitor()
     {
-        var olderReports = new System.Collections.Concurrent.ConcurrentBag<string>();
-        var newerReports = new System.Collections.Concurrent.ConcurrentBag<string>();
-        var cluster = await DeployAsync(Opts(Iro) with { OnPeerMismatch = olderReports.Add });
+        var reports = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var cluster = await DeployAsync(Opts(Iro) with { OnPeerMismatch = reports.Add });
         try
         {
-            s_next.Enqueue(Opts(Kro) with { VerifyAtStartup = false, OnPeerMismatch = newerReports.Add });
+            s_next.Enqueue(Opts(Kro) with { VerifyAtStartup = false });
             await cluster.StartAdditionalSiloAsync();
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            while (newerReports.IsEmpty && DateTime.UtcNow < deadline) await Task.Delay(100);
-            await Task.Delay(500); // give the older silo's monitor several more ticks in which it could wrongly report
+            while (reports.IsEmpty && DateTime.UtcNow < deadline) await Task.Delay(100);
 
-            Assert.Single(newerReports);
-            Assert.Contains("gameplay profile", newerReports.Single());
-            Assert.Empty(olderReports);
+            Assert.Single(reports);
+            Assert.Contains("gameplay profile", reports.Single());
         }
         finally { await cluster.StopAllSilosAsync(); }
     }

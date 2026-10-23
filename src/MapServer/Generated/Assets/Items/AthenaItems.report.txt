@@ -1,0 +1,41 @@
+items: 29357
+loader warnings (pinned data quirks the real loader also reports): 0
+  type  0: 463
+  type  2: 3542
+  type  3: 4244
+  type  4: 8954
+  type  5: 2806
+  type  6: 5593
+  type  7: 149
+  type  8: 45
+  type 10: 123
+  type 12: 1028
+  type 18: 2410
+item groups: 2996 (3105 sub groups, 34315 entries)
+random options: 249
+combos: 5114 (8618 alternative item sets)
+distinct scripts: 21317
+  lowered: 21250
+  deferred: 67
+        43  GeneralScript  callfunc
+         5  GeneralScript  persistent-variable:@r
+         5  GeneralScript  setarray
+         3  GeneralScript  persistent-variable:EF_ENCHANCE
+         3  GeneralScript  persistent-variable:UNLUCKY
+         1  GeneralScript  persistent-variable:EQI_SHADOW_ACC_ARMOR
+         1  GeneralScript  persistent-variable:Eff_Confuse
+         1  GeneralScript  persistent-variable:Luk
+         1  GeneralScript  persistent-variable:MDiceCone
+         1  GeneralScript  persistent-variable:NPC_STONESKIN
+         1  GeneralScript  persistent-variable:SC_CURSEDCIRCLE
+         1  GeneralScript  persistent-variable:SC_DECAGI
+         1  GeneralScript  persistent-variable:getrefine
+script uses (a script can use several):
+  Bonus            16042
+  TriggeredBonus   862
+  SkillExecution   715
+  StatusEffect     591
+  OtherSystem      161
+  GeneralScript    67
+  ClientEffect     705
+  ItemOperation    1433

@@ -37,6 +37,11 @@ internal static partial class WorldDataImporterCli
                 "compile-quest-drop" => await CompileQuestDropAsync(args[1..]),
                 "compile-item" => await CompileItemAsync(args[1..]),
                 "compile-size-fix" => await CompileSizeFixAsync(args[1..]),
+                "compile-refine" => await CompileRefineAsync(args[1..]),
+                "compile-enchantgrade" => await CompileEnchantGradeAsync(args[1..]),
+                "survey-item-scripts" => SurveyItemScripts(args[1..]),
+                "compile-item-pack" => await CompileItemPackAsync(args[1..]),
+                "collect-rathena-names" => await CollectRathenaNamesAsync(args[1..]),
                 "compile-map-collision" => await CompileMapCollisionAsync(args[1..]),
                 "capabilities" => await CapabilitiesAsync(args[1..]),
                 _ => throw new ArgumentException($"Unknown command '{args[0]}'."),
@@ -426,6 +431,8 @@ internal static partial class WorldDataImporterCli
         return 0;
     }
 
+    private const string ReadableFolder = "Readable";
+
     private static async Task<int> GenerateMobsAsync(string[] args)
     {
         const int BucketSize = 1000;
@@ -437,21 +444,34 @@ internal static partial class WorldDataImporterCli
         var commit = options.Optional("rathena-commit") ?? ReadPinnedCommit(root);
         var sourcePath = Path.Combine(root, "db/re/mob_db.yml");
         var sourceFile = CanonicalSourceFile(sourcePath);
-        var definitions = MobDataCompiler.ReadAllMobDefinitions(await File.ReadAllTextAsync(sourcePath));
+        var definitions = MobDataCompiler.ReadAllMobDefinitions(await File.ReadAllTextAsync(sourcePath), ReadCustomLayers(options.Optional("custom-mobs")));
         var symbols = MobDataCompiler.CreateGeneratedSymbols(definitions);
+        var pack = new Athena.Net.MapServer.World.MobPack(commit, symbols.Select(item => MobDataCompiler.ToMobDefinition(item.Mob, commit, sourceFile)).ToArray());
+        var packPath = Path.GetFullPath(options.Required("pack"));
+        Directory.CreateDirectory(Path.GetDirectoryName(packPath)!);
+        await File.WriteAllBytesAsync(packPath, Athena.Net.MapServer.World.MobPackFormat.Write(pack));
 
-        Directory.CreateDirectory(outputDir);
-        foreach (var path in Directory.EnumerateFiles(outputDir, "*.cs").Where(path => MobDataCompiler.IsOwnedGeneratedMobFile(path, ClassName, Category)))
-            File.Delete(path);
+        // Two outputs per range from the one effective dataset: the compiled facade shard (GeneratedMobs.<Name> over
+        // MobCatalog) and the complete readable definition shard under Readable/, which MapServer.csproj excludes from
+        // compilation (inspection only - the pack is the runtime data).
+        var readableDir = Path.Combine(outputDir, ReadableFolder);
+        foreach (var directory in new[] { outputDir, readableDir })
+        {
+            Directory.CreateDirectory(directory);
+            foreach (var path in Directory.EnumerateFiles(directory, "*.cs").Where(path => MobDataCompiler.IsOwnedGeneratedMobFile(path, ClassName, Category)))
+                File.Delete(path);
+        }
 
         var encoding = new System.Text.UTF8Encoding(false);
         var fileCount = 0;
         foreach (var bucket in symbols.GroupBy(item => item.Mob.Id / BucketSize).OrderBy(group => group.Key))
         {
             var lo = bucket.Key * BucketSize;
-            var path = Path.Combine(outputDir, $"{ClassName}.{Category}.{lo}-{lo + BucketSize - 1}.cs");
-            await File.WriteAllTextAsync(path,
-                MobDataCompiler.GenerateMobDefinitions(bucket.Select(item => (item.Mob, item.Symbol)).ToArray(), commit, ClassName, sourceFile, 0), encoding);
+            var fileName = $"{ClassName}.{Category}.{lo}-{lo + BucketSize - 1}.cs";
+            await File.WriteAllTextAsync(Path.Combine(outputDir, fileName),
+                MobDataCompiler.GenerateMobFacades(bucket.ToArray(), pack, commit, ClassName, sourceFile), encoding);
+            await File.WriteAllTextAsync(Path.Combine(readableDir, fileName),
+                MobDataCompiler.GenerateMobDefinitions(bucket.Select(item => (item.Mob, item.Symbol)).ToArray(), commit, ClassName, sourceFile, 0, MobDataCompiler.ReadableViewNote), encoding);
             fileCount++;
         }
         await File.WriteAllTextAsync(Path.Combine(outputDir, $"{ClassName}.Registry.cs"),
@@ -663,7 +683,7 @@ internal static partial class WorldDataImporterCli
         // Mob-definition resolution: same source/pipeline generate-mobs itself uses, kept
         // independent of any already-generated MapServer output.
         var mobDbPath = Path.Combine(root, "db/re/mob_db.yml");
-        var mobDefinitions = MobDataCompiler.ReadAllMobDefinitions(await File.ReadAllTextAsync(mobDbPath));
+        var mobDefinitions = MobDataCompiler.ReadAllMobDefinitions(await File.ReadAllTextAsync(mobDbPath), ReadCustomLayers(options.Optional("custom-mobs")));
         var mobSymbols = MobDataCompiler.CreateGeneratedSymbols(mobDefinitions);
         var mobSymbolById = mobSymbols.ToDictionary(item => item.Mob.Id, item => item.Symbol);
         var aegisNameToId = MobDataCompiler.BuildAegisNameLookup(mobDefinitions);
@@ -981,6 +1001,103 @@ internal static partial class WorldDataImporterCli
         return 0;
     }
 
+    // Regenerates GameData/Refine/GeneratedRefineBonus.cs from db/re/refine.yml's Weapon/Armor groups
+    // (see RefineDataCompiler's own doc comment for the exact scope): the flat Bonus/RandomBonus the
+    // status calculation reads, and the Chances[] cost table the refine-ACTION mutation needs.
+    private static async Task<int> CompileRefineAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var resolveMaterialItemId = BuildAegisNameToItemIdResolver(root);
+        var table = RefineDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)), resolveMaterialItemId);
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, RefineDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated refine bonus table for {table.Count} item groups.");
+        return 0;
+    }
+
+    // Scans every pinned db/re/item_db_*.yml once for "  - Id: N\n    AegisName: X" pairs (the same shape
+    // QuestDropDataCompiler's own per-lookup regex matches), building one reusable AegisName -> Id map for
+    // RefineDataCompiler's Chances[].Material field - refine.yml names its material by AegisName, never by
+    // numeric id, and this is the compiler-tooling-layer resolution step (not ItemDatabaseLoader's own
+    // multi-layer item-pack pipeline, which this file does not need or want to couple to for one lookup).
+    private static Func<string, int> BuildAegisNameToItemIdResolver(string rathenaRoot)
+    {
+        var byAegis = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var file in new[] { "db/re/item_db_equip.yml", "db/re/item_db_etc.yml", "db/re/item_db_usable.yml" })
+        {
+            var text = File.ReadAllText(Path.Combine(rathenaRoot, file));
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                text, @"^  - Id: (\d+)\n    AegisName: (\S+)$", System.Text.RegularExpressions.RegexOptions.Multiline))
+            {
+                byAegis[match.Groups[2].Value] = int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        return aegisName => byAegis.TryGetValue(aegisName, out var id) ? id
+            : throw new ArgumentException($"Refine material AegisName '{aegisName}' was not found in any pinned item_db_*.yml.");
+    }
+
+    // Regenerates GameData/Refine/GeneratedEnchantGradeBonus.cs from db/re/enchantgrade.yml's Weapon/Armor
+    // types (see EnchantGradeDataCompiler's own doc comment for the exact scope): the flat per-(type,level,
+    // grade) Bonus multiplier the status calculation reads once an item carries a grade, PLUS the grade
+    // upgrade action's own Chances/Catalyst/Options data for CharacterEnchantGradeService's mutation.
+    private static async Task<int> CompileEnchantGradeAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var resolveMaterialItemId = BuildAegisNameToItemIdResolver(root);
+        var table = EnchantGradeDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)), resolveMaterialItemId);
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, EnchantGradeDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Generated enchant grade bonus table for {table.Count} item types.");
+        return 0;
+    }
+
+    private static async Task<int> CompileItemPackAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var constants = RathenaConstantTable.Load(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "rathena-constants.tsv")));
+        var result = ItemPackBuilder.Build(relative => File.ReadAllText(Path.Combine(root, relative)), constants, options.Required("rathena-commit"), ReadCustomLayers(options.Optional("custom-items")));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllBytesAsync(output, Athena.Net.MapServer.World.Items.ItemPackFormat.Write(result.Pack));
+        if (options.Optional("facade") is { } facadePath) await File.WriteAllTextAsync(Path.GetFullPath(facadePath), ItemPackBuilder.RenderFacade(result.Pack, options.Required("rathena-commit")).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));
+        if (options.Optional("report") is { } reportPath) await File.WriteAllTextAsync(Path.GetFullPath(reportPath), result.Report, new System.Text.UTF8Encoding(false));
+        Console.Write(result.Report);
+        return 0;
+    }
+
+    // Athena.NET-authored custom definitions (data/custom/items, data/custom/mobs): every *.yml directly in the folder, in
+    // ordinal file-name order, named by its path relative to the working directory for diagnostics. No folder, no layer.
+    private static IReadOnlyList<(string Name, string Yaml)> ReadCustomLayers(string? directory) => directory is null
+        ? []
+        : Directory.EnumerateFiles(Path.GetFullPath(directory), "*.yml").Order(StringComparer.Ordinal)
+            .Select(path => (Path.GetRelativePath(Environment.CurrentDirectory, path).Replace('\\', '/'), File.ReadAllText(path))).ToArray();
+
+    private static int SurveyItemScripts(string[] args)
+    {
+        var root = Path.GetFullPath(CliOptions.Parse(args).Required("rathena-root"));
+        foreach (var (key, count) in ItemScriptSurvey.Run(relative => File.ReadAllText(Path.Combine(root, relative)))) Console.WriteLine($"{count,8}  {key}");
+        return 0;
+    }
+
+    private static async Task<int> CollectRathenaNamesAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var names = RathenaNameCollector.Collect(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var output = Path.GetFullPath(options.Required("output"));
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        await File.WriteAllTextAsync(output, string.Join('\n', names) + "\n", new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Collected {names.Count} rAthena script identifiers.");
+        return 0;
+    }
+
     private static async Task<int> CompileItemAsync(string[] args)
     {
         var options = CliOptions.Parse(args);
@@ -1060,15 +1177,16 @@ internal static partial class WorldDataImporterCli
         Console.Error.WriteLine("WorldDataImporter compile-actors --source-root <folder> --rathena-commit <sha> --output <Actors.cs> --source-file <path> --map <map> --name <name> [--name <name>]");
         Console.Error.WriteLine("WorldDataImporter compile-navigation --source-root <folder> --output <Navigation.cs> --name <name> [--name <name>] [--namespace <ns>]");
         Console.Error.WriteLine("WorldDataImporter compile-character-data --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated directory>");
-        Console.Error.WriteLine("WorldDataImporter generate-mobs --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/GameData/Mobs directory>");
+        Console.Error.WriteLine("WorldDataImporter generate-mobs --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/GameData/Mobs directory> --pack <MapServer/Generated/Assets/Mobs/AthenaMobs.bin> [--custom-mobs <data/custom/mobs>]");
         Console.Error.WriteLine("WorldDataImporter compile-progression --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated/Progression directory> (compatibility alias)");
         Console.Error.WriteLine("WorldDataImporter compile-mob-spawn --rathena-root <folder> --rathena-commit <sha> --mob-id <id> --name <spawn-name> --spawn-file <path> [--exclude-map <map>] --class-name <n> --constant-name <n> --spawn-class-name <n> --spawn-array-name <n> --output-definition <Mob.cs> --output-spawns <MobSpawns.cs>");
-        Console.Error.WriteLine("WorldDataImporter generate-mob-spawns --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/World directory>");
+        Console.Error.WriteLine("WorldDataImporter generate-mob-spawns --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/World directory> [--custom-mobs <data/custom/mobs>]");
         Console.Error.WriteLine("WorldDataImporter generate-maps --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/World directory>");
         Console.Error.WriteLine("WorldDataImporter generate-warps --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/World directory>");
         Console.Error.WriteLine("WorldDataImporter generate-canonical-maps --rathena-root <folder> [--rathena-commit <sha>] --families <canonical-map-families.json> --output <src/Shared/MapIdentity/Generated directory>");
         Console.Error.WriteLine("WorldDataImporter compile-quest-drop --rathena-root <folder> --rathena-commit <sha> --quest-id <id> --output <QuestDrops.cs>");
         Console.Error.WriteLine("WorldDataImporter compile-item --rathena-root <folder> --rathena-commit <sha> --item-id <id> [--item-db-file <path>] --class-name <n> --constant-name <n> --output <Item.cs>");
+        Console.Error.WriteLine("WorldDataImporter compile-item-pack --rathena-root <folder> --rathena-commit <sha> --output <AthenaItems.bin> [--facade <GeneratedItems.cs>] [--report <report.txt>] [--custom-items <data/custom/items>]");
         Console.Error.WriteLine("WorldDataImporter compile-map-collision --input <local.gat> --map <name> --output <local.athmap>");
     }
 }

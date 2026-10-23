@@ -202,6 +202,62 @@ public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPart
         finally { Duration(started, "publish-monster-attack-action", partitionId); }
     }
 
+    public async Task<WorldGroundItemDropResult> DropGroundItemAsync(WorldGroundItemDrop drop, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(drop.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).DropGroundItemAsync(drop with { MapId = mapId }).WaitAsync(cancellationToken); }
+        catch { Failure("drop-ground-item"); throw; }
+        finally { Duration(started, "drop-ground-item", partitionId); }
+    }
+
+    public async Task<WorldGroundItemClaimResult> ClaimGroundItemAsync(WorldGroundItemClaim claim, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(claim.Item.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).ClaimGroundItemAsync(claim with { Item = claim.Item with { MapId = mapId } }).WaitAsync(cancellationToken); }
+        catch { Failure("claim-ground-item"); throw; }
+        finally { Duration(started, "claim-ground-item", partitionId); }
+    }
+
+    public async Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(reference.Item.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).CompleteGroundItemClaimAsync(reference with { Item = reference.Item with { MapId = mapId } }).WaitAsync(cancellationToken); }
+        catch { Failure("complete-ground-item-claim"); throw; }
+        finally { Duration(started, "complete-ground-item-claim", partitionId); }
+    }
+
+    public async Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(reference.Item.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).ReleaseGroundItemClaimAsync(reference with { Item = reference.Item with { MapId = mapId } }).WaitAsync(cancellationToken); }
+        catch { Failure("release-ground-item-claim"); throw; }
+        finally { Duration(started, "release-ground-item-claim", partitionId); }
+    }
+
+    public async Task<WorldGroundItemFeedPage?> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        var partitionId = resolver.ResolvePartition(normalized);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).PollGroundItemFeedAsync(cursor, normalized).WaitAsync(cancellationToken); }
+        catch { Failure("poll-ground-item-feed"); throw; }
+        finally { Duration(started, "poll-ground-item-feed", partitionId); }
+    }
+
+    public Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId, CancellationToken cancellationToken)
+    {
+        var normalized = WorldMapId.Normalize(mapId);
+        return Grain(resolver.ResolvePartition(normalized)).GetGroundItemsAsync(normalized).WaitAsync(cancellationToken);
+    }
+
     private IWorldPartitionGrain Grain(string partitionId) => clusterClient.GetGrain<IWorldPartitionGrain>(partitionId);
     private static Activity? Start(string name, string partitionId, string mapId)
     {

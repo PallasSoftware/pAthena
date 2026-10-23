@@ -52,4 +52,23 @@ public sealed class EquippedWeaponResolverTests
         Assert.Equal(EquippedWeaponResolution.NonWeaponInWeaponSlot, result.Resolution);
         Assert.Null(result.Weapon);
     }
+
+    // Defect 5 boundary (deliberately NOT a bug fix): CharacterEquipmentSnapshot.RightHandRefine is
+    // real, correctly-persisted data, but EquippedWeaponResult only carries the WeaponItemDefinition
+    // itself - the refine value is discarded here, matching EquipmentStats's own doc comment that
+    // the live player-vs-monster damage path (IroCombatRules/KroCombatRules.CalculatePlayerBasicAttack,
+    // which consumes EquippedWeaponResolver's own result) does not yet see refine ATK at all. Two
+    // equipment snapshots differing ONLY in RightHandRefine must resolve to the IDENTICAL weapon
+    // result - if this test ever starts failing because RightHandRefine began influencing the
+    // resolved Weapon, Feature 17's own combat-formula integration is the place that boundary should
+    // move, with its own typed contract and tests, not a silent side effect of this resolver.
+    [Fact]
+    public void Resolve_DoesNotReflectRightHandRefine_ResultIsIdenticalRegardlessOfRefineValue()
+    {
+        var unrefined = EquippedWeaponResolver.Resolve(new CharacterEquipmentSnapshot(RightHandItemId: 1201, RightHandRefine: 0), Items);
+        var refined = EquippedWeaponResolver.Resolve(new CharacterEquipmentSnapshot(RightHandItemId: 1201, RightHandRefine: 10), Items);
+
+        Assert.Equal(unrefined, refined);
+        Assert.Equal(Knife.Attack, refined.Weapon!.Attack); // the item's own static Attack, never refine-adjusted here.
+    }
 }

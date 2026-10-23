@@ -137,9 +137,9 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
-        var inventoryPersistence = new FakeInventoryPersistence();
-        var inventorySession = new CharacterInventorySession(AccountId, CharId, inventoryPersistence);
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
+        var inventoryOperations = new global::MapServer.Tests.Testing.InMemoryInventoryOperations();
+        var inventorySession = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, inventoryOperations, new CharacterInventorySnapshot([]));
         var questPersistence = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Active);
         var questStatus = await BuildQuestStatusLookupAsync(questPersistence, GeneratedQuestDrops.All.Select(rule => rule.QuestId));
 
@@ -159,9 +159,9 @@ public sealed class PoringQuestDropIntegrationTests
         Assert.Single(outcome.QuestDrops);
         Assert.Equal(GeneratedItems.Wood.Id, outcome.QuestDrops[0].ItemId);
 
-        var firstAward = await inventorySession.AddItemAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
-        Assert.True(firstAward.Success);
-        Assert.Equal(1u, firstAward.NewAmount);
+        var firstAward = await inventorySession.GrantAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
+        Assert.True(firstAward.Succeeded);
+        Assert.Equal(1u, Assert.Single(firstAward.Snapshot.Items).Amount);
 
         // DriveHit's damage mutation above already landed directly on the local MobInstance (this
         // file's own HP ledger, standing in for World's ApplyMonsterDamageAsync post-cutover - see
@@ -195,9 +195,9 @@ public sealed class PoringQuestDropIntegrationTests
         Assert.True(outcome.KilledByThisHit);
         Assert.Single(outcome.QuestDrops);
 
-        var secondAward = await inventorySession.AddItemAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
-        Assert.True(secondAward.Success);
-        Assert.Equal(2u, secondAward.NewAmount);
+        var secondAward = await inventorySession.GrantAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
+        Assert.True(secondAward.Succeeded);
+        Assert.Equal(2u, Assert.Single(secondAward.Snapshot.Items).Amount);
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var noQuests = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Absent);
         var questStatus = await BuildQuestStatusLookupAsync(noQuests, GeneratedQuestDrops.All.Select(rule => rule.QuestId));
 
@@ -246,8 +246,8 @@ public sealed class PoringQuestDropIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.Combat());
-        var inventorySession = new CharacterInventorySession(AccountId, CharId, new FakeInventoryPersistence());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(GeneratedQuestDrops.All), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
+        var inventorySession = global::MapServer.Tests.Testing.TestInventory.Service(AccountId, CharId, new global::MapServer.Tests.Testing.InMemoryInventoryOperations(), new CharacterInventorySnapshot([]));
         var questPersistence = new RecordingQuestPersistence(Quest21008, CharacterQuestStatus.Active);
         var questStatus = await BuildQuestStatusLookupAsync(questPersistence, GeneratedQuestDrops.All.Select(rule => rule.QuestId));
 
@@ -266,8 +266,8 @@ public sealed class PoringQuestDropIntegrationTests
         Assert.True(outcome.KilledByThisHit, $"The realistic post-tutorial Novice state failed to kill G_PORING within {attackCount} attacks.");
         Assert.Single(outcome.QuestDrops);
 
-        var award = await inventorySession.AddItemAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
-        Assert.True(award.Success);
-        Assert.Equal(1u, award.NewAmount);
+        var award = await inventorySession.GrantAsync(GeneratedItems.Wood, (uint)outcome.QuestDrops[0].Count, CancellationToken.None);
+        Assert.True(award.Succeeded);
+        Assert.Equal(1u, Assert.Single(award.Snapshot.Items).Amount);
     }
 }

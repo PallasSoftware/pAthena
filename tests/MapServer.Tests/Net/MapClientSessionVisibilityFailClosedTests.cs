@@ -89,7 +89,7 @@ public sealed class MapClientSessionVisibilityFailClosedTests
         combatState.Remove(new MonsterCombatKey(MapId, epoch, actorId, WorldMonsterIncarnationId.First));
 
         var gameplayPersistence = new FixedGameplayStatePersistence(FreshNovice());
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var session = new MapClientSession(
             1, serverClient, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused.conf")), true,
             MapId, 75, 51, WorldMapRegistry.Tutorial,
