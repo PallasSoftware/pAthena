@@ -107,7 +107,10 @@ public sealed record WorldGroundItemContent(
     // window below) - carried here as plain data so a future combat-side consumer can read it;
     // this contract does not itself interpret it as an eligibility rule and does not consider it in
     // ClaimGroundItemAsync.
-    [property: Id(2)] bool StealProtected = false);
+    [property: Id(2)] bool StealProtected = false,
+    // A player-dropped item's full instance (refine, cards, options, grade, bound, expiry, unique id) as MapServer's own
+    // durable-row encoding; opaque to World, which only carries it to whoever picks the item up. Null for fresh loot.
+    [property: Id(3)] byte[]? InstanceRow = null);
 
 // Drop ownership/loot-lock window (pinned first_attack_loot_bonus / item_first_get_time family -
 // see the plan doc's own "Pinned battle configuration" section): for OwnerWindowMs after CreatedAt,

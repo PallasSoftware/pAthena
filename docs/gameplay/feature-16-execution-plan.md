@@ -64,6 +64,20 @@ or 0x009D is used for an already-lying item) and out of range (0x00A1 or nothing
 ## Spike results (S0)
 Recorded in the S1 commit message and this section once measured.
 
+## S3 player item drop (implemented, server side; found missing in the S9 re-audit)
+
+`CharacterItemDropService` implements pinned `pc_dropitem`/`pc_candrop` for a group-0 player: refuses unknown rows, bad
+amounts, switch-registered rows, rentals, bound rows (no can_trade_bounded) and Trade.NoDrop items below their Override
+level; equipped rows are refused too (divergence: pinned pc_delitem would unequip, the stock client never offers it).
+Ordering across the two authorities never duplicates an item: the durable removal commits first (operation id = drop
+id), then World drops under the same drop id (idempotent); a deterministic World refusal is compensated by granting the
+same instance back under a drop-derived id; an unanswered World drop is retried and otherwise lost (the existing
+ground-item bounded-loss policy). The dropped instance (refine, cards, options, grade, unique id) travels opaquely in
+`WorldGroundItemContent.InstanceRow` and is the pickup template, so a +7 carded weapon comes back intact. Not modeled:
+MF_NODROP (no map-flag runtime), sc.cant.drop, free-cell scatter. Wire (CZ_ITEM_THROW + delete ack): Protocol-pending-
+capture - capture a stock client dropping 3 of a 5-stack of Red Potion (501) and a single Knife, full packet sequence.
+Tests: `CharacterItemDropServiceTests` (12, real TestCluster).
+
 ## S4 equip switch and shared equip-position rules (implemented, server side)
 
 `CharacterEquipmentMutationService` now owns the whole pinned equip-switch mechanic, server-authoritative and wire-free:

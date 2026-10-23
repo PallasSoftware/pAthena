@@ -11,6 +11,10 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     public bool Refineable => Data.Flags.HasFlag(PackItemFlags.Refineable);
     public bool Gradable => Data.Flags.HasFlag(PackItemFlags.Gradable);
     public bool BindOnEquip => Data.Flags.HasFlag(PackItemFlags.BindOnEquip);
+    // Pinned item_db Trade.NoDrop / Trade.Override (itemdb_isdropable_sub: droppable unless NoDrop and the player's group
+    // level is below Override).
+    public bool NoDrop => Data.Flags.HasFlag(PackItemFlags.NoDrop);
+    public int TradeOverride => Data.TradeOverride;
 
     // Pinned item_db Delay.Duration/Delay.Status (itemdb.cpp:762-801), gating pc_itemcd_check (pc.cpp:14766-14785). A
     // Status of SC_NONE (0) means this item has no shared cooldown group - DelayDuration alone is meaningless without it,

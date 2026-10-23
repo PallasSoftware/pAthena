@@ -3892,8 +3892,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             return;
         }
 
+        // A player-dropped item keeps its instance (refine, cards, options, grade, unique id): pinned map_addflooritem copies the
+        // whole struct item and pc_additem only clears equip/equipSwitch (pc.cpp:6045-6054).
+        var template = CharacterItemDropService.PickupTemplate(claim.Content);
+        if (template is not null && template.ItemId != (uint)claim.Content.ItemId)
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-pickup rejected: groundActorId={request.GroundActorId} instance itemId={template.ItemId} disagrees with content itemId={claim.Content.ItemId}.");
+            await _distributedWorld.ReleaseGroundItemClaimAsync(new WorldGroundItemClaimReference(reference, claimId), cancellationToken); // nothing durable was attempted
+            return;
+        }
         var grant = await _inventoryService.GrantAsync(
-            [new InventoryPlanner.GrantRequest(itemDefinition, claim.Content.Amount)], InventoryOperationKind.Add, cancellationToken, claimId);
+            [new InventoryPlanner.GrantRequest(itemDefinition, claim.Content.Amount, template)], InventoryOperationKind.Add, cancellationToken, claimId);
         var claimReference = new WorldGroundItemClaimReference(reference, claimId);
         if (grant.Succeeded)
         {
