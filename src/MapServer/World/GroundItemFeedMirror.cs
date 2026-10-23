@@ -63,7 +63,7 @@ public sealed class GroundItemFeedMirror
 // Which mirrored ground items one session can currently see: pinned map_foreachinallarea over AREA_SIZE (a square
 // |dx| <= area, |dy| <= area, battle_config.area_size), re-evaluated when the player moves or the mirror changes - an item
 // entering that square is what pinned sends clif_getareachar_item for, one leaving it (or picked up / expired) what it
-// sends clif_clearflooritem for. Server-side only: the 0x0ADD appearance packet still has unresolved fields, so nothing
+// sends clif_clearflooritem for. Positions are the player-presence registry's. Server-side only: the 0x0ADD appearance packet still has unresolved fields, so nothing
 // is projected to the client yet (Protocol-pending-capture).
 public sealed class GroundItemSessionVisibility
 {

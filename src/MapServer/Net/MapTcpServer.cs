@@ -892,9 +892,11 @@ public sealed class MapTcpServer
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return; }
         if (page is null) return;
         mirror.Apply(page);
+        // Positions come from the player-presence registry the AOI coordinator already uses (fed by the player feed), never
+        // from MapClientSession.CurrentX/Y: those advance the session's movement state outside its movement gate.
         foreach (var session in sessions)
-            if (string.Equals(session.CurrentMapName, mapId, StringComparison.OrdinalIgnoreCase))
-                session.GroundItems.Reconcile(mirror.Items, session.CurrentX, session.CurrentY, _world.Visibility.AreaSize);
+            if (_world.Players.TryGetByActorId(session.AccountId, out var presence) && string.Equals(presence.MapName, mapId, StringComparison.OrdinalIgnoreCase))
+                session.GroundItems.Reconcile(mirror.Items, presence.X, presence.Y, _world.Visibility.AreaSize);
     }
 
     internal bool TryGetGroundItemMirror(string mapId, out GroundItemFeedMirror mirror) => _groundItemMirrors.TryGetValue(mapId, out mirror!);
