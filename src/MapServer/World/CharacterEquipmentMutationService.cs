@@ -462,17 +462,8 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         // toggle - this project enforces the restriction unconditionally, matching the pinned
         // DEFAULT battle_config value; upgrade once a conf-override concept exists for this flag.
         if (meta is { RestrictedOnNormalMaps: true }) return EquipMutationResult.Fail;
-        // Pinned pc_job_can_use_item (pc.cpp:1771-1790, called from pc_equipitem:1961-1962): tests
-        // item_db's class_base[ClassBaseIndex] bit at FirstMask for the character's own job. A job
-        // GeneratedJobEquipClass has no entry for (the "2" gender/appearance-variant ids - see that
-        // generator's own doc comment) can never equip anything through this check, matching pinned
-        // pc_authok's own invalid-class handling of the same condition.
-        if (meta is not null)
-        {
-            if (!GeneratedJobEquipClass.TryGet(wearer.JobClass, out var equipClass)) return EquipMutationResult.Fail;
-            var classBase = equipClass.ClassBaseIndex switch { 0 => meta.ClassBase0, 1 => meta.ClassBase1, _ => meta.ClassBase2 };
-            if ((classBase & (1UL << equipClass.FirstMask)) == 0) return EquipMutationResult.Fail;
-        }
+        // Pinned pc_job_can_use_item then pc_isItemClass (pc.cpp:1961-1966): class_base and job tier (ItemClassEligibility).
+        if (meta is not null && !ItemClassEligibility.CanUse(meta, wearer.JobClass)) return EquipMutationResult.Fail;
         return null;
     }
 

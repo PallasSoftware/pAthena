@@ -59,6 +59,8 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     public ulong ClassBase0 => Data.ClassBase0;
     public ulong ClassBase1 => Data.ClassBase1;
     public ulong ClassBase2 => Data.ClassBase2;
+    // item_db Classes (ITEMJ_* tier bits: normal, upper, baby, third, third-upper, third-baby, fourth) for pc_isItemClass.
+    public uint ClassUpper => Data.ClassUpper;
 
     // Pinned item_db ArmorLevel (Default 1 for armor, 0 for non-armor - ItemDatabaseLoader's own
     // load-time default). Used only by the refine-bonus lookup (GeneratedRefineBonus.Bonus) - see

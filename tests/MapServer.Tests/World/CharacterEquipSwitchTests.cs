@@ -597,4 +597,20 @@ public sealed class CharacterEquipSwitchTests
         var (outcome, _) = await f.Service.AddToEquipSwitchAsync(1, AmmoPos, Items, 99, Male, JobClass.Archer, CancellationToken.None);
         Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
     }
+
+    // ---- job tier (pinned pc_isItemClass, RENEWAL branch) ----
+
+    [Theory]
+    [InlineData(JobClass.Knight, false)]       // normal tier: Classes has no Normal
+    [InlineData(JobClass.BabyKnight, false)]   // baby: no Baby
+    [InlineData(JobClass.LordKnight, true)]    // ITEMJ_UPPER, JOBL_UPPER without JOBL_THIRD
+    [InlineData(JobClass.RuneKnight, true)]    // ITEMJ_THIRD (All_Third), JOBL_THIRD only
+    [InlineData(JobClass.DragonKnight, true)]  // ITEMJ_FOURTH
+    public async Task ClassRestrictedWeapon_FollowsThePinnedJobTierRule(JobClass job, bool allowed)
+    {
+        // Altas_Weapon 1175: Jobs Swordman/Knight/Crusader, Classes Upper + All_Third + Fourth, Both_Hand, EquipLevelMin 55.
+        var f = Setup(Row(1, 1175));
+        var (outcome, _) = await f.Service.EquipAsync(0, Arms, Items, 99, Male, job, CancellationToken.None);
+        Assert.Equal(allowed ? EquipMutationResult.Success : EquipMutationResult.Fail, outcome!.Value.Result);
+    }
 }

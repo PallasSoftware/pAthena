@@ -98,7 +98,8 @@ public sealed class MapClientSessionUseItemTests
     }
 
     // CurrentHp 40/40, CurrentSp 11/11, every base stat 1.
-    private static readonly CharacterGameplayState FullHealthNovice = new(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
+    // Base level 5: First Aid Box (5) (23484) declares EquipLevelMin 5, and pinned pc_isUseitem refuses a lower level.
+    private static readonly CharacterGameplayState FullHealthNovice = new(CharId, 1, 0, 5, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
 
     private static CharacterInventorySnapshot Holding(int itemId, uint amount = 2) =>
         new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0)]); // clientIndex 2
@@ -107,6 +108,25 @@ public sealed class MapClientSessionUseItemTests
     {
         public Task<CharacterGameplayState?> GetAsync(uint a, uint c, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(a == AccountId && c == CharId ? state : null);
         public Task<CharacterGameplayState?> UpdateAsync(uint a, CharacterGameplayState e, CharacterGameplayState u, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(u);
+    }
+
+    // Pinned pc_isUseitem: `if (item->elv && sd->status.base_level < (uint32)item->elv) return false;` - First Aid Box (5)
+    // (EquipLevelMin 5) is refused to a level-1 Novice before anything is consumed or granted.
+    [Fact]
+    public async Task UseFirstAidBox_BelowItsMinimumLevel_IsRefused_NothingConsumed()
+    {
+        var levelOne = FullHealthNovice with { BaseLevel = 1 };
+        var (client, stream, session, run, persistence) = await SetupAsync(ThreeStarterRowsPlusFirstAidBox(), levelOne);
+        using var _ = client;
+
+        await stream.WriteAsync(UseItemRequestPacket(4, AccountId));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+        while (DateTime.UtcNow < deadline && persistence.Requests.Count == 0) await Task.Delay(20);
+
+        Assert.Empty(persistence.Requests);
+        Assert.Contains(session.Inventory!.Items, i => i.ItemId == 23484);
+        client.Close();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]

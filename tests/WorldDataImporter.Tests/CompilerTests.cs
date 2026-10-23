@@ -571,23 +571,27 @@ public sealed class CompilerTests
     //   SpiritHandler -> (10, 1) 2-1, despite being JobParameterCategory.Fourth for STAT caps -
     //     the two classifications are genuinely independent pinned mechanisms.
     [Theory]
-    [InlineData("Novice", (byte)0, (byte)0)]
-    [InlineData("Knight", (byte)1, (byte)1)]
-    [InlineData("Crusader", (byte)1, (byte)2)]
-    [InlineData("NoviceHigh", (byte)0, (byte)0)]
-    [InlineData("LordKnight", (byte)1, (byte)1)]
-    [InlineData("Paladin", (byte)1, (byte)2)]
-    [InlineData("Baby", (byte)0, (byte)0)]
-    [InlineData("RuneKnight", (byte)1, (byte)1)]
-    [InlineData("DragonKnight", (byte)1, (byte)1)]
-    [InlineData("Summoner", (byte)10, (byte)0)]
-    [InlineData("SpiritHandler", (byte)10, (byte)1)]
-    public void CharacterDataCompiler_ResolvesPinnedJobEquipClass(string jobIdentifier, byte expectedFirstMask, byte expectedClassBaseIndex)
+    //   Tier is the job's pinned JOBL_* bits folded for pc_isItemClass (upper 1, baby 2, third 4, fourth 8), from its
+    //   MAPID group in map.hpp: MAPID_NOVICE_HIGH = JOBL_UPPER|..., MAPID_BABY = JOBL_BABY|..., MAPID_RUNE_KNIGHT follows
+    //   MAPID_SUPER_NOVICE_E = JOBL_THIRD|..., MAPID_DRAGON_KNIGHT follows MAPID_HYPER_NOVICE = JOBL_FOURTH|(a third job),
+    //   MAPID_SPIRIT_HANDLER sits in the plain 2-1 list.
+    [InlineData("Novice", (byte)0, (byte)0, (byte)0)]
+    [InlineData("Knight", (byte)1, (byte)1, (byte)0)]
+    [InlineData("Crusader", (byte)1, (byte)2, (byte)0)]
+    [InlineData("NoviceHigh", (byte)0, (byte)0, (byte)1)]
+    [InlineData("LordKnight", (byte)1, (byte)1, (byte)1)]
+    [InlineData("Paladin", (byte)1, (byte)2, (byte)1)]
+    [InlineData("Baby", (byte)0, (byte)0, (byte)2)]
+    [InlineData("RuneKnight", (byte)1, (byte)1, (byte)4)]
+    [InlineData("DragonKnight", (byte)1, (byte)1, (byte)12)]
+    [InlineData("Summoner", (byte)10, (byte)0, (byte)0)]
+    [InlineData("SpiritHandler", (byte)10, (byte)1, (byte)0)]
+    public void CharacterDataCompiler_ResolvesPinnedJobEquipClass(string jobIdentifier, byte expectedFirstMask, byte expectedClassBaseIndex, byte expectedTier)
     {
         var root = Path.Combine(FindRepositoryRoot(), "legacy/rathena");
         var equipClass = CompileCharacterData(root).Artifacts.Single(item => item.RelativePath == "Jobs/GeneratedJobEquipClass.cs").Source;
         var line = equipClass.Split('\n').Single(entry => entry.Contains($"[JobClass.{jobIdentifier}] = new(", StringComparison.Ordinal));
-        Assert.Contains($"new({expectedFirstMask}, {expectedClassBaseIndex})", line);
+        Assert.Contains($"new({expectedFirstMask}, {expectedClassBaseIndex}, {expectedTier})", line);
     }
 
     // The "2" gender/appearance-variant ids genuinely have no pc_jobid2mapid case at all (see

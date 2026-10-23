@@ -107,7 +107,7 @@ Arrow 1750 with Bow 1701 worn, and a failed equip without a bow).
 
 Still not modeled on these paths (same as the normal equip): `sc.cant.equip`/SC_PYROCLASTIC, `canequip_tick`, the sitting
 check before a full switch, the `npc_id`/`npc_item_flag` gate of the single switch, the AS_LEFT-skill dual-wield
-alternative, pc_isItemClass ClassUpper tier eligibility (item_db Jobs upper/baby/third/fourth restrictions).
+alternative.
 
 **Equip switch wire: Protocol-pending-capture.** Exact captures needed (stock iRO 20220406): open the equip-switch window
 and register Knife (1201) into it, remove it, register Knife + Guard (2101) while wearing Cotton_Shirt only, press the full
@@ -201,7 +201,8 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 | S3 | Ground items: monster drop, pickup | Complete | `9a436f6`/`06d5b78`; pickup now restores a dropped instance |
 | S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a` `CharacterItemDropService` (12 tests). Not modeled: MF_NODROP (no map-flag runtime), free-cell scatter |
 | S4 | Eligibility (level, sex, broken, map, class_base) | Complete | `ee032e9`, `d3195dc` |
-| S4 | ClassUpper tier eligibility (pc_isItemClass) | Partial | Data is packed (`PackItem.ClassUpper`), never enforced: an upper/baby/third-only item is wearable by any tier. Needs a generated JOBL_* tier per job |
+| S4 | ClassUpper tier eligibility (pc_isItemClass) | Complete | Was **Missing** (data packed, never enforced); `GeneratedJobEquipClass.Tier` (pinned JOBL_* per MAPID group, generator + deterministic regeneration) and `ItemClassEligibility` (RENEWAL branch) on equip |
+| S3 | Item-use wearer gates (pc_isUseitem sex, elv/elvmax, job, tier) | Complete | Were **Missing** for every usable item (a level-1 Novice could open a level-5 First Aid Box); same `ItemClassEligibility`, and the dead check now covers containers too |
 | S4 | Slot rules: EQP_ACC single slot, card-forced accessory, dual-wield EQP_ARMS, costume/shadow slots, bind-on-equip | Complete | Were **incorrect/missing**; fixed `be06e49` (30 tests) |
 | S4 | Equip switch (add/remove/full/single, cooldown) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `be06e49` |
 | S4 | Ammo equip (pc_isequip EQP_AMMO) | Complete (server); wire Protocol-pending-capture (0x013C) | Was **Missing**; `668ea12`. Cannonball mount checks assume unmounted |
@@ -224,9 +225,8 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 
 ### Remaining genuine Feature 16 gaps (server side)
 1. Equipment Max HP/SP not applied (S5, above).
-2. ClassUpper tier eligibility (S4, above).
-3. Equipment-script constructs still unsupported but F16-owned: `eaclass`/`BaseJob`/`BaseClass` (~480 scripts; need a generated MAPID job table), trait-stat `readparam` (~70; traits unmodeled), `getequipweaponlv`/`getequiparmorlv`/`getitempos`, `switch`, string locals.
-4. Map flags (MF_NODROP and the GvG/PvP/zone NoEquip bits) - no map-flag runtime exists.
+2. Equipment-script constructs still unsupported but F16-owned: `eaclass`/`BaseJob`/`BaseClass` (~480 scripts; need a generated MAPID job table), trait-stat `readparam` (~70; traits unmodeled), `getequipweaponlv`/`getequiparmorlv`/`getitempos`, `switch`, string locals.
+3. Map flags (MF_NODROP and the GvG/PvP/zone NoEquip bits) - no map-flag runtime exists.
 
 ### Owned elsewhere (contract named)
 F17: every Feature17Combat parameter in `EquipmentBonusParameters` and all bonus2..5 tables (`EquipmentStats.FlatBonuses`,
@@ -241,4 +241,4 @@ list in "Outstanding iRO captures".
 
 **Overall: Feature 16 is not complete.** Every previously-missing mechanic found in this re-audit (equip switch, player
 drop, ammo, cross-replica visibility, accessory/dual-wield/costume/shadow slots, arrow/card script context) now exists
-server side with tests; the items above remain.
+server side with tests, as do ClassUpper tier eligibility and the item-use wearer gates; the items above remain.

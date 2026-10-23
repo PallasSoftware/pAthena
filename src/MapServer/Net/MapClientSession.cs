@@ -3740,17 +3740,28 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                 return;
             }
 
-            // Pinned clif_parse_UseItem (clif.cpp:12084-12087): a dead character cannot use items.
-            if (_gameplayState is not { State.CurrentHp: > 0 })
-            {
-                MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} character is dead or has no gameplay state.");
-                return;
-            }
         }
         else
         {
             MapLogger.Warning(
                 $"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} has no source-backed use effect implemented in this slice.");
+            return;
+        }
+
+        // Pinned clif_parse_UseItem (clif.cpp:12084-12087): a dead character cannot use items - containers included.
+        if (_gameplayState is not { State.CurrentHp: > 0 } living)
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} character is dead or has no gameplay state.");
+            return;
+        }
+        // Pinned pc_isUseitem's wearer gates, in its order: sex, elv/elvmax, pc_job_can_use_item, pc_isItemClass.
+        if (itemDefinition.Meta is { } useMeta
+            && ((useMeta.Sex != Athena.Net.MapServer.World.Items.ItemMetadata.BothSexes && useMeta.Sex != _sex)
+                || (useMeta.EquipLevelMin != 0 && living.State.BaseLevel < useMeta.EquipLevelMin)
+                || (useMeta.EquipLevelMax != 0 && living.State.BaseLevel > useMeta.EquipLevelMax)
+                || !ItemClassEligibility.CanUse(useMeta, (Athena.Net.MapServer.Generated.Jobs.JobClass)living.State.JobClass)))
+        {
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} not usable by this character (sex/level/job/class).");
             return;
         }
 
