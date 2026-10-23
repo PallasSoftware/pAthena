@@ -10,6 +10,7 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     public int Sell => Data.Sell;
     public bool Refineable => Data.Flags.HasFlag(PackItemFlags.Refineable);
     public bool Gradable => Data.Flags.HasFlag(PackItemFlags.Gradable);
+    public bool BindOnEquip => Data.Flags.HasFlag(PackItemFlags.BindOnEquip);
 
     // Pinned item_db Delay.Duration/Delay.Status (itemdb.cpp:762-801), gating pc_itemcd_check (pc.cpp:14766-14785). A
     // Status of SC_NONE (0) means this item has no shared cooldown group - DelayDuration alone is meaningless without it,

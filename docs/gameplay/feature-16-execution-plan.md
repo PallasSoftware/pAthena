@@ -37,7 +37,7 @@ The reference binary reads `conf/battle/*.conf`; Athena options take the conf va
 The reference runner builds at `PACKETVER 20211103` (RE); stock iRO is `20220406`. Compile-time gates differ for a few client features (package select needs `MAIN_NUM >= 20220216`; enchant/reform need `RE_NUM >= 20211103`). Server rules follow reference behavior; client projection follows captures only.
 
 ## Outstanding iRO captures (nothing below is claimed as client-compatible until captured)
-Stat resend after equip/unequip (0x00B0 family, ASPD/ATK/DEF), equip/unequip failure acks (0x0999/0x099A fail codes, FAILLEVEL), inventory items carrying cards/options/grade/expire/bind (0x0B39/0x0B09 fields), item add failure acks (0x0B41 results), weight update and weight-limit packets, item use of Healing/Usable with effect, identify list/reply, repair list/reply, refine UI, card insert/compound, enchant/reform/Laphine windows, equip switch, favorite toggle, storage/cart open and transfer, trailing opaque byte of 0x0998/0x00AB.
+Stat resend after equip/unequip (0x00B0 family, ASPD/ATK/DEF), equip/unequip failure acks (0x0999/0x099A fail codes, FAILLEVEL), inventory items carrying cards/options/grade/expire/bind (0x0B39/0x0B09 fields), item add failure acks (0x0B41 results), weight update and weight-limit packets, item use of Healing/Usable with effect, identify list/reply, repair list/reply, refine UI, card insert/compound, enchant/reform/Laphine windows, equip switch (server mechanic implemented - see the S4 equip switch section for the exact capture request), favorite toggle, storage/cart open and transfer, trailing opaque byte of 0x0998/0x00AB.
 
 **Stat resend after equip/unequip, specifically (classification: Protocol-pending-capture).** `DerivedStatComparer` (src/MapServer/Gameplay/Rules/DerivedStatComparer.cs) implements the reusable SERVER-SIDE half only - a pure before/after diff of `DerivedStats`, no packet construction, no SP_* var-id mapping, no wire I/O - and is deliberately NOT wired into `HandleEquipRequestAsync`/`HandleUnequipRequestAsync`. Reason: the existing capture evidence (stat-point-allocation flow) proves the `0x00B0` (ZC_PAR_CHANGE) wire LAYOUT and several SP_* var ids are real, but that capture's own var-id annotations do not agree internally with the pinned `_sp` enum (`map.hpp:504-505`) - e.g. the capture doc labels var 45 "DEF2" where the pinned enum says var 45 is `SP_DEF1`. Reusing a mapping with an unresolved internal discrepancy for a NEW, never-captured trigger (equip/unequip) risks compounding that error into a genuinely wrong wire projection - exactly what "never invent packet layouts without capture evidence" exists to prevent.
 
@@ -47,6 +47,37 @@ Ground item: pickup request (0x0362) and removal ack (0x00A1) are VERIFIED (G108
 
 ## Spike results (S0)
 Recorded in the S1 commit message and this section once measured.
+
+## S4 equip switch and shared equip-position rules (implemented, server side)
+
+`CharacterEquipmentMutationService` now owns the whole pinned equip-switch mechanic, server-authoritative and wire-free:
+`AddToEquipSwitchAsync` (pc_equipitem with equipswitch=true), `RemoveFromEquipSwitchAsync` (pc_equipswitch_remove),
+`SwitchAllAsync` (clif_parse_equipswitch_request -> ALL_EQSWITCH -> SkillEquipSwitch, gated by `EquipSwitchCooldown`, pinned
+skill_db Cooldown 10000 ms) and `SwitchSingleAsync` (clif_parse_equipswitch_request_single). The loadout is the persisted
+`InventoryItemRow.EquipSwitch` column only; the pinned `equip_switch_index[]` cache is derived from rows on every plan (as
+pc_load does), so CharServer stays the single durable owner. Every operation is ONE `InventoryOperationKind.EquipSwitch` (15)
+batch through the existing operation-id/revision contract: atomic, idempotent under lost acks, stale writers rejected.
+Deliberate divergence (stricter than pinned): pc_equipswitch ignores a failing pc_equipitem and silently drops that row from
+both sets; here any rejected step rejects the whole switch and nothing changes. Storage/cart transfer refuses a registered
+row (pinned MSI_SWAP_EQUIPITEM_UNREGISTER_FIRST).
+
+Pre-existing S4 defects found and fixed while sharing the planner (all pinned pc_equipitem/pc_equippoint behavior):
+`Both_Accessory` items occupied BOTH accessory slots (EQP_ACC single-slot pick and the card-forced slot were missing); the
+dual-wield EQP_ARMS branch was unreachable (pc_equippoint_sub's Assassin/Kagerou-Oboro rule now derived from
+GeneratedJobEquipClass); costume and shadow EQI slots were not modeled, so two costume/shadow items could be worn on one
+slot; bind-on-equip (`default_bind_on_equip: 4`) was never applied (no pinned item sets the flag; data-driven only).
+Tests: `CharacterEquipSwitchTests` (30, real pinned catalog) and the SQL Server executor swap test.
+
+Still not modeled on these paths (same as the normal equip): `sc.cant.equip`/SC_PYROCLASTIC, `canequip_tick`, the sitting
+check before a full switch, the `npc_id`/`npc_item_flag` gate of the single switch, the AS_LEFT-skill dual-wield
+alternative, ammo (`AmmoItemDefinition` is not equippable through this service; ammo_check_weapon unmodeled).
+
+**Equip switch wire: Protocol-pending-capture.** Exact captures needed (stock iRO 20220406): open the equip-switch window
+and register Knife (1201) into it, remove it, register Knife + Guard (2101) while wearing Cotton_Shirt only, press the full
+switch, then the single-item switch on Guard - each showing every client and server packet (id, length, all bytes, order).
+That settles 0x0A97/0x0A98 (add + ack, whose flag width changed at 20170502), 0x0A99/0x0A9A (remove + ack), 0x0A9B (the
+login/list projection), 0x0A9C/0x0A9D (full switch + reply, and whether a 0x0A9D precedes the equip acks), 0x0ACE (single
+switch), and which equip/appearance acks accompany each swap.
 
 ## S7 equipment-bonus script coverage (measured against commit 4e7841a, EquipmentBonusCoverageTests.cs)
 Scope: only scripts `IStatRules.TryResolveEquipment` can actually reach - every Weapon/Armor/Card item's own `Script`,

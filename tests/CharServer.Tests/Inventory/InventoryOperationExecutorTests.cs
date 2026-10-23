@@ -88,6 +88,33 @@ public sealed class InventoryOperationExecutorTests
         Assert.Equal((1_900_000_000u, 0xAABBCCDD11223344UL, 0x20u, 1u), (stored.ExpireTime, stored.UniqueId, stored.EquipSwitch, stored.Revision));
     }
 
+    // An equip switch (MapServer CharacterEquipmentMutationService.SwitchAllAsync) is one EquipSwitch-kind batch that moves
+    // Equip and EquipSwitch between rows. Real SQL Server: the swap commits together, a stale row rejects all of it, and a
+    // lost acknowledgement replays instead of swapping back.
+    [SqlServerFact]
+    public async Task EquipSwitchSwap_IsAtomic_RejectsAStaleRowEntirely_AndReplaysALostAck()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var seeded = await fixture.RunAsync(fixture.Op(
+            new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(1201, 1) with { Equip = 0x2 }),
+            new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(1201, 1) with { EquipSwitch = 0x2 })));
+        var (worn, registered) = (seeded.Results[0].Row!, seeded.Results[1].Row!);
+        InventoryOperationRequest Swap(uint registeredRevision) => new(AccountId, fixture.CharId, Guid.NewGuid(), InventoryOperationKind.EquipSwitch,
+        [
+            new UpdateRowMutation(InventoryContainer.Inventory, worn.DurableId, worn.Revision, worn with { Equip = 0, EquipSwitch = 0x2 }),
+            new UpdateRowMutation(InventoryContainer.Inventory, registered.DurableId, registeredRevision, registered with { Equip = 0x2, EquipSwitch = 0 }),
+        ]);
+
+        var stale = await fixture.RunAsync(Swap(registered.Revision + 7));
+        Assert.Equal(InventoryOperationStatus.PreconditionFailed, stale.Status);
+        Assert.Equal([(0x2u, 0u), (0u, 0x2u)], (await fixture.InventoryAsync()).Select(r => (r.Equip, r.EquipSwitch)));
+
+        var swap = Swap(registered.Revision);
+        Assert.Equal(InventoryOperationStatus.Applied, (await fixture.RunAsync(swap)).Status);
+        Assert.Equal(InventoryOperationStatus.Replayed, (await fixture.RunAsync(swap)).Status);
+        Assert.Equal([(0u, 0x2u), (0x2u, 0u)], (await fixture.InventoryAsync()).Select(r => (r.Equip, r.EquipSwitch)));
+    }
+
     [SqlServerFact]
     public async Task RepeatedOperationId_IsReplayedFromTheLog_AndAppliesNothingTwice()
     {

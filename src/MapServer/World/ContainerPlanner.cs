@@ -41,6 +41,9 @@ public static class ContainerPlanner
     {
         if (amount == 0 || amount > sourceRow.Amount) return new(false, null, StorageTransferResult.Invalid);
         if (sourceRow.Equip != 0) return new(false, null, StorageTransferResult.NotStorable); // pc_candrop-equivalent: an equipped row is never transferable.
+        // Pinned clif_parse_MoveToKafra (clif.cpp:13634-13637) / pc_putitemtocart (pc.cpp:6699-6702): a row registered in the
+        // equip-switch set must be unregistered first (MSI_SWAP_EQUIPITEM_UNREGISTER_FIRST).
+        if (sourceRow.Details.EquipSwitch != 0) return new(false, null, StorageTransferResult.NotStorable);
         if (!items.TryGetValue(sourceRow.ItemId, out var item)) return new(false, null, StorageTransferResult.Invalid);
         // Pinned itemdb_cancartstore_sub/itemdb_canstore_sub (itemdb.cpp:3294-3299): NoCart/NoStorage block the
         // transfer unless a GM's trade-override level clears it - this project has no GM-permission/trade-override
