@@ -4078,8 +4078,17 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var slotIndex = (uint)(request.ClientIndex - 2);
 
         if (_inventoryService is null || _gameplayState is not { } gameplayState) return;
+        // Pinned answers an ammo equip with 0x013C (clif_arrowequip) + clif_arrow_fail, never 0x0999; neither is captured for
+        // stock iRO yet, so ammo keeps the pre-existing fail ack here. The server mechanic itself (CharacterEquipmentMutationService)
+        // supports ammo; only this projection is Protocol-pending-capture.
+        if (inventory.Items.FirstOrDefault(i => i.SlotIndex == slotIndex) is { } requested && GeneratedItems.ById.GetValueOrDefault(requested.ItemId) is AmmoItemDefinition)
+        {
+            await WriteAsync(IroEquipmentMutationPackets.BuildEquipAck(request.ClientIndex, 0, PacketConstants.EquipAckResultFail), cancellationToken);
+            return;
+        }
         var service = new CharacterEquipmentMutationService(_inventoryService, _rules.Stats);
-        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, gameplayState.State.BaseLevel, _sex, (Athena.Net.MapServer.Generated.Jobs.JobClass)gameplayState.State.JobClass, cancellationToken);
+        var (outcome, updated) = await service.EquipAsync(slotIndex, request.Position, GeneratedItems.ById, gameplayState.State.BaseLevel, _sex,
+            (Athena.Net.MapServer.Generated.Jobs.JobClass)gameplayState.State.JobClass, cancellationToken, gameplayState.Skills);
         if (outcome is not { } equipOutcome) return; // invalid slot/index - pc_equipitem sends no ack either (clif.cpp:12154-12156 early-out)
 
         var result = equipOutcome.Result switch

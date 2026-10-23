@@ -210,9 +210,10 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         uint characterBaseLevel,
         byte characterSex,
         JobClass characterJobClass,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CharacterSkillSnapshot? characterSkills = null)
     {
-        var wearer = new Wearer(items, characterBaseLevel, characterSex, characterJobClass);
+        var wearer = new Wearer(items, characterBaseLevel, characterSex, characterJobClass, characterSkills);
         return await MutateAsync(InventoryOperationKind.Equip, inventory =>
         {
             var work = new EquipWorkingSet(inventory);
@@ -313,13 +314,14 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
                 var switched = Switch(work, target, wearer, out var swapped);
                 return (new EquipOutcome(switched, switched == EquipMutationResult.Success ? swapped : 0), work);
             }
-            var point = items.TryGetValue(target.ItemId, out var definition) && definition is IEquippableItemDefinition equippable ? EquipPoint(equippable, characterJobClass) : 0;
+            var point = items.TryGetValue(target.ItemId, out var definition) && EquipLocationOf(definition) is { } location ? EquipPoint(definition, location, characterJobClass) : 0;
             var result = TryEquip(work, target, point, wearer, toSwitch: true, out var pos);
             return (new EquipOutcome(result, result == EquipMutationResult.Success ? pos : 0), work);
         }, wearer, cancellationToken);
     }
 
-    private readonly record struct Wearer(IReadOnlyDictionary<int, ItemDefinition> Items, uint BaseLevel, byte Sex, JobClass JobClass)
+    // Skills is null when the caller does not supply them; a skill-gated equip (AS_VENOMKNIFE ammo) then fails, never passes.
+    private readonly record struct Wearer(IReadOnlyDictionary<int, ItemDefinition> Items, uint BaseLevel, byte Sex, JobClass JobClass, CharacterSkillSnapshot? Skills = null)
     {
         // For CanResolveAfter's support check only: the explore pass validates every branch whatever the values, so base-1
         // stats and no skills are enough. Live stat resolution uses the session's real state and skills.
@@ -405,15 +407,19 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     private static EquipMutationResult TryEquip(EquipWorkingSet work, CharacterInventoryItem target, uint requestedPosition, Wearer wearer, bool toSwitch, out uint pos)
     {
         pos = 0;
-        if (!wearer.Items.TryGetValue(target.ItemId, out var definition) || definition is not IEquippableItemDefinition equippable)
+        if (!wearer.Items.TryGetValue(target.ItemId, out var definition) || EquipLocationOf(definition) is not { } location)
             return EquipMutationResult.Fail;
         if (CheckEligibility(target, definition, wearer) is { } rejected) return rejected;
-        // Pinned pc.cpp:12059-12062: ammo is never registered for a switch. AmmoItemDefinition is not equippable through this
-        // service at all yet (ammo_check_weapon is unmodeled), so the check above already refuses it on both paths.
+        if (definition is AmmoItemDefinition ammo)
+        {
+            if (AmmoCheck(work, ammo, wearer) is { } ammoRejected) return ammoRejected;
+            if (toSwitch) return EquipMutationResult.Fail; // pinned pc.cpp:12059-12062: ammo is never registered for a switch
+            requestedPosition = EquipSlots.Bitmask[EquipSlot.Ammo]; // pinned clif_parse_EquipItem: "Client doesn't send the position for ammo."
+        }
 
-        pos = EquipPoint(equippable, wearer.JobClass);
+        pos = EquipPoint(definition, location, wearer.JobClass);
         if ((pos & requestedPosition) == 0 || target.Equip != 0) { pos = 0; return EquipMutationResult.Fail; }
-        pos = ResolvePosition(work, target, pos, requestedPosition, equippable, wearer.Items, toSwitch);
+        pos = ResolvePosition(work, target, pos, requestedPosition, definition, location, wearer.Items, toSwitch);
 
         if (toSwitch)
         {
@@ -476,9 +482,9 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // GeneratedJobEquipClass (every Assassin/Assassin Cross/Guillotine Cross/Shadow Cross/Kagerou/Oboro/... variant).
     // shortcut: the pc_checkskill(sd, AS_LEFT) alternative is not modeled (only the Assassin line learns it normally);
     // upgrade when a non-Assassin character can hold AS_LEFT.
-    internal static uint EquipPoint(IEquippableItemDefinition item, JobClass jobClass)
+    internal static uint EquipPoint(ItemDefinition item, uint location, JobClass jobClass)
     {
-        var ep = item.EquipLocation;
+        var ep = location;
         if (item is WeaponItemDefinition { WeaponType: WeaponType.Dagger or WeaponType.OneHandSword or WeaponType.OneHandAxe }
             && ep == EquipSlots.Bitmask[EquipSlot.HandRight]
             && GeneratedJobEquipClass.TryGet(jobClass, out var equipClass) && equipClass is { FirstMask: 6 or 9, ClassBaseIndex: 1 })
@@ -486,10 +492,40 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         return ep;
     }
 
+    // Ammo is equippable (EQP_AMMO) without being an IEquippableItemDefinition: it stays in the normal inventory list on the wire.
+    private static uint? EquipLocationOf(ItemDefinition definition) => definition switch
+    {
+        IEquippableItemDefinition equippable => equippable.EquipLocation,
+        AmmoItemDefinition ammo => ammo.EquipLocation,
+        _ => null,
+    };
+
+    // Pinned pc_isequip's EQP_AMMO branch (pc.cpp:1897-1940) with ammo_check_weapon: yes (conf/battle/battle.conf:177),
+    // against sd->status.weapon (pc_calcweapontype: the right-hand weapon, else the left one, else fist).
+    private static EquipMutationResult? AmmoCheck(EquipWorkingSet work, AmmoItemDefinition ammo, Wearer wearer)
+    {
+        WeaponType Hand(EquipSlot slot) => work.Occupant(EquipSlots.Bitmask[slot], switchSet: false) is { } row
+            && wearer.Items.GetValueOrDefault(row.ItemId) is WeaponItemDefinition weapon ? weapon.WeaponType : WeaponType.Fist;
+        var weaponType = Hand(EquipSlot.HandRight) is var right and not WeaponType.Fist ? right : Hand(EquipSlot.HandLeft);
+        return ammo.AmmoType switch
+        {
+            // AMMO_ARROW: bow, instrument or whip.
+            1 when weaponType is not (WeaponType.Bow or WeaponType.Musical or WeaponType.Whip) => EquipMutationResult.Fail,
+            // AMMO_DAGGER: requires AS_VENOMKNIFE (skill 1004).
+            2 when wearer.Skills?.Learned.Any(skill => skill.SkillId == 1004 && skill.Level > 0) != true => EquipMutationResult.Fail,
+            // AMMO_BULLET / AMMO_SHELL: a gun, RENEWAL including the grenade launcher.
+            3 or 4 when weaponType is not (WeaponType.Revolver or WeaponType.Rifle or WeaponType.Gatling or WeaponType.Shotgun or WeaponType.Grenade) => EquipMutationResult.Fail,
+            // AMMO_CANNONBALL: a Mechanic without Mado Gear, or a Genetic without a cart. Neither mount is modeled yet, so those
+            // jobs are always refused (the pinned result while unmounted). shortcut: read the real mount state once it exists.
+            8 when wearer.JobClass is JobClass.Mechanic or JobClass.MechanicT or JobClass.Genetic or JobClass.GeneticT => EquipMutationResult.Fail,
+            _ => null,
+        };
+    }
+
     // Pinned pc.cpp:12088-12124: positions offered as "either of two slots" resolve to exactly one, looking at the worn
     // equipment (or the switch set, when registering a switch).
     private static uint ResolvePosition(EquipWorkingSet work, CharacterInventoryItem target, uint pos, uint requestedPosition,
-        IEquippableItemDefinition item, IReadOnlyDictionary<int, ItemDefinition> items, bool switchSet)
+        ItemDefinition item, uint location, IReadOnlyDictionary<int, ItemDefinition> items, bool switchSet)
     {
         bool Taken(EquipSlot slot) => work.Occupant(EquipSlots.Bitmask[slot], switchSet) is not null;
         uint Pick(uint pair, EquipSlot first, EquipSlot second, uint whenFirstTakenAndSecondFree, uint otherwise)
@@ -504,7 +540,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             // Accessories that have cards that force equip location (pc.cpp:12093-12107).
             var d = target.Details;
             var cards = (uint[])[d.Card0, d.Card1, d.Card2, d.Card3];
-            for (var i = 0; i < Math.Min(((ItemDefinition)item).Meta?.Slots ?? 0, (uint)cards.Length); i++)
+            for (var i = 0; i < Math.Min(item.Meta?.Slots ?? 0, (uint)cards.Length); i++)
             {
                 var cardId = cards[i];
                 if (cardId != 0 && items.TryGetValue((int)cardId, out var card) && card is CardItemDefinition { EquipLocations: var cardPos }
@@ -513,12 +549,12 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             }
             return pos;
         }
-        if (pos == EquipSlots.Arms && item.EquipLocation == EquipSlots.Bitmask[EquipSlot.HandRight])
+        if (pos == EquipSlots.Arms && location == EquipSlots.Bitmask[EquipSlot.HandRight])
             // Dual-wield capable weapon, RENEWAL branch (pc.cpp:12108-12115).
             return Pick(EquipSlots.Arms, EquipSlot.HandRight, EquipSlot.HandLeft, EquipSlots.Bitmask[EquipSlot.HandLeft], EquipSlots.Bitmask[EquipSlot.HandRight]);
         if (pos == EquipSlots.ShadowAcc)
             return Pick(EquipSlots.ShadowAcc, EquipSlot.ShadowAccLeft, EquipSlot.ShadowAccRight, EquipSlots.Bitmask[EquipSlot.ShadowAccRight], EquipSlots.Bitmask[EquipSlot.ShadowAccLeft]);
-        if (pos == EquipSlots.ShadowArms && item.EquipLocation == EquipSlots.Bitmask[EquipSlot.ShadowWeapon])
+        if (pos == EquipSlots.ShadowArms && location == EquipSlots.Bitmask[EquipSlot.ShadowWeapon])
         {
             var picked = requestedPosition & EquipSlots.ShadowArms;
             return picked == EquipSlots.ShadowArms ? (Taken(EquipSlot.ShadowWeapon) ? EquipSlots.Bitmask[EquipSlot.ShadowShield] : EquipSlots.Bitmask[EquipSlot.ShadowWeapon]) : picked;

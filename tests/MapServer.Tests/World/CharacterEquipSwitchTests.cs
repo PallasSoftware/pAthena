@@ -544,4 +544,57 @@ public sealed class CharacterEquipSwitchTests
         Assert.Equal(4, Durable(f, 1).Bound); // pinned default_bind_on_equip: 4 (BOUND_CHAR)
         Assert.Equal(0, Durable(f, 2).Bound);
     }
+
+    // ---- ammo (pinned pc_isequip EQP_AMMO branch, ammo_check_weapon: yes) ----
+
+    // Arrow 1750 / Silver_Arrow 1751 (AMMO_ARROW), Bow 1701 (Both_Hand bow, Archer), Bullet 13200 (AMMO_BULLET),
+    // Venom_Knife 1771 (AMMO_DAGGER, Assassin).
+    private const uint AmmoPos = 0x8000;
+
+    [Fact]
+    public async Task Arrow_EquipsAtTheAmmoSlotWhatevertheRequest_OnlyWithABow()
+    {
+        var bowless = Setup(Row(1, 1750));
+        var (refused, _) = await bowless.Service.EquipAsync(0, 0, Items, 99, Male, JobClass.Archer, CancellationToken.None);
+        Assert.Equal(EquipMutationResult.Fail, refused!.Value.Result);
+
+        var f = Setup(Row(1, 1701, equip: Arms), Row(2, 1750), Row(3, 1751));
+        var (first, _) = await f.Service.EquipAsync(1, 0, Items, 99, Male, JobClass.Archer, CancellationToken.None); // the client sends no position
+        var (second, _) = await f.Service.EquipAsync(2, 0, Items, 99, Male, JobClass.Archer, CancellationToken.None);
+
+        Assert.Equal(new EquipOutcome(EquipMutationResult.Success, AmmoPos), first);
+        Assert.Equal(new EquipOutcome(EquipMutationResult.Success, AmmoPos), second);
+        Assert.Equal((0u, AmmoPos), (State(f, 2).Equip, State(f, 3).Equip)); // the new stack displaces the old one
+    }
+
+    [Fact]
+    public async Task Bullet_WithoutAGun_IsRefused()
+    {
+        var f = Setup(Row(1, Knife, equip: HandR), Row(2, 13200));
+        var (outcome, _) = await f.Service.EquipAsync(1, AmmoPos, Items, 99, Male, JobClass.Gunslinger, CancellationToken.None);
+        Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
+        Assert.Empty(f.Operations.Requests);
+    }
+
+    [Fact]
+    public async Task VenomKnife_RequiresAsVenomKnife()
+    {
+        var learned = new CharacterSkillSnapshot([new CharacterLearnedSkill(1004, 1, CharSkillFlag.Permanent)]);
+        var without = Setup(Row(1, 1771));
+        var with = Setup(Row(1, 1771));
+
+        var (refused, _) = await without.Service.EquipAsync(0, 0, Items, 99, Male, JobClass.Assassin, CancellationToken.None);
+        var (accepted, _) = await with.Service.EquipAsync(0, 0, Items, 99, Male, JobClass.Assassin, CancellationToken.None, learned);
+
+        Assert.Equal(EquipMutationResult.Fail, refused!.Value.Result);
+        Assert.Equal(new EquipOutcome(EquipMutationResult.Success, AmmoPos), accepted);
+    }
+
+    [Fact]
+    public async Task Ammo_IsNeverRegisteredForAnEquipSwitch()
+    {
+        var f = Setup(Row(1, 1701, equip: Arms), Row(2, 1750));
+        var (outcome, _) = await f.Service.AddToEquipSwitchAsync(1, AmmoPos, Items, 99, Male, JobClass.Archer, CancellationToken.None);
+        Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
+    }
 }

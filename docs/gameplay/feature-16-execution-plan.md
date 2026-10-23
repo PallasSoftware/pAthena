@@ -98,9 +98,16 @@ GeneratedJobEquipClass); costume and shadow EQI slots were not modeled, so two c
 slot; bind-on-equip (`default_bind_on_equip: 4`) was never applied (no pinned item sets the flag; data-driven only).
 Tests: `CharacterEquipSwitchTests` (30, real pinned catalog) and the SQL Server executor swap test.
 
+Ammo (found missing in the S9 re-audit, now implemented): `AmmoItemDefinition` equips at EQP_AMMO whatever position the
+client sends (pinned clif_parse_EquipItem), under pc_isequip's ammo_check_weapon rules (arrows need a bow/instrument/whip,
+bullets and shells a gun incl. the RENEWAL grenade launcher, AMMO_DAGGER needs AS_VENOMKNIFE, cannonballs are refused to
+unmounted Mechanics/Genetics - mounts are not modeled), and is never switch-registered. The session keeps the old fail ack
+for ammo: pinned answers with 0x013C clif_arrowequip, uncaptured (Protocol-pending-capture: capture an Archer equipping
+Arrow 1750 with Bow 1701 worn, and a failed equip without a bow).
+
 Still not modeled on these paths (same as the normal equip): `sc.cant.equip`/SC_PYROCLASTIC, `canequip_tick`, the sitting
 check before a full switch, the `npc_id`/`npc_item_flag` gate of the single switch, the AS_LEFT-skill dual-wield
-alternative, ammo (`AmmoItemDefinition` is not equippable through this service; ammo_check_weapon unmodeled).
+alternative, pc_isItemClass ClassUpper tier eligibility (item_db Jobs upper/baby/third/fourth restrictions).
 
 **Equip switch wire: Protocol-pending-capture.** Exact captures needed (stock iRO 20220406): open the equip-switch window
 and register Knife (1201) into it, remove it, register Knife + Guard (2101) while wearing Cotton_Shirt only, press the full
