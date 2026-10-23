@@ -27,8 +27,11 @@ public readonly record struct EquipmentStats(
     int HardDefense, WeaponItemDefinition? Weapon, EquipmentParamBonus ParamBonus = default,
     int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0,
     IReadOnlyList<EquipmentExtendedBonus>? ExtendedBonuses = null, IReadOnlyList<TriggeredBonusDefinition>? TriggeredBonuses = null,
-    EquipmentFlatBonuses? FlatBonuses = null, IReadOnlyList<EquipmentMultiBonus>? MultiBonuses = null)
+    EquipmentFlatBonuses? FlatBonuses = null, IReadOnlyList<EquipmentMultiBonus>? MultiBonuses = null, IReadOnlyList<ItemEffect>? ClientEffects = null)
 {
+    // hateffect/specialeffect2 from equipped scripts: client-only visuals, Protocol-pending-capture (never sent today).
+    public IReadOnlyList<ItemEffect> ClientEffectsOrEmpty => ClientEffects ?? [];
+
     // Every single-value pc_bonus parameter outside EquipmentParamBonus, combined with its pinned rule. Each parameter's
     // EquipmentBonusParameters entry names its consumer: LiveDerivedStats ones (bDef, bDef2, bMdef2, bHit, bFlee, bFlee2,
     // bCritical) are applied by CalculateDerivedStats; Feature17Combat/Feature18Skill ones are typed, accumulated data the

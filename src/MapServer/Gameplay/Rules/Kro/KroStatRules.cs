@@ -184,7 +184,7 @@ public sealed class KroStatRules : IStatRules
     // this distinction, equipping a single ammo/shadow-gear/left-hand-weapon row - all routine, common
     // gameplay states reachable through CharacterEquipmentMutationService's existing equip paths -
     // silently discarded every OTHER equipped item's DEF/refine/param-bonus contribution too.
-    public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment)
+    public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null)
     {
         var hardDefense = 0;
         WeaponItemDefinition? weapon = null;
@@ -288,7 +288,7 @@ public sealed class KroStatRules : IStatRules
         var slotMasks = EquipSlots.Bitmask.Values.ToArray();
         CharacterInventoryItem? EquippedAt(int eqi) => eqi < slotMasks.Length ? equipped.FirstOrDefault(r => (r.Equip & slotMasks[eqi]) != 0) : null;
         EquipmentScriptContext Context(CharacterInventoryItem row, EquipmentBonusHand hand) =>
-            new(row.Refine, row.Details.EnchantGrade, default, hand, EquippedAt, items);
+            new(row.Refine, row.Details.EnchantGrade, default, hand, EquippedAt, items, character);
         try
         {
             foreach (var row in equipped)
@@ -307,7 +307,7 @@ public sealed class KroStatRules : IStatRules
             // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items and/or cards,
             // see ComboResolver) is satisfied runs its shared script with current_equip_item_index = -1 (status.cpp:4060).
             foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
-                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items), bonuses);
+                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items, Character: character), bonuses);
             // Cards run with the CARRYING row as current_equip_item_index (status.cpp:4100), so getrefine() inside a card
             // reads that row's refine; the row worn exactly at EQP_HAND_L runs its cards and options as LR_FLAG_WEAPON.
             foreach (var row in equipped)
@@ -328,7 +328,7 @@ public sealed class KroStatRules : IStatRules
         catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
 
         equipment = new EquipmentStats(hardDefense, weapon, bonuses.Param, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine,
-            bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi);
+            bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi, bonuses.ClientEffects);
         return true;
     }
 

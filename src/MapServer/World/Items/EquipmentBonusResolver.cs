@@ -55,9 +55,14 @@ public readonly record struct EquipmentMultiBonus(long Param, IReadOnlyList<long
 // a combo (current_equip_item_index = -1, status.cpp:4060). Option is the random-option slot being evaluated.
 // EquippedAt answers pinned pc_checkequip(sd, equip_bitmask[eqi]) for the getequip* builtins (the row worn on that EQI
 // slot, or null); Items resolves item ids for getiteminfo. Both are read-only: nothing a script reads here can change.
+// Character is the wearer, read-only (pinned sd->status during status_calc_pc): without it, character reads are unsupported.
 public readonly record struct EquipmentScriptContext(byte Refine = 0, int EnchantGrade = -1, InventoryOption Option = default,
     EquipmentBonusHand Hand = EquipmentBonusHand.Right, Func<int, CharacterInventoryItem?>? EquippedAt = null,
-    IReadOnlyDictionary<int, ItemDefinition>? Items = null);
+    IReadOnlyDictionary<int, ItemDefinition>? Items = null, EquipmentCharacter? Character = null);
+
+// The wearer as equipment scripts see it: base (allocated) stats and levels from sd->status, learned skill levels for
+// pc_checkskill, the account sex byte (0 female, 1 male).
+public sealed record EquipmentCharacter(CharacterGameplayState State, CharacterSkillSnapshot Skills, byte Sex);
 
 // Everything every equipped script contributed, folded with each pc_bonus case's own pinned rule.
 public sealed class EquipmentBonusAccumulator
@@ -68,6 +73,8 @@ public sealed class EquipmentBonusAccumulator
     public List<EquipmentExtendedBonus> Extended { get; } = [];
     public List<EquipmentMultiBonus> Multi { get; } = [];
     public List<TriggeredBonusDefinition> Triggered { get; } = [];
+    // Client-only commands (hateffect, specialeffect2): no server state, kept typed for a capture-backed client projection.
+    public List<ItemEffect> ClientEffects { get; } = [];
     public EquipmentFlatBonuses Flat => new(new Dictionary<(string, EquipmentBonusHand), int>(_flat));
 
     internal void AddParam(EquipmentParamBonus bonus) => Param += bonus;
@@ -193,6 +200,10 @@ public static class EquipmentBonusResolver
                     return;
                 case IrKind.Command when node.Text is "autobonus" or "autobonus2" or "autobonus3":
                     into.Triggered.Add(AutoBonus(node));
+                    return;
+                case IrKind.Command when node.Text is "hateffect" or "specialeffect2":
+                    // Pinned BUILDIN_FUNC(hateffect)/(specialeffect2) only send a packet; no gameplay state changes.
+                    into.ClientEffects.Add(new ItemEffect(node.Text!, [.. node.Items.Select(Value)]));
                     return;
                 case IrKind.Command:
                     throw new UnsupportedEquipScriptException($"command:{node.Text}");
@@ -404,13 +415,46 @@ public static class EquipmentBonusResolver
                     if (right == 0 && (IrOp)node.Number == IrOp.Div)
                         return explore ? 0 : throw new UnsupportedEquipScriptException("bonus-value-division-by-zero");
                     return (IrOp)node.Number switch { IrOp.Add => left + right, IrOp.Sub => left - right, IrOp.Mul => left * right, _ => left / right };
+                case IrKind.Param:
+                    return CharacterParam(node.Number, $"character-param:{node.Text}");
+                case IrKind.Call when node.Text == "readparam" && node.Items.Count == 1:
+                    // BUILDIN_FUNC(readparam) -> pc_readparam(sd, type): the BASE value in sd->status (pc.cpp:10215-10240).
+                    return CharacterParam(Value(node.Items[0]), "readparam-type");
+                case IrKind.Call when node.Text == "getskilllv" && node.Items.Count == 1:
+                {
+                    // BUILDIN_FUNC(getskilllv) -> pc_checkskill(sd, id); an unknown skill name is id 0, which no one has.
+                    var character = context.Character ?? throw new UnsupportedEquipScriptException("character-context-unavailable");
+                    long skillId;
+                    if (node.Items[0].Kind == IrKind.Str)
+                    {
+                        try { skillId = Generated.Skills.GeneratedSkillRegistry.GetByName(node.Items[0].Text!).SkillId; }
+                        catch (NotSupportedException) { skillId = 0; }
+                    }
+                    else skillId = Value(node.Items[0]);
+                    return character.Skills.Learned.FirstOrDefault(skill => skill.SkillId == skillId)?.Level ?? 0;
+                }
                 case IrKind.Call:
                     throw new UnsupportedEquipScriptException($"function:{node.Text}");
-                case IrKind.Param:
-                    throw new UnsupportedEquipScriptException($"character-param:{node.Text}");
                 default:
                     throw new UnsupportedEquipScriptException("bonus-value-not-constant");
             }
+        }
+
+        // Pinned pc_readparam cases equipment scripts read (map.hpp enum _sp): BaseLevel 11, Str..Luk 13-18, Class 19, Sex 21,
+        // JobLevel 55. BaseJob/BaseClass/Upper need the MAPID job mapping, which is not generated, and stay unsupported.
+        private long CharacterParam(long sp, string unsupported)
+        {
+            if (context.Character is not { } character) throw new UnsupportedEquipScriptException("character-context-unavailable");
+            var state = character.State;
+            return sp switch
+            {
+                11 => state.BaseLevel,
+                13 => state.Strength, 14 => state.Agility, 15 => state.Vitality, 16 => state.Intelligence, 17 => state.Dexterity, 18 => state.Luck,
+                19 => state.JobClass,
+                21 => character.Sex,
+                55 => state.JobLevel,
+                _ => throw new UnsupportedEquipScriptException($"{unsupported}:{sp}"),
+            };
         }
 
         // The EQI argument of a getequip* builtin: pinned equip_index_check(num) && pc_checkequip(sd, equip_bitmask[num]).

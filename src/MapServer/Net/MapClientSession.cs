@@ -1700,10 +1700,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private Athena.Net.MapServer.World.Items.EquipmentParamBonus CurrentEquipmentParamBonus()
     {
         if (_inventory is not { } inventory) return default;
-        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment)) return equipment.ParamBonus;
+        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment, EquipmentWearer())) return equipment.ParamBonus;
         MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; equipment stat bonus is not applied to this status read.");
         return default;
     }
+
+    // The wearer equipment scripts read (BaseLevel, readparam, getskilllv) - the authoritative session state.
+    private Athena.Net.MapServer.World.Items.EquipmentCharacter? EquipmentWearer() =>
+        _gameplayState is { } gameplay ? new(gameplay.State, gameplay.Skills, _sex) : null;
 
     // One consistent (gameplay state, effective stats) pair - see CharacterStatusEffectState.Capture.
     private CharacterStatusSnapshot CaptureStatusSnapshot() => _statusEffects.Capture(() => _gameplayState!.State, CurrentEquipmentParamBonus());
@@ -3457,7 +3461,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             // condition - fall back to EquipmentStats.default (no DEF/weapon/param contribution)
             // rather than returning null, with a loud diagnostic so the degradation is actionable,
             // never silent.
-            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats))
+            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats, EquipmentWearer()))
             {
                 MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; combat snapshot omits equipment contribution.");
                 equipmentStats = default;

@@ -122,6 +122,26 @@ reads (`BaseLevel`, `readparam`, `getskilllv`, `BaseJob`/`BaseClass`/`eaclass`, 
 | Random option | 249 | 248 | 248 | 11 / 237 / 0 |
 | Combo | 5,114 | 2,365 | 4,200 | 456 / 3,564 / 180 |
 
+**Wearer context (S7).** `TryResolveEquipment` takes an optional read-only `EquipmentCharacter` (session state + learned
+skills + sex): `BaseLevel`, `JobLevel`, `Class`, `Sex`, `readparam(bStr..bLuk|BaseLevel|JobLevel|Class|Sex)` (pinned
+pc_readparam: the BASE stat) and `getskilllv` (pc_checkskill; unknown name = 0). The session passes its real wearer; the
+equip-time support check passes one built from level/sex/job (values do not matter there: every branch is explored).
+Without a wearer these scripts stay unsupported.
+
+| Population | Scripted | Resolved (final) | % | Live / AwaitingConsumer / NoEffect-at-probe | Top remaining blockers |
+|---|---|---|---|---|---|
+| Weapon | 2,384 | 2,241 | 94.0% | 520 / 1,645 / 76 | F18 `skill` 54, values 51, `eaclass`/`BaseJob` 30 |
+| Armor | 5,508 | 4,884 | 88.7% | 1,643 / 3,180 / 61 | F18 `skill` 306, `eaclass`/`BaseJob`/`BaseClass` 167 |
+| Card | 5,083 | 4,790 | 94.2% | 955 / 3,726 / 109 | F18 `skill` 74, `eaclass`/`BaseJob`/`BaseClass` 101, trait `readparam` ~70 |
+| Random option | 249 | 248 | 99.6% | 11 / 237 / 0 | one `for` loop (F20) |
+| Combo | 5,114 | 4,609 | 90.1% | 487 / 3,907 / 215 | F18 `skill` 161, `eaclass`/`BaseJob`/`BaseClass` 197, values 120 |
+
+Every remaining Unsupported row is unequippable (never a silent partial bonus). F16-owned remainders: `eaclass`/`BaseJob`/
+`BaseClass` (need a generated MAPID job table), trait-stat `readparam` (4th-job traits are not modeled), `getequipweaponlv`/
+`getequiparmorlv`/`getitempos`, `switch`, string locals. F18: `skill` grants. Client-only `hateffect`/`specialeffect2` are recorded as typed
+`EquipmentStats.ClientEffects` (no server state; their wire projection is Protocol-pending-capture). F20: `for`, `setarray`,
+persistent variables. Invalid pinned data: `WZ_METEORSTORM`.
+
 Previously remaining blockers were dominated by control flow and locals (`.@r = getrefine();`, `if (...)`, ~5,900 ExprStmt + ~1,400
 If + ~1,200 non-constant values) - the evaluator increment below - then F18 `skill` grants (~410), client-only `hateffect`
 (~130), F20 general-script deferrals (~25) and one invalid pinned skill name (`WZ_METEORSTORM`).

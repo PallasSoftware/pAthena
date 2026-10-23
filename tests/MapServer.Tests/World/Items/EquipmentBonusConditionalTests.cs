@@ -51,6 +51,55 @@ public sealed class EquipmentBonusConditionalTests
         Assert.Equal(0, Registrations(Row(1, 1287, durgaSlot, refine: 9), Row(2, 15123, 0)));          // combo incomplete
     }
 
+    private static EquipmentCharacter Wearer(ushort baseLevel = 99, ushort strength = 1, params CharacterLearnedSkill[] skills) =>
+        new(new CharacterGameplayState(CharacterId: 1, Version: 0, JobClass: 0, BaseLevel: baseLevel, JobLevel: 1, BaseExperience: 0, JobExperience: 0,
+            CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0, Strength: strength, Agility: 1, Vitality: 1, Intelligence: 1,
+            Dexterity: 1, Luck: 1), new CharacterSkillSnapshot(skills), 1);
+
+    private static EquipmentExtendedBonus OnlyExtended(IStatRules stats, CharacterInventoryItem row, EquipmentCharacter wearer)
+    {
+        Assert.True(stats.TryResolveEquipment(new([row]), Items, out var equipment, wearer));
+        return Assert.Single(equipment.ExtendedBonusesOrEmpty);
+    }
+
+    [Theory]
+    [MemberData(nameof(Regions))]
+    public void BaseLevel_IsReadFromTheWearer(GameplayRegion region)
+    {
+        // P_Skeleton_Card 4446 in a Knife: `bonus2 bAddEff,Eff_Stun,(BaseLevel>=100?300:200);`.
+        var stats = TestGameplayRules.Services(region).Stats;
+        var knife = Row(1, 1201, 0x2, card0: 4446);
+        Assert.Equal(300, OnlyExtended(stats, knife, Wearer(baseLevel: 100)).Value);
+        Assert.Equal(200, OnlyExtended(stats, knife, Wearer(baseLevel: 99)).Value);
+        Assert.False(stats.TryResolveEquipment(new([knife]), Items, out _)); // no wearer: never evaluated as level 0
+    }
+
+    [Theory]
+    [MemberData(nameof(Regions))]
+    public void ReadParam_ReadsTheBaseStat(GameplayRegion region)
+    {
+        // Karakasa_Card 4286 in Cotton_Shirt: `bonus2 bAddEffWhenHit,Eff_Confusion,300+600*(readparam(bStr)>=77);` -
+        // pc_readparam(SP_STR) is sd->status.str, the allocated base stat.
+        var stats = TestGameplayRules.Services(region).Stats;
+        var shirt = Row(1, 2301, 0x10, card0: 4286);
+        Assert.Equal(900, OnlyExtended(stats, shirt, Wearer(strength: 77)).Value);
+        Assert.Equal(300, OnlyExtended(stats, shirt, Wearer(strength: 76)).Value);
+    }
+
+    [Theory]
+    [MemberData(nameof(Regions))]
+    public void GetSkillLv_ReadsTheLearnedLevel_InTheShieldsLeftHandContext(GameplayRegion region)
+    {
+        // Live_Peach_Tree_Card 4217 in Guard (shield, worn exactly at EQP_HAND_L, so its cards run as LR_FLAG_WEAPON):
+        // `bonus3 bAutoSpell,"AL_HEAL",1+9*(getskilllv("AL_HEAL") == 10),20;` - AL_HEAL is skill 28.
+        var stats = TestGameplayRules.Services(region).Stats;
+        var guard = Row(1, 2101, 0x20, card0: 4217);
+        var mastered = OnlyExtended(stats, guard, Wearer(skills: new CharacterLearnedSkill(28, 10, CharSkillFlag.Permanent)));
+        var unlearned = OnlyExtended(stats, guard, Wearer());
+        Assert.Equal((28L, 10, EquipmentBonusHand.Left), (mastered.SubKey1, mastered.Value, mastered.Hand));
+        Assert.Equal(1, unlearned.Value);
+    }
+
     private static IrNode Const(string name, long value = 0) => new(IrKind.Const, Text: name, Number: value);
     private static IrNode Int(long value) => new(IrKind.Int, Number: value);
     private static IrNode Local(string name) => new(IrKind.Local, Text: name);
@@ -116,7 +165,7 @@ public sealed class EquipmentBonusConditionalTests
     }
 
     [Fact]
-    public void CharacterContext_IsNotFakedAsZero()
+    public void CharacterContext_WithoutAWearer_IsNotFakedAsZero()
     {
         // BaseLevel needs the character; until it is supplied the script is unsupported, never evaluated as level 0.
         var script = Script(Bonus("bStr", new IrNode(IrKind.Param, Text: "BaseLevel", Number: 11)));

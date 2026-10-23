@@ -12,7 +12,8 @@ namespace Athena.Net.MapServer.Tests.World.Items;
 //   NoScript         - nothing to execute (not counted as coverage)
 //   Live             - resolves, and at least one effect is applied by today's status calculation
 //   AwaitingConsumer - resolves into typed, accumulated data only a Feature 17/18 (or not-yet-built) consumer reads
-//   NoEffect         - resolves, but contributes nothing in the probe context (refine 0, no grade, nothing else worn):
+//   NoEffect         - resolves, but contributes nothing in the probe context (refine 0, no grade, nothing else worn,
+//                      base-1 Novice with no skills):
 //                      conditional scripts whose every effect needs a higher refine or another slot land here
 //   Deferred         - the importer could not lower it (named construct + owner)
 //   Unsupported      - lowered, but the equipment-bonus evaluator rejects it; the equipment cannot be worn at all
@@ -27,19 +28,24 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
 
     private static readonly HashSet<string> LiveFlat = [.. EquipmentBonusParameters.ByName.Where(p => p.Value.Consumer == EquipmentBonusConsumer.LiveDerivedStats).Select(p => p.Key)];
 
+    private static readonly EquipmentCharacter ProbeWearer = new(new CharacterGameplayState(CharacterId: 0, Version: 0, JobClass: 0, BaseLevel: 1, JobLevel: 1,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0,
+        Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1), CharacterSkillSnapshot.Empty, 1);
+
     private static Classified Classify(PackScript? script, InventoryOption option = default)
     {
         if (script is null) return new(Category.NoScript, null);
         if (script.Support == PackScriptSupport.Deferred) return new(Category.Deferred, $"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
         var bonuses = new EquipmentBonusAccumulator();
-        // Nothing else worn: getequip* builtins see empty slots; every branch is still validated (explore pass).
-        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option, EquippedAt: _ => null, Items: ItemCatalog.Current.ById), bonuses); }
+        // Nothing else worn (getequip* see empty slots), a base-1 Novice wearer with no skills; every branch is still validated.
+        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option, EquippedAt: _ => null, Items: ItemCatalog.Current.ById, Character: ProbeWearer), bonuses); }
         catch (EquipmentBonusResolver.UnsupportedEquipScriptException ex) { return new(Category.Unsupported, ex.Message); }
 
         var p = bonuses.Param;
         var livePrimary = p.Strength != 0 || p.Agility != 0 || p.Vitality != 0 || p.Intelligence != 0 || p.Dexterity != 0 || p.Luck != 0;
         if (livePrimary || bonuses.Flat.Values.Any(v => LiveFlat.Contains(v.Key.Name) && v.Key.Hand != EquipmentBonusHand.Arrow)) return new(Category.Live, null);
-        var anything = p != EquipmentParamBonus.None || bonuses.Flat.Values.Count > 0 || bonuses.Extended.Count > 0 || bonuses.Multi.Count > 0 || bonuses.Triggered.Count > 0;
+        var anything = p != EquipmentParamBonus.None || bonuses.Flat.Values.Count > 0 || bonuses.Extended.Count > 0 || bonuses.Multi.Count > 0 || bonuses.Triggered.Count > 0
+            || bonuses.ClientEffects.Count > 0;
         return new(anything ? Category.AwaitingConsumer : Category.NoEffect, null);
     }
 
@@ -91,14 +97,14 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
     }
 
     // Floors over SCRIPTED entries only (Live + AwaitingConsumer + NoEffect): a script-less item never counts as coverage.
-    // Measured after the S7 evaluator increment (locals, if/else, equipment context). These must only rise; a drop means a
+    // Measured after the S7 evaluator increments (locals, if/else, equipment and wearer context). These must only rise; a drop means a
     // construct regressed - investigate it, never lower the bound.
     [Theory]
-    [InlineData("Weapon", 1805)]
-    [InlineData("Armor", 4102)]
-    [InlineData("Card", 4323)]
+    [InlineData("Weapon", 2241)]
+    [InlineData("Armor", 4884)]
+    [InlineData("Card", 4790)]
     [InlineData("RandomOption", 248)]
-    [InlineData("Combo", 4200)]
+    [InlineData("Combo", 4609)]
     public void Coverage_ResolvedScriptedEntries_NeverRegressBelowTheVerifiedFloor(string population, int floor)
     {
         var resolved = Count(population, Category.Live, Category.AwaitingConsumer, Category.NoEffect);

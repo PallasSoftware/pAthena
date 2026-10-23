@@ -28,7 +28,9 @@ public interface IStatRules
     CharacterGameplayState WithRecalculatedResources(CharacterGameplayState state);
 
     // False when an equipped item cannot be accounted for (unknown or unsupported type) instead of assuming "no effect".
-    bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment);
+    // character is the wearer equipment scripts may read (BaseLevel, readparam, getskilllv); without it those scripts are
+    // unsupported rather than evaluated against a made-up character.
+    bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null);
 
     uint StatIncreaseCost(ushort currentValue, int increaseAmount);
     StatIncreaseValidationResult ValidateStatIncrease(CharacterGameplayState gameplay, CharacterBaseStat stat, int increaseAmount);

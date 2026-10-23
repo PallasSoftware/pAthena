@@ -162,14 +162,14 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // equip that fails only there would otherwise persist, then crash the very next status read instead
     // of this equip ack. Any such exception is treated identically to an unresolvable equip - reject,
     // never persist - rather than letting it propagate out of the equip-time validation.
-    private bool CanResolveAfter(CharacterInventorySnapshot inventory, IReadOnlyList<InventoryMutation> mutations, IReadOnlyDictionary<int, ItemDefinition> items)
+    private bool CanResolveAfter(CharacterInventorySnapshot inventory, IReadOnlyList<InventoryMutation> mutations, IReadOnlyDictionary<int, ItemDefinition> items, EquipmentCharacter wearer)
     {
         var rows = inventory.Items.ToDictionary(i => i.DurableId);
         foreach (var mutation in mutations)
             if (mutation is UpdateRowMutation { Container: InventoryContainer.Inventory } update && rows.TryGetValue(update.DurableId, out var existing))
                 rows[update.DurableId] = CharacterInventoryItem.FromRow(update.NewRow, existing.SlotIndex);
         var simulated = new CharacterInventorySnapshot([.. rows.Values]);
-        if (!statRules.TryResolveEquipment(simulated, items, out var equipment)) return false;
+        if (!statRules.TryResolveEquipment(simulated, items, out var equipment, wearer)) return false;
         try
         {
             var probeState = new CharacterGameplayState(CharacterId: 0, Version: 0, JobClass: 0, BaseLevel: 1, JobLevel: 1,
@@ -219,7 +219,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if (work.BySlot(slotIndex) is not { } target) return (null, null);
             var result = TryEquip(work, target, requestedPosition, wearer, toSwitch: false, out var pos);
             return (new EquipOutcome(result, result == EquipMutationResult.Success ? pos : 0), work);
-        }, items, cancellationToken);
+        }, wearer, cancellationToken);
     }
 
     // ---- Equip switch (pinned feature.equipswitch, on by default: conf/battle/feature.conf:89) ----
@@ -248,7 +248,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if (work.BySlot(slotIndex) is not { } target) return (null, null);
             var result = TryEquip(work, target, requestedPosition, wearer, toSwitch: true, out var pos);
             return (new EquipOutcome(result, result == EquipMutationResult.Success ? pos : 0), work);
-        }, items, cancellationToken);
+        }, wearer, cancellationToken);
     }
 
     // Pinned clif_parse_equipswitch_remove (clif.cpp:22275-22293) -> pc_equipswitch_remove (pc.cpp:12580-12599). Removing a
@@ -294,7 +294,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
                 position |= swapped;
             }
             return position == 0 ? (null, null) : (new EquipOutcome(EquipMutationResult.Success, position), work);
-        }, items, cancellationToken);
+        }, wearer, cancellationToken);
     }
 
     // Pinned clif_parse_equipswitch_request_single (clif.cpp:22391-22430): a registered row is swapped in on its own
@@ -316,16 +316,23 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             var point = items.TryGetValue(target.ItemId, out var definition) && definition is IEquippableItemDefinition equippable ? EquipPoint(equippable, characterJobClass) : 0;
             var result = TryEquip(work, target, point, wearer, toSwitch: true, out var pos);
             return (new EquipOutcome(result, result == EquipMutationResult.Success ? pos : 0), work);
-        }, items, cancellationToken);
+        }, wearer, cancellationToken);
     }
 
-    private readonly record struct Wearer(IReadOnlyDictionary<int, ItemDefinition> Items, uint BaseLevel, byte Sex, JobClass JobClass);
+    private readonly record struct Wearer(IReadOnlyDictionary<int, ItemDefinition> Items, uint BaseLevel, byte Sex, JobClass JobClass)
+    {
+        // For CanResolveAfter's support check only: the explore pass validates every branch whatever the values, so base-1
+        // stats and no skills are enough. Live stat resolution uses the session's real state and skills.
+        public EquipmentCharacter Character => new(new CharacterGameplayState(CharacterId: 0, Version: 0, JobClass: (ushort)JobClass,
+            BaseLevel: (ushort)BaseLevel, JobLevel: 1, BaseExperience: 0, JobExperience: 0, CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1,
+            StatPoints: 0, SkillPoints: 0, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1), CharacterSkillSnapshot.Empty, Sex);
+    }
 
     // Runs one plan under the inventory gate. A successful plan that leaves someone WEARING something is validated through
     // CanResolveAfter before it is sent; a plan that only changes the switch set wears nothing new and skips that check.
     private async Task<(EquipOutcome? Outcome, CharacterInventorySnapshot? Updated)> MutateAsync(
         InventoryOperationKind kind, Func<CharacterInventorySnapshot, (EquipOutcome? Outcome, EquipWorkingSet? Work)> plan,
-        IReadOnlyDictionary<int, ItemDefinition> items, CancellationToken cancellationToken)
+        Wearer wearer, CancellationToken cancellationToken)
     {
         EquipOutcome? decided = null;
         var unchanged = false;
@@ -336,7 +343,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if (outcome is not { Result: EquipMutationResult.Success } || work is null) return null;
             var mutations = work.Mutations();
             unchanged = mutations.Count == 0;
-            if (work.WearsDifferently && !CanResolveAfter(inventory, mutations, items))
+            if (work.WearsDifferently && !CanResolveAfter(inventory, mutations, wearer.Items, wearer.Character))
             {
                 decided = new EquipOutcome(EquipMutationResult.Fail, 0);
                 return null;
