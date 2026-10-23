@@ -1040,15 +1040,16 @@ internal static partial class WorldDataImporterCli
     }
 
     // Regenerates GameData/Refine/GeneratedEnchantGradeBonus.cs from db/re/enchantgrade.yml's Weapon/Armor
-    // types (see EnchantGradeDataCompiler's own doc comment for the exact scope: the flat per-(type,level,
-    // grade) Bonus multiplier the status calculation reads once an item carries a grade - not the grade
-    // upgrade action's own Chances/Catalyst/Options data, which needs its own future mutation primitive).
+    // types (see EnchantGradeDataCompiler's own doc comment for the exact scope): the flat per-(type,level,
+    // grade) Bonus multiplier the status calculation reads once an item carries a grade, PLUS the grade
+    // upgrade action's own Chances/Catalyst/Options data for CharacterEnchantGradeService's mutation.
     private static async Task<int> CompileEnchantGradeAsync(string[] args)
     {
         var options = CliOptions.Parse(args);
         var root = Path.GetFullPath(options.Required("rathena-root"));
         var commit = options.Required("rathena-commit");
-        var table = EnchantGradeDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)));
+        var resolveMaterialItemId = BuildAegisNameToItemIdResolver(root);
+        var table = EnchantGradeDataCompiler.BuildTable(relative => File.ReadAllText(Path.Combine(root, relative)), resolveMaterialItemId);
         var output = Path.GetFullPath(options.Required("output"));
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         await File.WriteAllTextAsync(output, EnchantGradeDataCompiler.Generate(table, commit).Replace("\r\n", "\n", StringComparison.Ordinal), new System.Text.UTF8Encoding(false));

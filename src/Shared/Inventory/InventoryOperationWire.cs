@@ -17,7 +17,7 @@ public enum InventoryContainer : byte { Inventory = 0, Cart = 1, Storage = 2, Gu
 
 public enum InventoryOperationKind : byte
 {
-    Add = 1, Consume = 2, Equip = 3, Update = 4, Drop = 5, Pickup = 6, Transfer = 7, Refine = 8, Card = 9, Identify = 10, Repair = 11, Use = 12, Expire = 13,
+    Add = 1, Consume = 2, Equip = 3, Update = 4, Drop = 5, Pickup = 6, Transfer = 7, Refine = 8, Card = 9, Identify = 10, Repair = 11, Use = 12, Expire = 13, EnchantGrade = 14,
 }
 
 public enum InventoryOperationStatus : byte
