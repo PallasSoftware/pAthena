@@ -44,7 +44,7 @@ Ground item: pickup request (0x0362) and removal ack (0x00A1) are VERIFIED (G108
 ## Spike results (S0)
 Recorded in the S1 commit message and this section once measured.
 
-## S7 equipment-bonus script coverage (measured against commit e593fb6, EquipmentBonusCoverageTests.cs)
+## S7 equipment-bonus script coverage (measured against commit 4e7841a, EquipmentBonusCoverageTests.cs)
 Scope: only scripts `IStatRules.TryResolveEquipment` can actually reach - every Weapon/Armor/Card item's own `Script`,
 every `item_randomopt_db.yml` entry, every `item_combos.yml` entry's shared script. Deliberately excludes the ~21k
 other distinct scripts in the pack (Usable/Healing/consumable on-use scripts), which are not equipment-bonus scripts
@@ -52,9 +52,21 @@ and would make the percentage misleading.
 
 | Population | Eligible | Resolved (flat `bonus` + `bonus2`/`bonus3` extended) | Gap |
 |---|---|---|---|
-| Weapon/Armor/Card item scripts | 17,353 | 6,182 (35.6%) | real SP_* params beyond the current vocabulary (see below) |
+| Weapon/Armor/Card item scripts | 17,353 | 6,183 (35.6%) | real SP_* params beyond the current vocabulary (see below) |
 | Random options (`item_randomopt_db.yml`) | 249 | 189 (75.9%) | same SP_* gap, plus the `bAtkEle`-style non-delta single-constant form |
 | Combos (`item_combos.yml`) | 5,114 | 515 (10.1%) | same SP_* gap on the combo's OWN shared script (activation logic itself is correct for every combo - this measures only whether the combo's bonus payload resolves) |
+
+S7 S8-adjacent addition (commit 4e7841a): `autobonus`/`autobonus2`/`autobonus3` are now a recognized, registered
+construct (`EquipmentBonusResolver` extracts a typed `TriggeredBonusDefinition` - the inner bonus script, rate,
+duration, attack-type filter, and an untyped client-effect `other_script`) instead of an automatic rejection -
+this is the "item-triggered-effect registration" half of the ownership table's own phrase; the actual on-attack
+DISPATCH (`pc_exeautobonus`'s combat-loop call site) stays Feature 17's own integration work, same deferred-but-
+typed pattern as `WeaponRefineAtk`/`EquipmentExtendedBonus`. The resolved-count increase from this alone is small
+(6182->6183 items; combos unchanged at 515) because most real autobonus-using scripts are guarded by `if`/local-
+variable logic this resolver's outer statement walk still rejects - the registration primitive itself is correct
+and tested (21 EquipmentBonusResolverTests cases including the real pinned `other_script` shape), but most real
+autobonus items won't resolve until `if`/variable support lands (same control-flow gap blocking the harder half
+of combos).
 
 **The gap is NOT a defect in S7's card/combo/random-option wiring.** `EquipmentBonusResolver` currently recognizes: the
 6 primary stats (bStr/bAgi/bVit/bInt/bDex/bLuk), 6 HP/SP-family params (bMaxHP/bMaxSP/bMaxHPrate/bMaxSPrate/

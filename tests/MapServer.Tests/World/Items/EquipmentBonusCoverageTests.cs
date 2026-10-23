@@ -65,13 +65,14 @@ public sealed class EquipmentBonusCoverageTests
     {
         var catalog = ItemCatalog.Current;
         var resolved = EligibleItemScripts(catalog).Count(entry => Classify(entry.Script).Outcome == Outcome.Resolved);
-        // Verified floor as of PR #48 commit e593fb6 (2026-10-22): 6182 of 17353 eligible item scripts resolve.
-        // The remaining ~11171 are real, common equip bonuses using SP_* params beyond the current flat-bonus/
-        // bonus2/bonus3 vocabulary (bFlee, bCritical, bAspdRate, bMatk, bAllStats, ... - 506 distinct pc_bonus*
-        // SP_* cases exist in pinned pc.cpp, this resolver recognizes a small fraction) - a real, substantial,
-        // separately-scoped gap, not a defect in this increment. See
+        // Verified floor as of PR #48 commit 4e7841a (2026-10-23, after autobonus/2/3 registration support):
+        // 6183 of 17353 eligible item scripts resolve. The remaining ~11170 are real, common equip bonuses
+        // using SP_* params beyond the current flat-bonus/bonus2/bonus3 vocabulary (bFlee, bCritical, bAspdRate,
+        // bMatk, bAllStats, ... - 506 distinct pc_bonus* SP_* cases exist in pinned pc.cpp, this resolver
+        // recognizes a small fraction), or an autobonus whose OUTER statement shape (if/variable-guarded) is
+        // still unsupported - a real, substantial, separately-scoped gap, not a defect in this increment. See
         // feature16-s7-cards-combos-randomopts-scope.md memory for the full finding.
-        Assert.True(resolved >= 6182, $"Eligible item script resolution regressed: expected at least 6182 resolved, got {resolved}.");
+        Assert.True(resolved >= 6183, $"Eligible item script resolution regressed: expected at least 6183 resolved, got {resolved}.");
     }
 
     [Fact]

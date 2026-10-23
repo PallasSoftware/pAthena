@@ -91,8 +91,9 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
     // IStatRules.TryResolveEquipment BEFORE the durable operation is sent, so a persisted equip
     // state can never later make TryGetCombatSnapshotAsync's own TryResolveEquipment call fail
     // and silently drop the player from every monster's valid-target set. A row the resolver
-    // cannot account for (bonus2-5, autobonus, deferred scripts, an unmodeled enchant grade, ...)
-    // is rejected outright (EquipMutationResult.Fail / UnequipOutcome(false, 0)), never persisted.
+    // cannot account for (bonus4/5, an SP_* param outside the current vocabulary, an autobonus
+    // whose own payload is unsupported, deferred scripts, an unmodeled enchant grade, ...) is
+    // rejected outright (EquipMutationResult.Fail / UnequipOutcome(false, 0)), never persisted.
     // Validates both that the resulting inventory resolves (TryResolveEquipment) AND that the full
     // downstream status calculation the equip-time gate exists to protect - CalculateDerivedStats, the
     // same call TryGetCombatSnapshotAsync and every status-effect recalculation will make against this

@@ -42,6 +42,20 @@ public readonly record struct EquipmentParamBonus(
 // EquipmentStats.ExtendedBonuses's own doc comment.
 public readonly record struct EquipmentExtendedBonus(long Param, long SubKey1, long? SubKey2, int Value);
 
+// Registration-time data for pinned BUILDIN_FUNC(autobonus/autobonus2/autobonus3) (script.cpp:10128-10200+,
+// identical argument shape across all three - only WHICH internal sd->autobonus* list a pinned attempt
+// populates differs, a pure combat-dispatch detail outside this slice). `autobonus <bonus_script>,<rate>,
+// <duration>[,<atk_type>[,<other_script>]];` registers a conditional bonus that ACTIVATES on a later combat
+// event (on-hit roll of Rate out of 10000, matching AtkType's attack-type filter) for Duration milliseconds -
+// Feature 16 owns the registration/typed-contract half (ownership table: "item-triggered-effect registration
+// and dispatch contract"); the actual on-hit TRIGGER (pc_exeautobonus, called from the live attack-resolution
+// path) is Feature 17's own combat-loop integration, not modeled here. BonusScript/OtherScript are the inner
+// scripts' own ALREADY-LOWERED IrNode trees (ItemScriptLowerer recursively compiles the nested script string at
+// import time, IrKind.Script - no runtime script compilation needed), kept as PackScript so
+// EquipmentBonusResolver.Resolve can validate/execute them exactly like any other equip script when a future
+// Feature 17 trigger fires. OtherScript is null when the pinned script omits that optional 5th argument.
+public readonly record struct TriggeredBonusDefinition(PackScript BonusScript, int Rate, uint DurationMilliseconds, int AttackType, PackScript? OtherScript);
+
 public static class EquipmentBonusResolver
 {
     public sealed class UnsupportedEquipScriptException(string reason) : Exception(reason);
@@ -68,8 +82,13 @@ public static class EquipmentBonusResolver
         => Resolve(equipScript, refine, option, out _);
 
     public static EquipmentParamBonus Resolve(PackScript? equipScript, byte refine, InventoryOption option, out IReadOnlyList<EquipmentExtendedBonus> extended)
+        => Resolve(equipScript, refine, option, out extended, out _);
+
+    public static EquipmentParamBonus Resolve(PackScript? equipScript, byte refine, InventoryOption option,
+        out IReadOnlyList<EquipmentExtendedBonus> extended, out IReadOnlyList<TriggeredBonusDefinition> triggered)
     {
         extended = [];
+        triggered = [];
         if (equipScript is null) return EquipmentParamBonus.None;
         if (equipScript.Support == PackScriptSupport.Deferred)
             throw new UnsupportedEquipScriptException($"deferred:{equipScript.DeferredOwner}:{equipScript.DeferredConstruct}");
@@ -77,17 +96,20 @@ public static class EquipmentBonusResolver
 
         var total = EquipmentParamBonus.None;
         var extendedList = new List<EquipmentExtendedBonus>();
-        Statement(equipScript.Program, refine, option, ref total, extendedList);
+        var triggeredList = new List<TriggeredBonusDefinition>();
+        Statement(equipScript.Program, refine, option, ref total, extendedList, triggeredList);
         extended = extendedList;
+        triggered = triggeredList;
         return total;
     }
 
-    private static void Statement(IrNode node, byte refine, InventoryOption option, ref EquipmentParamBonus total, List<EquipmentExtendedBonus> extended)
+    private static void Statement(IrNode node, byte refine, InventoryOption option, ref EquipmentParamBonus total,
+        List<EquipmentExtendedBonus> extended, List<TriggeredBonusDefinition> triggered)
     {
         switch (node.Kind)
         {
             case IrKind.Block:
-                foreach (var child in node.Items) Statement(child, refine, option, ref total, extended);
+                foreach (var child in node.Items) Statement(child, refine, option, ref total, extended, triggered);
                 return;
             case IrKind.Command when node.Text == "bonus":
                 total += Bonus(node, refine, option);
@@ -95,11 +117,61 @@ public static class EquipmentBonusResolver
             case IrKind.Command when node.Text is "bonus2" or "bonus3":
                 extended.Add(Bonus23(node, refine, option));
                 return;
+            case IrKind.Command when node.Text is "autobonus" or "autobonus2" or "autobonus3":
+                triggered.Add(AutoBonus(node));
+                return;
             case IrKind.Command:
                 throw new UnsupportedEquipScriptException($"command:{node.Text}");
             default:
                 throw new UnsupportedEquipScriptException($"statement:{node.Kind}");
         }
+    }
+
+    // autobonus/autobonus2/autobonus3 <bonus_script>,<rate>,<duration>[,<atk_type>[,<other_script>]]; (script.cpp
+    // BUILDIN_FUNC(autobonus/2/3), identical argument shape across all three - script.cpp:10128-10200+). The
+    // bonus_script/other_script arguments are ALREADY a lowered nested IrKind.Script node (ItemScriptLowerer
+    // recursively compiles the string at import time, never here). bonus_script's own inner Program must fully
+    // resolve as a BONUS script (recursively, through this SAME resolver) for the autobonus to be considered
+    // supported - fail-clearly: an autobonus whose bonus payload this resolver cannot account for rejects the
+    // WHOLE equip. other_script is NOT a bonus script at all (real pinned data: `{ specialeffect2
+    // EF_POTION_BERSERK; }` or empty `{}` - a pure client-visual trigger run via script_run_autobonus, pc.cpp),
+    // so it is carried as a typed-but-unvalidated PackScript for Feature 17/ClientEffect's own future dispatch
+    // to interpret, never run through the bonus-only vocabulary here. rate/duration/atk_type are plain Int
+    // literals in every real pinned autobonus script (never getrefine()/getrandomoptinfo() - these three script
+    // commands are evaluated once at EQUIP time, long before any attack roll, so a per-attack-dependent argument
+    // would be meaningless); a non-literal argument is correctly rejected as unsupported.
+    private static TriggeredBonusDefinition AutoBonus(IrNode node)
+    {
+        if (node.Items.Count is < 3 or > 5) throw new UnsupportedEquipScriptException($"{node.Text}-arguments");
+        var bonusScript = ResolveNestedBonusScript(node.Items[0]);
+        var rate = node.Items[1] is { Kind: IrKind.Int } rateNode ? (int)rateNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-rate-not-constant");
+        var duration = node.Items[2] is { Kind: IrKind.Int } durationNode ? (uint)durationNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-duration-not-constant");
+        var attackType = node.Items.Count > 3
+            ? node.Items[3] is { Kind: IrKind.Int } attackTypeNode ? (int)attackTypeNode.Number : throw new UnsupportedEquipScriptException($"{node.Text}-atk_type-not-constant")
+            : 0;
+        var otherScript = node.Items.Count > 4 ? NestedScript(node.Items[4], ItemScriptOwner.ClientEffect, PackScriptUses.ClientEffect) : null;
+        return new TriggeredBonusDefinition(bonusScript, rate, duration, attackType, otherScript);
+    }
+
+    // The nested bonus-script argument must be an already-lowered IrKind.Script (the normal case -
+    // ItemScriptLowerer wraps any string literal argument that looks like a script block); a plain non-script
+    // string argument (never seen in the real pinned data) is unsupported - this resolver never compiles a
+    // script string itself, only validates what the importer already lowered.
+    private static PackScript ResolveNestedBonusScript(IrNode node)
+    {
+        var nested = NestedScript(node, ItemScriptOwner.Item, PackScriptUses.Bonus);
+        // The nested script must itself fully resolve (same rules as any top-level equip script) for the
+        // autobonus as a whole to be considered supported - this call's only purpose is that validation; its
+        // return value is intentionally discarded (TriggeredBonusDefinition.BonusScript carries the SAME
+        // PackScript for Feature 17 to resolve again later, when the trigger actually fires).
+        Resolve(nested, 0, default, out _, out _);
+        return nested;
+    }
+
+    private static PackScript NestedScript(IrNode node, ItemScriptOwner owner, PackScriptUses uses)
+    {
+        if (node is not { Kind: IrKind.Script, Items: [var program] }) throw new UnsupportedEquipScriptException("autobonus-nested-script-not-lowered");
+        return new PackScript(node.Text ?? string.Empty, PackScriptSupport.Lowered, null, owner, uses, program);
     }
 
     // bonus <param>,<val>; (script.cpp BUILDIN_FUNC(bonus)): the param must be a plain constant; the value may be a

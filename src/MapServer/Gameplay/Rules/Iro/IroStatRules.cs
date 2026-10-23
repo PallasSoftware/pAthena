@@ -191,6 +191,7 @@ public sealed class IroStatRules : IStatRules
         var armorRefineDefense = 0;
         var weaponOverrefine = 0;
         var extendedBonuses = new List<EquipmentExtendedBonus>();
+        var triggeredBonuses = new List<TriggeredBonusDefinition>();
         // Combined id pool for ComboResolver.ActiveCombos (pinned pc_checkcombo, pc.cpp:11803-11900): each
         // equipped row's own ItemId once, plus every nonzero Card0-3 - cards are real, common combo members.
         var presentItemIds = new List<uint>();
@@ -264,7 +265,12 @@ public sealed class IroStatRules : IStatRules
             }
             // Flat stat bonuses apply for every equipped row regardless of concrete type (pinned status_calc_pc_sub
             // sums param_bonus independently of the equip slot/item category).
-            try { paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine, default, out var ownExtended); extendedBonuses.AddRange(ownExtended); }
+            try
+            {
+                paramBonus += EquipmentBonusResolver.Resolve(definition.Meta?.Script, row.Refine, default, out var ownExtended, out var ownTriggered);
+                extendedBonuses.AddRange(ownExtended);
+                triggeredBonuses.AddRange(ownTriggered);
+            }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
             presentItemIds.Add((uint)row.ItemId);
 
@@ -279,7 +285,12 @@ public sealed class IroStatRules : IStatRules
                 if (cardId == 0) continue;
                 if (!items.TryGetValue((int)cardId, out var cardDefinition)) { equipment = default; return false; }
                 if (cardDefinition is not CardItemDefinition) { equipment = default; return false; } // a non-card id in a card slot is a data/generation invariant violation.
-                try { paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script, 0, default, out var cardExtended); extendedBonuses.AddRange(cardExtended); }
+                try
+                {
+                    paramBonus += EquipmentBonusResolver.Resolve(cardDefinition.Meta?.Script, 0, default, out var cardExtended, out var cardTriggered);
+                    extendedBonuses.AddRange(cardExtended);
+                    triggeredBonuses.AddRange(cardTriggered);
+                }
                 catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
                 presentItemIds.Add(cardId);
             }
@@ -294,7 +305,12 @@ public sealed class IroStatRules : IStatRules
             {
                 if (option.Id == 0) continue;
                 if (!GeneratedItems.RandomOptions.TryGetValue((uint)option.Id, out var optionScript)) { equipment = default; return false; } // unknown random-option id - data/generation invariant violation.
-                try { paramBonus += EquipmentBonusResolver.Resolve(optionScript, row.Refine, option, out var optionExtended); extendedBonuses.AddRange(optionExtended); }
+                try
+                {
+                    paramBonus += EquipmentBonusResolver.Resolve(optionScript, row.Refine, option, out var optionExtended, out var optionTriggered);
+                    extendedBonuses.AddRange(optionExtended);
+                    triggeredBonuses.AddRange(optionTriggered);
+                }
                 catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
             }
         }
@@ -306,10 +322,15 @@ public sealed class IroStatRules : IStatRules
         // same fail-clearly convention as every other script source here (never silently skip a combo's bonus).
         foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
         {
-            try { paramBonus += EquipmentBonusResolver.Resolve(combo.Script, 0, default, out var comboExtended); extendedBonuses.AddRange(comboExtended); }
+            try
+            {
+                paramBonus += EquipmentBonusResolver.Resolve(combo.Script, 0, default, out var comboExtended, out var comboTriggered);
+                extendedBonuses.AddRange(comboExtended);
+                triggeredBonuses.AddRange(comboTriggered);
+            }
             catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
         }
-        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine, extendedBonuses);
+        equipment = new EquipmentStats(hardDefense, weapon, paramBonus, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine, extendedBonuses, triggeredBonuses);
         return true;
     }
 

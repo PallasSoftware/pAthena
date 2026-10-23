@@ -118,6 +118,96 @@ public sealed class EquipmentBonusResolverTests
         Assert.Equal(EquipmentParamBonus.None, result);
     }
 
+    // Pinned BUILDIN_FUNC(autobonus) (script.cpp:10128-10160): `autobonus "{ bonus bStr,5; }",50,10000,0,"{ specialeffect2 99; }";`
+    // - lowers to a Command("autobonus") whose first/last arguments are ALREADY-lowered Script nodes (see
+    // ItemScriptLowererTests.AutoBonus_NestedScriptStringsAreLoweredToo for the real lowering shape: Script's
+    // single child is a Block whose own single statement is the inner Command).
+    private static IrNode NestedScript(string source, IrNode innerCommand) =>
+        new(IrKind.Script, Text: source, Children: [new(IrKind.Block, Children: [innerCommand])]);
+
+    [Fact]
+    public void Resolve_AutoBonus_RegistersATriggeredBonusDefinition_NotAFlatOrExtendedBonus()
+    {
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]), new(IrKind.Int, Number: 5)]);
+        var otherScript = NestedScript("{ specialeffect2 99; }", new(IrKind.Command, Text: "specialeffect2", Children: [new(IrKind.Int, Number: 99)]));
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "autobonus", Children:
+            [
+                NestedScript("{ bonus bStr,5; }", innerBonus),
+                new(IrKind.Int, Number: 50),
+                new(IrKind.Int, Number: 10000),
+                new(IrKind.Int, Number: 0),
+                otherScript,
+            ]),
+        ]));
+
+        var flat = EquipmentBonusResolver.Resolve(script, 0, default, out var extended, out var triggered);
+        Assert.Equal(EquipmentParamBonus.None, flat);
+        Assert.Empty(extended);
+        var definition = Assert.Single(triggered);
+        Assert.Equal(50, definition.Rate);
+        Assert.Equal(10000u, definition.DurationMilliseconds);
+        Assert.Equal(0, definition.AttackType);
+        Assert.NotNull(definition.OtherScript);
+        Assert.Equal(new EquipmentParamBonus(Strength: 5, 0, 0, 0, 0, 0), EquipmentBonusResolver.Resolve(definition.BonusScript));
+    }
+
+    [Fact]
+    public void Resolve_AutoBonus_WithoutOptionalArguments_DefaultsAttackTypeAndOtherScript()
+    {
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bAgi", Number: Sp["bAgi"]), new(IrKind.Int, Number: 3)]);
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bAgi,3; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
+        ]));
+
+        var flat = EquipmentBonusResolver.Resolve(script, 0, default, out _, out var triggered);
+        Assert.Equal(EquipmentParamBonus.None, flat);
+        var definition = Assert.Single(triggered);
+        Assert.Equal(0, definition.AttackType);
+        Assert.Null(definition.OtherScript);
+    }
+
+    [Fact]
+    public void Resolve_AutoBonus2And3_AreAlsoRegistered()
+    {
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bVit", Number: Sp["bVit"]), new(IrKind.Int, Number: 2)]);
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "autobonus2", Children: [NestedScript("{ bonus bVit,2; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
+            new(IrKind.Command, Text: "autobonus3", Children: [NestedScript("{ bonus bVit,2; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
+        ]));
+
+        EquipmentBonusResolver.Resolve(script, 0, default, out _, out var triggered);
+        Assert.Equal(2, triggered.Count);
+    }
+
+    // A nested autobonus script this resolver cannot account for (its inner script using an unsupported param)
+    // rejects the WHOLE equip - the registration-time validation this resolver performs on the inner script is
+    // not optional, matching every other "cannot fully account for this equipped state" rejection.
+    [Fact]
+    public void Resolve_AutoBonus_WithUnsupportedInnerScript_ThrowsUnsupported()
+    {
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bFlee", Number: 47), new(IrKind.Int, Number: 5)]);
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bFlee,5; }", innerBonus), new(IrKind.Int, Number: 100), new(IrKind.Int, Number: 5000)]),
+        ]));
+        Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
+    }
+
+    [Fact]
+    public void Resolve_AutoBonus_NonConstantRate_ThrowsUnsupported()
+    {
+        var innerBonus = new IrNode(IrKind.Command, Text: "bonus", Children: [new(IrKind.Const, Text: "bStr", Number: Sp["bStr"]), new(IrKind.Int, Number: 5)]);
+        var script = Lowered(new(IrKind.Block, Children:
+        [
+            new(IrKind.Command, Text: "autobonus", Children: [NestedScript("{ bonus bStr,5; }", innerBonus), new(IrKind.Call, Text: "getrefine"), new(IrKind.Int, Number: 5000)]),
+        ]));
+        Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => EquipmentBonusResolver.Resolve(script));
+    }
+
     // Pinned item_randomopt_db.yml Id 1 "VAR_MAXHPAMOUNT": `bonus bMaxHP,getrandomoptinfo(ROA_VALUE);`
     [Fact]
     public void Resolve_MaxHpBonus_AccumulatesIntoItsOwnField()
