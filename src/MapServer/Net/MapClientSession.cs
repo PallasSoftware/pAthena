@@ -662,6 +662,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     // melee-range check, actor visibility) always observes the character's ACTUAL current cell
     // rather than a stale destination from the last movement packet.
     internal ushort CurrentX { get { SyncPositionToNow(); return _x; } }
+    // The ground items this session can see (server-side; projection is Protocol-pending-capture - see GroundItemSessionVisibility).
+    internal GroundItemSessionVisibility GroundItems { get; } = new();
     internal ushort CurrentY { get { SyncPositionToNow(); return _y; } }
     internal Guid? WorldMovementId => _worldMovementId;
     internal ScriptExecutionState? ActiveScriptState => _scriptExecutionSession?.State;

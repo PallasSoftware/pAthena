@@ -865,6 +865,12 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         return Task.FromResult(GroundItemSimulation(mapId).BuildSnapshot());
     }
 
+    public Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId)
+    {
+        mapId = RequireOwnedMap(mapId);
+        return Task.FromResult(GroundItemSimulation(mapId).BuildPage(cursor));
+    }
+
     private string RequireOwnedMap(string mapId)
     {
         var normalized = WorldMapId.Normalize(mapId); var owner = resolver.ResolvePartition(normalized);

@@ -79,6 +79,9 @@ public interface IWorldPartitionGrain : IGrainWithStringKey
     Task<WorldGroundItemCompletionResult> CompleteGroundItemClaimAsync(WorldGroundItemClaimReference reference);
     Task<WorldGroundItemCompletionResult> ReleaseGroundItemClaimAsync(WorldGroundItemClaimReference reference);
     Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId);
+    // The per-map sequenced ground-item visibility feed (same epoch/sequence/snapshot-bootstrap shape as
+    // PollPlayerFeedAsync): every MapServer replica polls it so a bystander on ANY replica learns a drop appeared or vanished.
+    Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -205,11 +208,7 @@ public sealed record WorldGroundItemCompletionResult([property: Id(0)] WorldGrou
 
 // A plain point-in-time projection of one map's currently-visible (unclaimed OR claimed-but-not-
 // yet-completed - a claimed item is still physically present until Complete) ground items - used
-// for a fresh client's bootstrap projection and diagnostics. Never a feed/cursor: see this
-// project's own scoping note (docs/gameplay/feature-16-execution-plan.md) that cross-replica
-// ground-item VISIBILITY (a bystander feed mirroring WorldMonsterFeedEntry/WorldPlayerFeedEntry) is
-// an explicitly deferred later increment, tracked separately - this snapshot is deliberately only
-// ever a full read, not an incremental/resync protocol.
+// for diagnostics and as the bootstrap/resync Snapshot of the ground-item feed below.
 [GenerateSerializer]
 public sealed record WorldGroundItemView(
     [property: Id(0)] uint GroundItemId,
@@ -224,6 +223,40 @@ public sealed record WorldGroundItemSnapshot(
     [property: Id(0)] string MapId,
     [property: Id(1)] WorldSimulationEpoch Epoch,
     [property: Id(2)] IReadOnlyList<WorldGroundItemView> Items);
+
+// Ground-item visibility feed. Appeared carries the full view; Removed only the id and why it left. A claim or a released
+// claim is not a visibility change (the item stays physically present until Complete), so neither appends an entry.
+// GroundItemIds are never reused within an epoch, so a Removed id is final: a consumer never resurrects it.
+public enum WorldGroundItemFeedEntryKind { Appeared, Removed }
+
+public enum WorldGroundItemRemovalReason { PickedUp, Expired, ClaimAbandoned }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemFeedEntry(
+    [property: Id(0)] long Sequence,
+    [property: Id(1)] WorldGroundItemFeedEntryKind Kind,
+    [property: Id(2)] uint GroundItemId,
+    [property: Id(3)] WorldGroundItemView? Item,
+    [property: Id(4)] WorldGroundItemRemovalReason? Reason);
+
+[GenerateSerializer]
+public readonly record struct WorldGroundItemFeedCursor(
+    [property: Id(0)] WorldSimulationEpoch Epoch,
+    [property: Id(1)] long Sequence);
+
+public enum WorldGroundItemFeedStatus { Ready, ResyncRequired }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemFeedPage(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] WorldSimulationEpoch Epoch,
+    [property: Id(2)] WorldGroundItemFeedStatus Status,
+    [property: Id(3)] IReadOnlyList<WorldGroundItemView>? Snapshot,
+    [property: Id(4)] IReadOnlyList<WorldGroundItemFeedEntry>? Entries,
+    [property: Id(5)] long AsOfSequence)
+{
+    public bool ResyncRequired => Status != WorldGroundItemFeedStatus.Ready;
+}
 
 [GenerateSerializer]
 public sealed record WorldPlayerPresence(

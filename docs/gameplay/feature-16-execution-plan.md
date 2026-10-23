@@ -43,7 +43,23 @@ Stat resend after equip/unequip (0x00B0 family, ASPD/ATK/DEF), equip/unequip fai
 
 Exact captures needed to close this: equip **Knife** (1201, Weapon Level 1, no refine/cards/options - the plainest possible ATK-affecting item) while the character already wears **Cotton_Shirt** (2301, plain DEF-affecting armor, no script), and the matching **unequip** of each, each capture showing the COMPLETE server-to-client packet sequence (every packet id, length, and field value, in the exact order sent) around the already-proven `0x0998`/`0x00AB` request and its ack. These two minimal captures resolve: (1) which `DerivedStatField`s actually get a `0x00B0` resend after equip/unequip specifically (not just after stat allocation), (2) the correct SP_* var id for each (settling the capture-doc/pinned-enum mismatch above), (3) whether MaxHp/MaxSp ever resend here too (already flagged unresolved even for the allocation flow), and (4) the relative ordering against the existing proven equip ack/appearance packets this project already sends. Until these are captured, this requirement stays Protocol-pending-capture: the comparator is implemented and tested, the client projection is not.
 
-Ground item: pickup request (0x0362) and removal ack (0x00A1) are VERIFIED (G108 capture, see ai/iro-2026-wire.md) and implemented end-to-end. Still outstanding: the 0x0ADD appearance/drop-show packet's full field layout (14 of 24 bytes unresolved beyond opcode/groundActorId/itemId/x/y - see that same evidence section's "Evidence boundary") and the cross-gateway ground-item VISIBILITY feed (a bystander feed mirroring the existing WorldMonsterFeedEntry/WorldPlayerFeedEntry shape, so a remote MapServer replica's own sessions see a drop appear/vanish) - explicitly deferred to S8, tracked here so "server-side end-to-end tested" is never mistaken for "a connected stock-iRO client can see a dropped item." Today a dropped item is pickable (server-authoritative) but never announced to any client at all.
+Ground item: pickup request (0x0362) and removal ack (0x00A1) are VERIFIED (G108 capture, see ai/iro-2026-wire.md) and
+implemented end-to-end. **Cross-replica visibility is implemented server side (S8):** World appends `Appeared` /
+`Removed(PickedUp|Expired|ClaimAbandoned)` entries to a per-map, epoch-fenced, bounded ground-item feed
+(`WorldGroundItemMapSimulation`, `IWorldPartitionGrain.PollGroundItemFeedAsync`; claim/release are not visibility changes;
+a poll runs the lazy expiry sweep so silent expiry is still reported). Every MapServer replica polls it in the existing
+per-map tick into a read-only `GroundItemFeedMirror` (cursor-filtered: duplicates, replays and stale snapshots cannot
+resurrect a removed item; a new epoch or resync replaces the mirror by diff) and re-evaluates each local session's
+`GroundItemSessionVisibility` at its current cell over pinned AREA_SIZE (14). World's exclusive claim stays the only pickup
+authority; mirrors never create or remove items. Tests: `WorldGroundItemFeedTests` (real TestCluster, fake clock),
+`GroundItemFeedMirrorTests`, and two real-session cross-replica tests (drop through replica A visible to a session on
+replica B, racing pickup from B loses, completion removes it on B; walking into range).
+**Client projection: Protocol-pending-capture.** The 0x0ADD appearance packet has 14 of 24 bytes unresolved (see the
+"Evidence boundary" in ai/iro-2026-wire.md), so neither 0x0ADD nor the matching 0x00A1 for a bystander is sent yet.
+Capture needed: with two stock clients A and B on the same map, A kills a Poring that drops Jellopy (909) at a known
+cell, B standing within 14 cells; record B's complete server-to-client stream for the drop (every 0x0ADD byte), then A
+picking it up (what B receives: 0x00A1 and anything else), plus B walking into range of an existing drop (whether 0x0ADD
+or 0x009D is used for an already-lying item) and out of range (0x00A1 or nothing).
 
 ## Spike results (S0)
 Recorded in the S1 commit message and this section once measured.

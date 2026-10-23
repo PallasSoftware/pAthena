@@ -83,6 +83,11 @@ internal sealed class WorldGroundItemMapSimulation
     // caller's own responsibility) is never blocked forever.
     private readonly Dictionary<Guid, (uint GroundItemId, DateTimeOffset DeadlineUtc)> _dropDedup = [];
 
+    // Visibility feed: same bounded-retention, epoch-fenced shape as WorldPlayerMapSimulation's feed.
+    private readonly List<WorldGroundItemFeedEntry> _feed = [];
+    private long _nextSequence = 1;
+    private const int FeedRetention = 4096;
+
     public string MapId { get; }
     public WorldSimulationEpoch Epoch { get; }
     private readonly TimeProvider _timeProvider;
@@ -123,7 +128,9 @@ internal sealed class WorldGroundItemMapSimulation
                     : entry.ClaimDeadlineUtc <= now; // Claimed-but-unresolved past its deadline: permanently removed, never released - see ClaimDeadlineUtc's own doc comment.
                 if (expired) (toRemove ??= []).Add(id);
             }
-            if (toRemove is not null) foreach (var id in toRemove) Remove(id);
+            if (toRemove is not null)
+                foreach (var id in toRemove)
+                    Remove(id, _byId[id].Claim is null ? WorldGroundItemRemovalReason.Expired : WorldGroundItemRemovalReason.ClaimAbandoned);
         }
 
         if (_dropDedup.Count == 0) return;
@@ -146,9 +153,10 @@ internal sealed class WorldGroundItemMapSimulation
     // from THIS moment, so a drop-event retry that was merely delayed (not lost) still finds it and
     // answers AlreadyDropped for the full DropDedupWindow AFTER the item actually left the world,
     // not just after it was created.
-    private void Remove(uint groundItemId)
+    private void Remove(uint groundItemId, WorldGroundItemRemovalReason reason)
     {
         if (!_byId.Remove(groundItemId)) return;
+        Append(WorldGroundItemFeedEntryKind.Removed, groundItemId, null, reason);
         foreach (var (dropId, record) in _dropDedup)
         {
             if (record.GroundItemId != groundItemId) continue;
@@ -195,6 +203,7 @@ internal sealed class WorldGroundItemMapSimulation
         // regardless of DeadlineUtc (see that method's own doc comment). Remove overwrites this with
         // the REAL post-removal deadline the instant the item actually leaves the world.
         _dropDedup[drop.DropId] = (id, now + _dropDedupWindow);
+        Append(WorldGroundItemFeedEntryKind.Appeared, id, View(_byId[id]), null);
         return new(WorldGroundItemDropStatus.Dropped, id);
     }
 
@@ -243,7 +252,7 @@ internal sealed class WorldGroundItemMapSimulation
 
         if (complete)
         {
-            Remove(reference.Item.GroundItemId);
+            Remove(reference.Item.GroundItemId, WorldGroundItemRemovalReason.PickedUp);
         }
         else
         {
@@ -262,7 +271,32 @@ internal sealed class WorldGroundItemMapSimulation
     public WorldGroundItemSnapshot BuildSnapshot()
     {
         SweepExpired();
-        var items = _byId.Values.Select(e => new WorldGroundItemView(e.GroundItemId, e.X, e.Y, e.Content, e.CreatedAtUtc, e.ExpiresAtUtc)).ToArray();
-        return new WorldGroundItemSnapshot(MapId, Epoch, items);
+        return new WorldGroundItemSnapshot(MapId, Epoch, CurrentViews());
+    }
+
+    private static WorldGroundItemView View(Entry e) => new(e.GroundItemId, e.X, e.Y, e.Content, e.CreatedAtUtc, e.ExpiresAtUtc);
+
+    private WorldGroundItemView[] CurrentViews() => [.. _byId.Values.Select(View).OrderBy(v => v.GroundItemId)];
+
+    private long AsOfSequence => _nextSequence - 1;
+
+    private void Append(WorldGroundItemFeedEntryKind kind, uint groundItemId, WorldGroundItemView? item, WorldGroundItemRemovalReason? reason)
+    {
+        _feed.Add(new WorldGroundItemFeedEntry(_nextSequence++, kind, groundItemId, item, reason));
+        if (_feed.Count > FeedRetention) _feed.RemoveRange(0, _feed.Count - FeedRetention);
+    }
+
+    // Same control flow as WorldPlayerMapSimulation.BuildPage: null cursor -> bootstrap snapshot; another epoch or a
+    // sequence outside the retained window -> ResyncRequired with a fresh snapshot; otherwise the entries after the cursor.
+    // Expiry is lazy, so polling sweeps first: an item that expired with nobody touching it still produces its Removed entry.
+    public WorldGroundItemFeedPage BuildPage(WorldGroundItemFeedCursor? cursor)
+    {
+        SweepExpired();
+        if (cursor is null)
+            return new(MapId, Epoch, WorldGroundItemFeedStatus.Ready, CurrentViews(), null, AsOfSequence);
+        var oldestRetained = _feed.Count > 0 ? _feed[0].Sequence : _nextSequence;
+        if (!cursor.Value.Epoch.Equals(Epoch) || cursor.Value.Sequence < oldestRetained - 1 || cursor.Value.Sequence > AsOfSequence)
+            return new(MapId, Epoch, WorldGroundItemFeedStatus.ResyncRequired, CurrentViews(), null, AsOfSequence);
+        return new(MapId, Epoch, WorldGroundItemFeedStatus.Ready, null, [.. _feed.Where(e => e.Sequence > cursor.Value.Sequence)], AsOfSequence);
     }
 }

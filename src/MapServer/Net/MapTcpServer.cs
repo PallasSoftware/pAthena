@@ -23,6 +23,8 @@ public sealed class MapTcpServer
     private readonly MapConfigStore _configStore;
     private readonly CharServerConnector _charConnector;
     private readonly MapServerWorld _world;
+    // Per-map ground-item mirrors fed by World's ground-item feed (GroundItemFeedMirror), one per hosted map with sessions.
+    private readonly ConcurrentDictionary<string, GroundItemFeedMirror> _groundItemMirrors = new(StringComparer.OrdinalIgnoreCase);
     private readonly IWorldRuntime _worldRuntime;
     private readonly TcpListener _listener;
     private readonly ConcurrentDictionary<int, MapClientSession> _sessions = new();
@@ -550,6 +552,19 @@ public sealed class MapTcpServer
             {
                 MapLogger.Error($"[WORLD] Transient World RPC failure reconciling player feed for map '{mapGroup.Key}' - other maps still proceed, this map retries next tick: {ex}");
             }
+            // The ground-item feed shares the same tick and failure classification.
+            try
+            {
+                await PollAndReconcileGroundItemsAsync(mapGroup.Key, sessions, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (WorldRpcFailureClassifier.IsTransientWorldRpcFailure(ex))
+            {
+                MapLogger.Error($"[WORLD] Transient World RPC failure reconciling ground-item feed for map '{mapGroup.Key}' - other maps still proceed, this map retries next tick: {ex}");
+            }
             // Item 3's own correction: the earlier broad, UNCONDITIONAL `catch (Exception ex)` that
             // used to sit here (with no `when` filter) would have caught EVERY exception type not
             // already classified as deterministic/transient above - including a genuine local
@@ -698,6 +713,8 @@ public sealed class MapTcpServer
     private async Task EvictIdlePlayerProjectionsAsync(IReadOnlyCollection<MapClientSession> eligibleSessions, CancellationToken cancellationToken)
     {
         var activeMaps = eligibleSessions.Select(session => session.CurrentMapName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // A ground-item mirror nobody polls goes stale the same way; the next session on that map bootstraps a fresh one.
+        foreach (var mapId in _groundItemMirrors.Keys.Where(mapId => !activeMaps.Contains(mapId)).ToArray()) _groundItemMirrors.TryRemove(mapId, out _);
         foreach (var mapId in _world.PlayerProjectionsOrDefault.TrackedMapIds.ToArray())
         {
             if (activeMaps.Contains(mapId)) continue;
@@ -861,6 +878,26 @@ public sealed class MapTcpServer
         }
         projection.CommitCursor(page.Epoch, page.AsOfSequence);
     }
+
+    // Ground-item visibility across replicas: poll World's ground-item feed for this map, apply it to this replica's mirror,
+    // then re-evaluate every local session's visible set at its current cell (pinned AREA_SIZE). A session whose map changed
+    // is reconciled against its NEW map's mirror, so its old map's items leave its set. Nothing is sent to the client:
+    // 0x0ADD is still Protocol-pending-capture (GroundItemSessionVisibility).
+    internal async Task PollAndReconcileGroundItemsAsync(string mapId, IReadOnlyCollection<MapClientSession> sessions, CancellationToken cancellationToken)
+    {
+        var mirror = _groundItemMirrors.GetOrAdd(mapId, _ => new GroundItemFeedMirror());
+        WorldGroundItemFeedPage? page;
+        try { page = await _worldRuntime.PollGroundItemFeedAsync(mirror.Cursor, mapId, cancellationToken); }
+        catch (IOException) { return; }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return; }
+        if (page is null) return;
+        mirror.Apply(page);
+        foreach (var session in sessions)
+            if (string.Equals(session.CurrentMapName, mapId, StringComparison.OrdinalIgnoreCase))
+                session.GroundItems.Reconcile(mirror.Items, session.CurrentX, session.CurrentY, _world.Visibility.AreaSize);
+    }
+
+    internal bool TryGetGroundItemMirror(string mapId, out GroundItemFeedMirror mirror) => _groundItemMirrors.TryGetValue(mapId, out mirror!);
 
     // DEBUG-LOG-ONLY movement-lag diagnostics (no behavior): one line per poll that carried
     // incremental entries or a snapshot, or whose RPC was slow. Lets a live capture separate real
