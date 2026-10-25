@@ -46,7 +46,7 @@ public sealed class MapClientSessionEquipmentMutationTests
     }
 
     private async Task<(TcpClient Client, NetworkStream Stream, MapClientSession Session, Task RunTask, InMemoryInventoryOperations Persistence)> SetupAsync(
-        CharacterInventorySnapshot initialInventory, ushort jobClass = 0 /* JOB_NOVICE */)
+        CharacterInventorySnapshot initialInventory, ushort jobClass = 0 /* JOB_NOVICE */, ICharacterGameplayStatePersistence? gameplayPersistence = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -58,7 +58,7 @@ public sealed class MapClientSessionEquipmentMutationTests
         var stream = client.GetStream();
 
         var gameplayState = new CharacterGameplayState(CharId, 1, jobClass, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
-        var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
+        gameplayPersistence ??= new StubGameplayStatePersistence(gameplayState);
         var inventoryPersistence = new InMemoryInventoryOperations(initialInventory);
 
         var session = new MapClientSession(
@@ -81,6 +81,59 @@ public sealed class MapClientSessionEquipmentMutationTests
     {
         public Task<CharacterGameplayState?> GetAsync(uint a, uint c, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(a == AccountId && c == CharId ? state : null);
         public Task<CharacterGameplayState?> UpdateAsync(uint a, CharacterGameplayState e, CharacterGameplayState u, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(null);
+    }
+
+    private sealed class AcceptingGameplayStatePersistence(CharacterGameplayState state) : ICharacterGameplayStatePersistence
+    {
+        public volatile CharacterGameplayState State = state;
+        public Task<CharacterGameplayState?> GetAsync(uint a, uint c, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(State);
+        public Task<CharacterGameplayState?> UpdateAsync(uint a, CharacterGameplayState e, CharacterGameplayState u, CancellationToken t) =>
+            Task.FromResult<CharacterGameplayState?>(State = u with { Version = e.Version + 1 });
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(20);
+        Assert.True(condition());
+    }
+
+    // Pinned status_calc_pc / status_calc_maxsp_pc: 2607 Clip `bonus bMaxSP,10;` raises the persisted maximum on equip and
+    // takes it away on unequip; the current value is never raised by the maximum (Novice lvl 1, INT 1: 11 SP bare).
+    [Fact]
+    public async Task EquipAndUnequipClip_RecalculatesAndPersistsMaxSp_WithoutHealing()
+    {
+        var gameplay = new AcceptingGameplayStatePersistence(new(CharId, 1, 0, 1, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1));
+        var initial = new CharacterInventorySnapshot([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2607, 1, 0, true, 0, 0, 0)]);
+        var (client, _, session, run, _) = await SetupAsync(initial, gameplayPersistence: gameplay);
+        using var _client = client;
+
+        await client.GetStream().WriteAsync(EquipRequestPacket(2, 0x000008));
+        await WaitForAsync(() => gameplay.State.MaxSp == 21);
+        Assert.Equal((40u, 40u, 11u), (gameplay.State.MaxHp, gameplay.State.CurrentHp, gameplay.State.CurrentSp));
+
+        await client.GetStream().WriteAsync(UnequipRequestPacket(2));
+        await WaitForAsync(() => gameplay.State.MaxSp == 11);
+        Assert.Equal(11u, session.GameplayState!.State.MaxSp);
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    // A stored maximum that no longer matches the pinned formula (e.g. an item's bonus was lost while offline) is rebuilt at
+    // login and the current value clamped down to it, like pinned status_calc_pc on load.
+    [Fact]
+    public async Task Login_RebuildsAStaleStoredMaximum_AndClampsTheCurrentValue()
+    {
+        var gameplay = new AcceptingGameplayStatePersistence(new(CharId, 1, 0, 1, 1, 0, 0, 99, 30, 99, 30, 48, 0, 1, 1, 1, 1, 1, 1));
+        var (client, _, _, run, _) = await SetupAsync(new CharacterInventorySnapshot([]), gameplayPersistence: gameplay);
+        using var _client = client;
+
+        await WaitForAsync(() => gameplay.State.MaxHp == 40);
+        Assert.Equal((40u, 11u, 11u), (gameplay.State.CurrentHp, gameplay.State.MaxSp, gameplay.State.CurrentSp));
+
+        await client.GetStream().DisposeAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]

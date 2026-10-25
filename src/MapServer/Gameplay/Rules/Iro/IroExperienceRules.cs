@@ -16,7 +16,7 @@ public sealed class IroExperienceRules(IStatRules statRules) : IExperienceRules
     private const ulong MaximumBaseLevelExperience = 99_999_999;
     private const ulong MaximumJobLevelExperience = 999_999_999;
 
-    public CharacterProgressionResult CalculateProgression(CharacterGameplayState state, ulong baseAward, ulong jobAward)
+    public CharacterProgressionResult CalculateProgression(CharacterGameplayState state, ulong baseAward, ulong jobAward, MaxResourceContext resources = default)
     {
         var definition = GeneratedProgressionRegistry.Get(state.JobClass);
         if (state.BaseLevel is 0 || state.BaseLevel > definition.MaxBaseLevel ||
@@ -80,10 +80,9 @@ public sealed class IroExperienceRules(IStatRules statRules) : IExperienceRules
 
         if (baseLevelsGained > 0 || jobLevelsGained > 0)
         {
-            // The post-level state carries the new BaseLevel; VIT/INT are allocated + job bonus (no temporary status touches them).
-            var stats = statRules.BasePrimaryStats(after);
-            var maxHp = statRules.MaxHp(after, stats.Vitality);
-            var maxSp = statRules.MaxSp(after, stats.Intelligence);
+            // The post-level state carries the new BaseLevel; the maxima include the wearer's equipment and skills (pinned
+            // pc_checkbaselevelup runs status_calc_pc, then status_percent_heal to the new maximum).
+            var (maxHp, maxSp) = statRules.MaxResources(after, resources);
             after = baseLevelsGained > 0
                 ? after with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = maxHp, CurrentSp = maxSp }
                 : after with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = Math.Min(after.CurrentHp, maxHp), CurrentSp = Math.Min(after.CurrentSp, maxSp) };

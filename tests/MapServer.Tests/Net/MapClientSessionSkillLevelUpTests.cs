@@ -268,7 +268,7 @@ public sealed class MapClientSessionSkillLevelUpTests
 
     private static CharacterGameplayState NoviceState(uint skillPoints) => new(
         CharacterId: CharId, Version: 0, JobClass: (ushort)JobClass.Novice, BaseLevel: 2, JobLevel: 2,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 11, MaxHp: 40, MaxSp: 11,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: 45, CurrentSp: 12, MaxHp: 45, MaxSp: 12,
         StatPoints: 0, SkillPoints: skillPoints, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
 
     private static async Task<(TcpClient Client, NetworkStream Stream, InMemoryGameplayStatePersistence GameplayPersistence, InMemorySkillPersistence SkillPersistence, MapClientSession Session, Task Run)>

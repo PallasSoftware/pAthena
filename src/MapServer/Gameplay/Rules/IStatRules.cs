@@ -24,8 +24,11 @@ public interface IStatRules
     uint MaxHp(CharacterGameplayState state, int effectiveVitality);
     uint MaxSp(CharacterGameplayState state, int effectiveIntelligence);
 
-    // New maxima from the state's VIT/INT; current values are only clamped down, never healed.
-    CharacterGameplayState WithRecalculatedResources(CharacterGameplayState state);
+    // Pinned status_calc_maxhp_pc / status_calc_maxsp_pc for the wearer in `context` (equipment, learned skills, sex).
+    (uint MaxHp, uint MaxSp) MaxResources(CharacterGameplayState state, MaxResourceContext context);
+
+    // New maxima (MaxResources); current values are only clamped down, never healed.
+    CharacterGameplayState WithRecalculatedResources(CharacterGameplayState state, MaxResourceContext context = default);
 
     // False when an equipped item cannot be accounted for (unknown or unsupported type) instead of assuming "no effect".
     // character is the wearer equipment scripts may read (BaseLevel, readparam, getskilllv); without it those scripts are
@@ -35,3 +38,7 @@ public interface IStatRules
     uint StatIncreaseCost(ushort currentValue, int increaseAmount);
     StatIncreaseValidationResult ValidateStatIncrease(CharacterGameplayState gameplay, CharacterBaseStat stat, int increaseAmount);
 }
+
+// What besides the gameplay state feeds max HP/SP: the resolved equipment (VIT/INT, param_equip, bMaxHP/SP[rate]), the learned
+// skills with HP/SP bonuses and the sex (Bard/Dancer lesson). default = no equipment, no skills.
+public readonly record struct MaxResourceContext(EquipmentStats Equipment, CharacterSkillSnapshot? Skills = null, byte Sex = 1);

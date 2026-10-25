@@ -2024,6 +2024,151 @@
       }
     },
     {
+      "id": "VF-24",
+      "evidence": "ReferenceExecuted",
+      "scope": "Feature 16: max HP/SP (battle_status) through the real status_calc_maxhp_pc/maxsp_pc for Novice Lv60, Lord Knight Lv99 (JOBL_UPPER) and Dragon Knight Lv175 (primary fourth), VIT 30/INT 20, bare or wearing Phrygian_Cap_ (5180, item-script VIT), Clip (2607) + Spore Card (4022), Cotton Shirt (2301) + Pecopeco Card (4031), Knife (1201) + Fabre Card (4002), each without/with granted NV_BREAKTHROUGH 5, HP_MEDITATIO 10, SL_KAINA 7, CR_TRUST 10. No statuses.",
+      "input": {
+        "vit": 30,
+        "int": 20,
+        "items": [
+          5180,
+          2607,
+          2301,
+          1201
+        ],
+        "cards": [
+          0,
+          4022,
+          4031,
+          4002
+        ]
+      },
+      "output": {
+        "cases": [
+          {
+            "job": 0,
+            "base_level": 60,
+            "equipped": 0,
+            "skills": 0,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 435,
+            "max_sp": 84
+          },
+          {
+            "job": 0,
+            "base_level": 60,
+            "equipped": 0,
+            "skills": 1,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 4435,
+            "max_sp": 543
+          },
+          {
+            "job": 0,
+            "base_level": 60,
+            "equipped": 1,
+            "skills": 0,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 604,
+            "max_sp": 94
+          },
+          {
+            "job": 0,
+            "base_level": 60,
+            "equipped": 1,
+            "skills": 1,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 5004,
+            "max_sp": 554
+          },
+          {
+            "job": 4008,
+            "base_level": 99,
+            "equipped": 0,
+            "skills": 0,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 12964,
+            "max_sp": 460
+          },
+          {
+            "job": 4008,
+            "base_level": 99,
+            "equipped": 0,
+            "skills": 1,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 16964,
+            "max_sp": 957
+          },
+          {
+            "job": 4008,
+            "base_level": 99,
+            "equipped": 1,
+            "skills": 0,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 14810,
+            "max_sp": 470
+          },
+          {
+            "job": 4008,
+            "base_level": 99,
+            "equipped": 1,
+            "skills": 1,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 19210,
+            "max_sp": 968
+          },
+          {
+            "job": 4252,
+            "base_level": 175,
+            "equipped": 0,
+            "skills": 0,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 33645,
+            "max_sp": 1667
+          },
+          {
+            "job": 4252,
+            "base_level": 175,
+            "equipped": 0,
+            "skills": 1,
+            "vit": 30,
+            "int": 20,
+            "max_hp": 37645,
+            "max_sp": 2285
+          },
+          {
+            "job": 4252,
+            "base_level": 175,
+            "equipped": 1,
+            "skills": 0,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 38260,
+            "max_sp": 1677
+          },
+          {
+            "job": 4252,
+            "base_level": 175,
+            "equipped": 1,
+            "skills": 1,
+            "vit": 34,
+            "int": 20,
+            "max_hp": 42660,
+            "max_sp": 2296
+          }
+        ]
+      }
+    },
+    {
       "id": "VF-06",
       "evidence": "ReferenceExecuted",
       "scope": "Novice with a Knife vs mobs 1002/1007/1013 through real battle_calc_attack, 2000 seeded rolls: normal and critical damage histograms plus miss counts. Covers weapon damage, size fix, element and mob DEF for refine-0 daggers.",

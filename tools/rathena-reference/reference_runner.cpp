@@ -20,6 +20,7 @@
 #include "mob.hpp"
 #include "pc.hpp"
 #include "script.hpp"
+#include "skill.hpp"
 #include "status.hpp"
 #include "../common/random.hpp"
 #include "../common/timer.hpp"
@@ -47,7 +48,9 @@ static void dump_status(const char* name, const struct status_data& s) {
 
 // `job` stays last: vf02 builds specs with positional aggregate initializers (base_level, job_level, six stats).
 // item_refines is parallel to items (index-matched); missing entries default to refine 0 (unrefined).
-struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; int job = JOB_NOVICE; std::vector<int> item_refines; };
+// item_cards is index-matched to items (card[0] of that row, 0 = none); skills are (skill id, level), permanently granted.
+struct NoviceSpec { int base_level = 1, job_level = 1, str = 1, agi = 1, vit = 1, int_ = 1, dex = 1, luk = 1; std::vector<int> items; int job = JOB_NOVICE; std::vector<int> item_refines;
+	std::vector<int> item_cards; std::vector<std::pair<int, int>> skills; };
 
 static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec()) {
 	map_session_data* sd = new map_session_data();
@@ -70,10 +73,17 @@ static map_session_data* make_novice(uint32 id, const NoviceSpec& n = NoviceSpec
 		item_data* data = itemdb_search(nameid);
 		struct item& row = sd->inventory.u.items_inventory[slot];
 		memset(&row, 0, sizeof(row));
-		row.nameid = nameid; row.amount = 1; row.identify = 1; row.equip = data->equip;
+		// A both-slot accessory is worn in ONE accessory slot (pc_equipitem resolves EQP_ACC to EQP_ACC_R when both are free);
+		// flagging it at EQP_ACC would run its script and cards twice, a state no real character can reach.
+		row.nameid = nameid; row.amount = 1; row.identify = 1; row.equip = data->equip == EQP_ACC ? EQP_ACC_R : data->equip;
 		row.refine = slot < (int)n.item_refines.size() ? n.item_refines[slot] : 0;
+		row.card[0] = slot < (int)n.item_cards.size() ? n.item_cards[slot] : 0;
 		sd->inventory_data[slot] = data;
 		slot++;
+	}
+	for (const auto& skill : n.skills) {
+		uint16 idx = skill_get_index(skill.first);
+		sd->status.skill[idx].id = skill.first; sd->status.skill[idx].lv = skill.second; sd->status.skill[idx].flag = SKILL_FLAG_PERM_GRANTED; // pc_calc_skilltree keeps granted skills outside the job tree
 	}
 	pc_setequipindex(sd);
 	map_addiddb(sd); // as pc_authok does; status code looks the player up by id
@@ -177,6 +187,32 @@ static void vf05() {
 		std::fprintf(out, ",");
 		dump_status("battle_status", sd->battle_status);
 		std::fprintf(out, "}");
+	}
+	std::fprintf(out, "]}}");
+}
+
+// VF-24: equipment and skill max HP/SP through the real status_calc_maxhp_pc/maxsp_pc (status.cpp:3511-3590): a plain, a
+// trans (JOBL_UPPER, x1.25) and a primary fourth job, each bare / wearing an item-script VIT hat (param_equip VIT adds +1 HP),
+// a Clip with a VIT card (param_bonus only), a shirt with a bMaxHPrate card and a Knife with a VIT + bMaxHP card / with HP and
+// SP skills learned on top. max_hp/max_sp are battle_status (no status changes are active).
+static void vf24() {
+	const int jobs[][2] = {{JOB_NOVICE, 60}, {JOB_LORD_KNIGHT, 99}, {JOB_DRAGON_KNIGHT, 175}};
+	const std::vector<std::pair<int, int>> skillsets[] = {{}, {{NV_BREAKTHROUGH, 5}, {HP_MEDITATIO, 10}, {SL_KAINA, 7}, {CR_TRUST, 10}}};
+	std::fprintf(out, "{\"id\":\"VF-24\",\"input\":{\"vit\":30,\"int\":20,\"items\":[5180,2607,2301,1201],\"cards\":[0,4022,4031,4002]},\"output\":{\"cases\":[");
+	uint32 id = 2002000;
+	bool first_case = true;
+	for (const auto& job : jobs) {
+		for (int equipped = 0; equipped < 2; equipped++) {
+			for (size_t k = 0; k < 2; k++) {
+				NoviceSpec n; n.job = job[0]; n.base_level = job[1]; n.job_level = 1; n.vit = 30; n.int_ = 20;
+				if (equipped) { n.items = {5180, 2607, 2301, 1201}; n.item_cards = {0, 4022, 4031, 4002}; }
+				n.skills = skillsets[k];
+				map_session_data* sd = make_novice(id++, n);
+				std::fprintf(out, "%s{\"job\":%d,\"base_level\":%d,\"equipped\":%d,\"skills\":%d,\"vit\":%d,\"int\":%d,\"max_hp\":%u,\"max_sp\":%u}",
+					first_case ? "" : ",", job[0], job[1], equipped, (int)k, sd->battle_status.vit, sd->battle_status.int_, sd->battle_status.max_hp, sd->battle_status.max_sp);
+				first_case = false;
+			}
+		}
 	}
 	std::fprintf(out, "]}}");
 }
@@ -639,6 +675,8 @@ void ra_reference_run() {
 	vf05();
 	std::fprintf(out, ",");
 	vf23();
+	std::fprintf(out, ",");
+	vf24();
 	std::fprintf(out, ",");
 	vf06();
 	std::fprintf(out, ",");

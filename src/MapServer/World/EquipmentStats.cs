@@ -27,7 +27,10 @@ public readonly record struct EquipmentStats(
     int HardDefense, WeaponItemDefinition? Weapon, EquipmentParamBonus ParamBonus = default,
     int WeaponRefineAtk = 0, int WeaponRefineMatk = 0, int ArmorRefineDefense = 0, int WeaponOverrefine = 0,
     IReadOnlyList<EquipmentExtendedBonus>? ExtendedBonuses = null, IReadOnlyList<TriggeredBonusDefinition>? TriggeredBonuses = null,
-    EquipmentFlatBonuses? FlatBonuses = null, IReadOnlyList<EquipmentMultiBonus>? MultiBonuses = null, IReadOnlyList<ItemEffect>? ClientEffects = null)
+    EquipmentFlatBonuses? FlatBonuses = null, IReadOnlyList<EquipmentMultiBonus>? MultiBonuses = null, IReadOnlyList<ItemEffect>? ClientEffects = null,
+    // Pinned param_equip: the primary-stat part from item scripts, ammo and combos only (cards and random options excluded) -
+    // ParamBonus includes it; this subset is what status_calc_maxhp_pc/maxsp_pc add once more.
+    EquipmentParamBonus ParamEquip = default)
 {
     // hateffect/specialeffect2 from equipped scripts: client-only visuals, Protocol-pending-capture (never sent today).
     public IReadOnlyList<ItemEffect> ClientEffectsOrEmpty => ClientEffects ?? [];

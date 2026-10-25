@@ -142,7 +142,7 @@ public sealed class MapClientSessionMonsterCombatTests
     // deterministic without depending on the exact RenewalBasicAttackRules formula's per-hit value.
     private static CharacterGameplayState StrongNovice() => new(
         CharacterId: CharId, Version: 1, JobClass: 0, BaseLevel: 99, JobLevel: 10,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: 100, CurrentSp: 100, MaxHp: 100, MaxSp: 100,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: 540, CurrentSp: 111, MaxHp: 540, MaxSp: 111,
         StatPoints: 0, SkillPoints: 0, Strength: 99, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 99, Luck: 99);
 
     // Deliberately weak (canonical fresh-Novice 9/9/9/9/9/9, matching
@@ -151,7 +151,7 @@ public sealed class MapClientSessionMonsterCombatTests
     // distinctly from an armed hit's, rather than both instantly killing the target.
     private static CharacterGameplayState WeakFreshNovice() => new(
         CharacterId: CharId, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: 43, CurrentSp: 11, MaxHp: 43, MaxSp: 11,
         StatPoints: 0, SkillPoints: 0, Strength: 9, Agility: 9, Vitality: 9, Intelligence: 9, Dexterity: 9, Luck: 9);
 
     // Pins WeaponAttackCalculator's rnd_value(atkmin, atkmax) roll to its minimum - the

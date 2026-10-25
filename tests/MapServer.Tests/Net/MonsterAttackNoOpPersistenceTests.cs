@@ -26,7 +26,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
 
     private static CharacterGameplayState Fresh() =>
         new(CharacterId: CharId, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1, BaseExperience: 0, JobExperience: 0,
-            CurrentHp: 40, CurrentSp: 10, MaxHp: 40, MaxSp: 10, StatPoints: 0, SkillPoints: 0,
+            CurrentHp: 43, CurrentSp: 11, MaxHp: 43, MaxSp: 11, StatPoints: 0, SkillPoints: 0,
             Strength: 9, Agility: 9, Vitality: 9, Intelligence: 9, Dexterity: 9, Luck: 9);
 
     // Behaves like CharServer's optimistic-concurrency update: every accepted write bumps the row version.
@@ -169,10 +169,10 @@ public sealed class MonsterAttackNoOpPersistenceTests
         var result = await session.ApplyIncomingMobBasicAttackAsync(damage: 0, CancellationToken.None);
 
         Assert.NotNull(result);
-        Assert.Equal((40u, false), result!.Value);
+        Assert.Equal((43u, false), result!.Value);
         Assert.Equal(0, persistence.Updates);
         Assert.Equal(1UL, session.GameplayState!.State.Version);
-        Assert.Equal(40u, session.GameplayState.State.CurrentHp);
+        Assert.Equal(43u, session.GameplayState.State.CurrentHp);
         Assert.Equal(0, world.UpdatePresenceLifeStateCallCount);
         await session.DisposeAsync();
     }
@@ -186,9 +186,9 @@ public sealed class MonsterAttackNoOpPersistenceTests
 
         var result = await session.ApplyIncomingMobBasicAttackAsync(damage: 7, CancellationToken.None);
 
-        Assert.Equal((33u, true), result!.Value);
+        Assert.Equal((36u, true), result!.Value);
         Assert.Equal(1, persistence.Updates);
-        Assert.Equal(33u, session.GameplayState!.State.CurrentHp);
+        Assert.Equal(36u, session.GameplayState!.State.CurrentHp);
         Assert.Equal(2UL, session.GameplayState.State.Version);
         Assert.Equal(0, world.UpdatePresenceLifeStateCallCount); // Not a death.
         await session.DisposeAsync();
@@ -278,7 +278,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
         var hp = await ReadExact(stream, 8);
         Assert.Equal((short)0x00B0, BinaryPrimitives.ReadInt16LittleEndian(hp));
         Assert.Equal((ushort)5, BinaryPrimitives.ReadUInt16LittleEndian(hp.AsSpan(2))); // SP_HP.
-        Assert.Equal(33u, BinaryPrimitives.ReadUInt32LittleEndian(hp.AsSpan(4)));
+        Assert.Equal(36u, BinaryPrimitives.ReadUInt32LittleEndian(hp.AsSpan(4)));
         Assert.Equal(1, persistence.Updates);
         await session.DisposeAsync();
     }
@@ -344,7 +344,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
             WorldMonsterLifecycleState.Alive, IsWalking: false, DestinationX: 100, DestinationY: 100,
             WorldMonsterEngagementState.InAttackRange, new WorldPlayerTargetReference(CharId, presenceId), CurrentHp: 55, MaxHp: 55);
         var scripted = new ScriptedRuntime { FixedEpoch = epoch, FixedSnapshot = [monster] };
-        var (session, client, stream, persistence, world) = await CreateSessionAsync(scripted, presenceId, Fresh() with { Vitality = 13 });
+        var (session, client, stream, persistence, world) = await CreateSessionAsync(scripted, presenceId, Fresh() with { Vitality = 13, CurrentHp = 45, MaxHp = 45 });
         using var _dispose = client;
         var server = new MapTcpServer(ConfigStore(), new CharServerConnector(ConfigStore()), world, scripted);
 
@@ -363,7 +363,7 @@ public sealed class MonsterAttackNoOpPersistenceTests
 
         Assert.Equal(0, persistence.Updates);
         Assert.Equal(1UL, session.GameplayState!.State.Version);
-        Assert.Equal(40u, session.GameplayState.State.CurrentHp);
+        Assert.Equal(45u, session.GameplayState.State.CurrentHp);
 
         // The cadence slot WAS consumed by the accepted (missed) attack.
         var key = new MonsterCombatKey(MapId, epoch, mobActorId, incarnation);

@@ -879,6 +879,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;
+        // Pinned status_calc_pc(SCO_FIRST) at login: the persisted maxima are rebuilt with the worn equipment before anything
+        // is projected to the client.
+        await ReconcileMaxResourcesAsync(_sessionCancellation.Token);
         _direction = authOk.Direction;
         _headDirection = 0;
         _authAppearance = new PlayerAuthAppearance(
@@ -1712,6 +1715,25 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment, EquipmentWearer())) return equipment.ParamBonus;
         MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; equipment stat bonus is not applied to this status read.");
         return default;
+    }
+
+    // What besides the gameplay state feeds max HP/SP (status_calc_maxhp_pc/maxsp_pc): the currently worn equipment (an
+    // unresolvable loadout contributes nothing, like CurrentEquipmentParamBonus), learned skills and sex.
+    private MaxResourceContext CurrentResourceContext()
+    {
+        EquipmentStats equipment = default;
+        if (_inventory is { } inventory && !_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out equipment, EquipmentWearer())) equipment = default;
+        return new MaxResourceContext(equipment, _gameplayState?.Skills, _sex);
+    }
+
+    // Pinned status_calc_pc after any equipment/skill change: the maxima are rebuilt and the current values only clamped down
+    // (raising a maximum never heals), persisted with the gameplay state. The 0x00B0 max HP/SP resend that follows in pinned is
+    // Protocol-pending-capture (see the Feature 16 plan), so nothing is sent here; the next login projects the new values.
+    internal async Task ReconcileMaxResourcesAsync(CancellationToken cancellationToken)
+    {
+        if (_gameplayState is not { } gameplay) return;
+        var context = CurrentResourceContext();
+        await gameplay.MutateIfChangedAsync(state => _rules.Stats.WithRecalculatedResources(state, context), cancellationToken, reason: "max-resources");
     }
 
     // The wearer equipment scripts read (BaseLevel, readparam, getskilllv) - the authoritative session state.
@@ -2888,7 +2910,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
             var (ratedBaseExp, ratedJobExp) = ExperienceRewardService.ResolveReward(_rates, targetSnapshot.StaticMob.BaseExp, targetSnapshot.StaticMob.JobExp, ExperienceSource.Monster);
             var progressionPersistStartedAt = CombatTiming.Now();
-            var progression = await new CharacterProgressionService(_gameplayState!, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken);
+            var progression = await new CharacterProgressionService(_gameplayState!, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken, CurrentResourceContext());
             progressionPersistMs = CombatTiming.ElapsedMsSince(progressionPersistStartedAt);
             if (progression is null)
             {
@@ -3974,6 +3996,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             MapLogger.Info($"[iRO SKILL] Rejected skill-up charId={_charId} skillId={request.SkillId}");
             return;
         }
+        await ReconcileMaxResourcesAsync(cancellationToken); // passive HP/SP skills (CR_TRUST, HP_MEDITATIO, ...)
 
         // Response fields are derived from the POST-COMMIT state (task section 25/50) - never
         // reconstructed from what the client requested or from the pre-mutation snapshot.
@@ -4017,7 +4040,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
 
         MapLogger.Info($"[iRO STAT] Received stat-up request charId={_charId} stat={stat} amount={request.Amount} currentStatusPoints={gameplayState.State.StatPoints}");
 
-        var result = await gameplayState.IncreaseStatAsync(stat, request.Amount, _rules.Stats, cancellationToken);
+        var result = await gameplayState.IncreaseStatAsync(stat, request.Amount, _rules.Stats, cancellationToken, CurrentResourceContext());
         if (result is null)
         {
             MapLogger.Info($"[iRO STAT] Rejected stat-up charId={_charId} stat={stat}");
@@ -4120,6 +4143,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (equipOutcome.Result != EquipMutationResult.Success || updated is null) return;
 
         _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
+        await ReconcileMaxResourcesAsync(cancellationToken);
         await RefreshPresencePublicAppearanceAsync(cancellationToken);
         await SendSelfWeaponAppearanceAsync(cancellationToken);
     }
@@ -4151,6 +4175,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         if (unequipOutcome.Success && updated is not null)
         {
             _equipment = CharacterEquipmentSnapshot.FromInventory(updated);
+            await ReconcileMaxResourcesAsync(cancellationToken);
             await RefreshPresencePublicAppearanceAsync(cancellationToken);
             MapLogger.Info("[iRO MAP DEBUG] Sending 0x01D7 (post-unequip appearance update).");
             await SendSelfWeaponAppearanceAsync(cancellationToken);
@@ -4623,7 +4648,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     {
         var state = _gameplayState ?? throw new InvalidOperationException("Character gameplay state is not loaded.");
         var (ratedBaseExp, ratedJobExp) = ExperienceRewardService.ResolveReward(_rates, baseExperience, jobExperience, ExperienceSource.Script);
-        var result = await new CharacterProgressionService(state, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken)
+        var result = await new CharacterProgressionService(state, _rules.Experience).AddExperienceAsync(ratedBaseExp, ratedJobExp, cancellationToken, CurrentResourceContext())
             ?? throw new InvalidOperationException("Character progression persistence failed.");
         foreach (var packet in IroCharacterProgressionPackets.Build(_accountId, result)) await WriteAsync(packet, cancellationToken);
     }

@@ -97,9 +97,9 @@ public sealed class MapClientSessionUseItemTests
         return (client, stream, session, run, inventoryPersistence);
     }
 
-    // CurrentHp 40/40, CurrentSp 11/11, every base stat 1.
+    // CurrentHp 60/60, CurrentSp 15/15, every base stat 1.
     // Base level 5: First Aid Box (5) (23484) declares EquipLevelMin 5, and pinned pc_isUseitem refuses a lower level.
-    private static readonly CharacterGameplayState FullHealthNovice = new(CharId, 1, 0, 5, 1, 0, 0, 40, 11, 40, 11, 48, 0, 1, 1, 1, 1, 1, 1);
+    private static readonly CharacterGameplayState FullHealthNovice = new(CharId, 1, 0, 5, 1, 0, 0, 60, 15, 60, 15, 48, 0, 1, 1, 1, 1, 1, 1);
 
     private static CharacterInventorySnapshot Holding(int itemId, uint amount = 2) =>
         new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, itemId, amount, 0, true, 0, 0, 0)]); // clientIndex 2
@@ -543,7 +543,7 @@ public sealed class MapClientSessionUseItemTests
     [Fact]
     public async Task UseItemHealPotion_ConsumesOne_AppliesPinnedItemHealFormula_SendsSpUpdate()
     {
-        var state = FullHealthNovice with { CurrentSp = 2, Intelligence = 30 };
+        var state = FullHealthNovice with { CurrentSp = 2, Intelligence = 30, MaxSp = 19 };
         var (client, stream, session, run, persistence) = await SetupAsync(Holding(11518), state);
         using var _ = client;
 
@@ -558,7 +558,7 @@ public sealed class MapClientSessionUseItemTests
         await AssertNothingElseSentAsync(stream);
 
         Assert.Equal(10u, session.GameplayState!.State.CurrentSp);
-        Assert.Equal(40u, session.GameplayState.State.CurrentHp);
+        Assert.Equal(60u, session.GameplayState.State.CurrentHp);
         var operation = Assert.Single(persistence.Applied);
         var consume = Assert.IsType<RemoveFromRowMutation>(Assert.Single(operation.Mutations));
         Assert.Equal((1u, 1u), (consume.DurableId, consume.Amount));
@@ -578,8 +578,8 @@ public sealed class MapClientSessionUseItemTests
 
         await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
         await ReadExact(stream, 15);
-        Assert.Equal(40u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 5)).AsSpan(4)));
-        Assert.Equal(11u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 7)).AsSpan(4)));
+        Assert.Equal(60u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 5)).AsSpan(4)));
+        Assert.Equal(15u, BinaryPrimitives.ReadUInt32LittleEndian((await ReadParameter(stream, 7)).AsSpan(4)));
 
         await stream.WriteAsync(UseItemRequestPacket(2, AccountId));
         await AssertNothingElseSentAsync(stream);

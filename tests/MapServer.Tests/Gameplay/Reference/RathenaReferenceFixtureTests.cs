@@ -1005,6 +1005,51 @@ public abstract partial class RathenaReferenceConformanceTests(GameplayRegion re
             (Rules.Stats.MaxHp(state, snapshot.Effective.Vitality), Rules.Stats.MaxSp(state, snapshot.Effective.Intelligence)));
     }
 
+    // The JOBL_UPPER / primary-fourth x1.25 of status_calc_maxhp_pc/maxsp_pc: max HP/SP of every fixture job match, including the
+    // trans and fourth jobs the rest of VF-16 still lists as divergent.
+    [Theory]
+    [MemberData(nameof(JobCases))]
+    public void Vf16_JobMaxHpSp_MatchReference_ForEveryJob(int index)
+    {
+        var (state, b) = JobCase(index);
+        // SP table mismatch and the Super Novice line's no-death bonus are separate, still-documented divergences.
+        if ((JobSupport.KnownDivergence(state.JobClass) & (JobSupport.ParameterRules.SpTableMismatch | JobSupport.ParameterRules.NoDeathBonus)) != 0) return;
+        var snapshot = NewStatuses(new FakeTimeProvider()).Capture(() => state);
+        Assert.Equal((b.GetProperty("max_hp").GetUInt32(), b.GetProperty("max_sp").GetUInt32()),
+            (Rules.Stats.MaxHp(state, snapshot.Effective.Vitality), Rules.Stats.MaxSp(state, snapshot.Effective.Intelligence)));
+    }
+
+    // ---- VF-24: equipment and skill max HP/SP ----
+
+    public static TheoryData<int> EquipmentMaxResourceCases => new(Enumerable.Range(0, 12));
+
+    // The VF-24 loadout as inventory rows (the runner flags each item equipped at its own item_db location).
+    private static CharacterInventorySnapshot Vf24Loadout(bool equipped)
+    {
+        if (!equipped) return new([]);
+        int[] items = [5180, 2607, 2301, 1201];
+        uint[] cards = [0, 4022, 4031, 4002];
+        return new([.. items.Select((item, i) => new CharacterInventoryItem((uint)i + 1, (uint)i, item, 1,
+            item == 2607 ? 0x08u : ((IEquippableItemDefinition)GeneratedItems.ById[item]).EquipLocation, true, 0, 0, 0, ItemInstanceDetail.Empty with { Card0 = cards[i] }))]);
+    }
+
+    [Theory]
+    [MemberData(nameof(EquipmentMaxResourceCases))]
+    public void Vf24_EquipmentAndSkillMaxHpSp_MatchReference(int index)
+    {
+        var fixture = RathenaReferenceFixture.LoadCommitted();
+        var c = fixture.Output("VF-24").GetProperty("cases")[index];
+        var state = new CharacterGameplayState(1, 1, (ushort)c.GetProperty("job").GetInt32(), (ushort)c.GetProperty("base_level").GetInt32(), 1,
+            0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 30, 20, 1, 1);
+        var skills = c.GetProperty("skills").GetInt32() == 0 ? CharacterSkillSnapshot.Empty : new CharacterSkillSnapshot(
+            [new(5075, 5, CharSkillFlag.PermGranted), new(363, 10, CharSkillFlag.PermGranted), new(466, 7, CharSkillFlag.PermGranted), new(248, 10, CharSkillFlag.PermGranted)]);
+        Assert.True(Rules.Stats.TryResolveEquipment(Vf24Loadout(c.GetProperty("equipped").GetInt32() == 1), GeneratedItems.ById, out var equipment));
+
+        var (maxHp, maxSp) = Rules.Stats.MaxResources(state, new MaxResourceContext(equipment, skills, Sex: 1));
+
+        Assert.Equal((c.GetProperty("max_hp").GetUInt32(), c.GetProperty("max_sp").GetUInt32()), (maxHp, maxSp));
+    }
+
     // ---- VF-17: job- and weapon-dependent attack motion ----
 
     public static TheoryData<int> AspdCases => new(Enumerable.Range(0, 440));
@@ -1066,7 +1111,7 @@ public sealed class RathenaReferenceFixtureValidationTests
     public void CommittedFixture_IsValidAndAllReferenceExecuted()
     {
         var fixture = RathenaReferenceFixture.LoadCommitted();
-        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22", "VF-23"], fixture.Ids.Order());
+        Assert.Equal(["VF-01", "VF-02", "VF-04", "VF-05", "VF-06", "VF-07", "VF-08", "VF-11", "VF-14", "VF-15", "VF-16", "VF-17", "VF-20", "VF-21", "VF-22", "VF-23", "VF-24"], fixture.Ids.Order());
         Assert.All(fixture.Ids, id => Assert.Equal("ReferenceExecuted", fixture.Evidence(id)));
     }
     [Fact] public void Parse_AcceptsWellFormedFixture() => RathenaReferenceFixture.Parse(Valid());

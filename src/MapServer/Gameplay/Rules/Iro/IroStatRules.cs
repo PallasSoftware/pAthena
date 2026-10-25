@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Generated.Jobs;
 using Athena.Net.MapServer.Generated.GameData.Items;
 using Athena.Net.MapServer.Generated.GameData.Refine;
 using Athena.Net.MapServer.Generated.Progression;
@@ -37,8 +38,8 @@ public sealed class IroStatRules : IStatRules
     // status.cpp:4291-4301 clamps the sum to 0..USHRT_MAX; allocated stats are already capped at pc_maxparameter.
     private static ushort AddBonus(ushort allocated, uint jobBonus) => (ushort)Math.Min((uint)allocated + jobBonus, ushort.MaxValue);
 
-    // status.cpp:4291-4301: base + status + param_bonus (equip flat bonuses) + param_equip, each capped to 0..USHRT_MAX
-    // independently before any derived stat reads it. param_equip (bonus2-5/card/combo territory) is not modeled yet.
+    // status.cpp:4291-4301: base + status + param_bonus + param_equip, each capped to 0..USHRT_MAX independently before any
+    // derived stat reads it. EquipmentParamBonus already carries both halves (item scripts, combos, cards, random options).
     public PrimaryStats ApplyEquipmentBonus(PrimaryStats s, EquipmentParamBonus bonus) => new(
         Cap(s.Strength + bonus.Strength), Cap(s.Agility + bonus.Agility), Cap(s.Vitality + bonus.Vitality),
         Cap(s.Intelligence + bonus.Intelligence), Cap(s.Dexterity + bonus.Dexterity), Cap(s.Luck + bonus.Luck));
@@ -140,24 +141,65 @@ public sealed class IroStatRules : IStatRules
     private static int BaseAtk(int level, int str, int dex, int luk) =>
         Math.Clamp((str * 10 + dex * 10 / 5 + luk * 10 / 3 + level * 10 / 4) / 10, 0, ushort.MaxValue);
 
-    public uint MaxHp(CharacterGameplayState state, int effectiveVitality) => ScaleResource(GeneratedProgressionRegistry.Get(state.JobClass).BaseHp[state.BaseLevel], effectiveVitality);
+    public uint MaxHp(CharacterGameplayState state, int effectiveVitality) =>
+        ScaleResource(GeneratedProgressionRegistry.Get(state.JobClass).BaseHp[state.BaseLevel], effectiveVitality, TierMultiplied(state), 0, 0, 0, 0);
 
-    public uint MaxSp(CharacterGameplayState state, int effectiveIntelligence) => ScaleResource(GeneratedProgressionRegistry.Get(state.JobClass).BaseSp[state.BaseLevel], effectiveIntelligence);
+    public uint MaxSp(CharacterGameplayState state, int effectiveIntelligence) =>
+        ScaleResource(GeneratedProgressionRegistry.Get(state.JobClass).BaseSp[state.BaseLevel], effectiveIntelligence, TierMultiplied(state), 0, 0, 0, 0);
 
-    private static uint ScaleResource(uint table, int stat)
+    // Pinned status_calc_maxhp_pc / status_calc_maxsp_pc (status.cpp:3511-3590), in its order and precision:
+    //   dmax = base[level]; dmax *= 1 + stat*0.01; x1.25 for JOBL_UPPER or a primary fourth job;
+    //   + param_equip stat (item-script/combo VIT or INT: +1 each, cards excluded); + FIX (bMaxHP/SP + skills);
+    //   + dmax * (hprate-100)/100 (sum of bMaxHPrate/SPrate, double); + (int64)(dmax * RATE/100) (statuses, SP skills); >= 1.
+    // shortcut: the taekwon-ranker x3 (fame ranking), SU_POWEROFSEA's summoner-power +3000/+300 and every status-change
+    // FIX/RATE term are not modeled (no fame ranking, summoner power count or those statuses exist yet).
+    public (uint MaxHp, uint MaxSp) MaxResources(CharacterGameplayState state, MaxResourceContext context)
+    {
+        var equipment = context.Equipment;
+        var stats = ApplyEquipmentBonus(BasePrimaryStats(state), equipment.ParamBonus);
+        var job = GeneratedProgressionRegistry.Get(state.JobClass);
+        var tier = TierMultiplied(state);
+        int Skill(ushort id) => context.Skills?.Learned.FirstOrDefault(s => s.SkillId == id)?.Level ?? 0;
+        int Ladder(int level, int perLevel, int atFive) => level > 0 ? perLevel * level + (level > 4 ? atFive : 0) : 0;
+
+        // status_get_hpbonus FIX: bonus.hp, CR_TRUST 200/lv, SU_SPRITEMABLE 1000, SU_POWEROFSEA 1000, NV_BREAKTHROUGH and
+        // NV_TRANSCENDENCE 350/lv (+250 from lv5).
+        var hpFix = equipment.ParamBonus.MaxHp + 200 * Skill(248) + (Skill(5024) > 0 ? 1000 : 0) + (Skill(5037) > 0 ? 1000 : 0)
+            + Ladder(Skill(5075), 350, 250) + Ladder(Skill(5077), 350, 250);
+        // status_get_spbonus FIX: bonus.sp, SL_KAINA 30/lv, RA_RESEARCHTRAP 200+20/lv, WM_LESSON 30/lv, SU_SPRITEMABLE 100,
+        // SU_POWEROFSEA 100, NV_BREAKTHROUGH and NV_TRANSCENDENCE 30/lv (+50 from lv5).
+        var spFix = equipment.ParamBonus.MaxSp + 30 * Skill(466) + (Skill(2248) is var trap and > 0 ? 200 + 20 * trap : 0) + 30 * Skill(2412)
+            + (Skill(5024) > 0 ? 100 : 0) + (Skill(5037) > 0 ? 100 : 0) + Ladder(Skill(5075), 30, 50) + Ladder(Skill(5077), 30, 50);
+        // status_get_spbonus RATE (BL_PC part): HP_MEDITATIO lv, HW_SOULDRAIN 2/lv, RENEWAL BA_MUSICALLESSON (male) or
+        // DC_DANCINGLESSON (female) lv; capped at -100.
+        var spRate = Math.Max(-100, Skill(363) + 2 * Skill(364) + Skill(context.Sex != 0 ? (ushort)315 : (ushort)323));
+
+        return (ScaleResource(job.BaseHp[state.BaseLevel], stats.Vitality, tier, equipment.ParamEquip.Vitality, hpFix, equipment.ParamBonus.MaxHpRate, 0),
+                ScaleResource(job.BaseSp[state.BaseLevel], stats.Intelligence, tier, equipment.ParamEquip.Intelligence, spFix, equipment.ParamBonus.MaxSpRate, spRate));
+    }
+
+    // (sd.class_ & JOBL_UPPER) || pc_is_primary_fourth (pc.hpp:1740: Dragon Knight..Shadow Cross, Imperial Guard..Abyss
+    // Chaser - the fourth jobs of the six first-class lines, FirstMask 1..6).
+    private static bool TierMultiplied(CharacterGameplayState state) =>
+        GeneratedJobEquipClass.TryGet((JobClass)state.JobClass, out var job) && ((job.Tier & 1) != 0 || ((job.Tier & 8) != 0 && job.FirstMask is >= 1 and <= 6));
+
+    private static uint ScaleResource(uint table, int stat, bool tierMultiplied, int paramEquip, int fix, int equipRate, int statusRate)
     {
         double max = table;
         if (stat > 0) max *= 1.0 + stat * 0.01;
-        return max < 1.0 ? 1u : (uint)max;
+        if (tierMultiplied) max *= 1.25;
+        max += paramEquip;
+        max += fix;
+        max += max * equipRate / 100;
+        max += (long)(max * statusRate / 100);
+        return max < 1.0 ? 1u : (uint)Math.Min(max, uint.MaxValue);
     }
 
-    // pc_statusup -> status_calc_pc (SCO_NONE): maxima are rebuilt from the new VIT/INT and the CURRENT values are only
+    // pc_statusup / equipment changes -> status_calc_pc (SCO_NONE): maxima are rebuilt and the CURRENT values are only
     // clamped down to the new maxima - raising a maximum never heals (fixture VF-11).
-    public CharacterGameplayState WithRecalculatedResources(CharacterGameplayState state)
+    public CharacterGameplayState WithRecalculatedResources(CharacterGameplayState state, MaxResourceContext context = default)
     {
-        var stats = BasePrimaryStats(state);
-        var maxHp = MaxHp(state, stats.Vitality);
-        var maxSp = MaxSp(state, stats.Intelligence);
+        var (maxHp, maxSp) = MaxResources(state, context);
         return state with { MaxHp = maxHp, MaxSp = maxSp, CurrentHp = Math.Min(state.CurrentHp, maxHp), CurrentSp = Math.Min(state.CurrentSp, maxSp) };
     }
 
@@ -284,6 +326,7 @@ public sealed class IroStatRules : IStatRules
         // pinned rule (EquipmentBonusParameters); an unsupported script anywhere rejects the whole equipment set, never a
         // silently partial bonus.
         var bonuses = new EquipmentBonusAccumulator();
+        var paramEquip = EquipmentParamBonus.None;
         // Pinned pc_checkequip(sd, equip_bitmask[eqi]) for the getequip* builtins: the worn row on that EQI slot.
         var slotMasks = EquipSlots.Bitmask.Values.ToArray();
         CharacterInventoryItem? EquippedAt(int eqi) => eqi < slotMasks.Length ? equipped.FirstOrDefault(r => (r.Equip & slotMasks[eqi]) != 0) : null;
@@ -308,6 +351,9 @@ public sealed class IroStatRules : IStatRules
             // see ComboResolver) is satisfied runs its shared script with current_equip_item_index = -1 (status.cpp:4060).
             foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
                 EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items, Character: character), bonuses);
+            // Pinned memcpy(param_equip, param_bonus) right after the combo pass (status.cpp:4083): VIT/INT from item scripts,
+            // ammo and combos - not cards or random options - also add +1 max HP/SP each (status_calc_maxhp_pc).
+            paramEquip = bonuses.Param;
             // Cards run with the CARRYING row as current_equip_item_index (status.cpp:4100), so getrefine() inside a card
             // reads that row's refine; the row worn exactly at EQP_HAND_L runs its cards and options as LR_FLAG_WEAPON.
             foreach (var row in equipped)
@@ -328,7 +374,7 @@ public sealed class IroStatRules : IStatRules
         catch (EquipmentBonusResolver.UnsupportedEquipScriptException) { equipment = default; return false; }
 
         equipment = new EquipmentStats(hardDefense, weapon, bonuses.Param, weaponRefineAtk, weaponRefineMatk, armorRefineDefense, weaponOverrefine,
-            bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi, bonuses.ClientEffects);
+            bonuses.Extended, bonuses.Triggered, bonuses.Flat, bonuses.Multi, bonuses.ClientEffects, paramEquip);
         return true;
     }
 

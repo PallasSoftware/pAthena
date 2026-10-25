@@ -26,10 +26,11 @@ public sealed class CharacterProgressionService(CharacterGameplayStateSession st
     public async Task<CharacterProgressionResult?> AddExperienceAsync(
         ulong baseExperience,
         ulong jobExperience,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MaxResourceContext resources = default)
     {
         var before = stateSession.State;
-        var calculation = experienceRules.CalculateProgression(before, baseExperience, jobExperience);
+        var calculation = experienceRules.CalculateProgression(before, baseExperience, jobExperience, resources);
         if (calculation.After == before) return calculation;
         var persisted = await stateSession.MutateAsync(_ => calculation.After, cancellationToken, reason: "experience");
         return persisted is null ? null : calculation with { After = persisted };

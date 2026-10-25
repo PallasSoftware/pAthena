@@ -223,7 +223,7 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 | S4 | Unequip side effects (status cancels, ammo) | Owned elsewhere (status effects) | status-change interactions belong to the SC system |
 | S5 | Bonus model: param/HP/SP family, 150 single-value pc_bonus cases, bonus2..5 | Complete for accumulation | `152866b`: per-case pinned combine rules, lr_flag hands, skill-name sub-keys |
 | S5 | Live consumption in derived stats | Partial | Live: primary stats, bHit, bFlee, bFlee2, bCritical, bDef, bDef2, bMdef2. **Typed (downstream)** for F17/F18: ATK/MATK/ASPD/rates/race-element tables (`EquipmentStats.FlatBonuses/ExtendedBonuses/MultiBonuses`) |
-| S5 | Equipment Max HP/SP (bMaxHP/SP[rate], equip VIT +1 HP) | Partial (Typed, not applied) | `IStatRules.MaxHp/MaxSp` ignore equipment. Next step: pinned status_calc_maxhp_pc/maxsp_pc (JOBL_UPPER x1.25, param_equip VIT, equip vs item rate) applied on equip with a persisted resource recalculation; client resend is the pending 0x00B0 capture |
+| S5 | Equipment Max HP/SP (bMaxHP/SP[rate], equip VIT +1 HP) | Complete (server side); client resend Protocol-pending-capture | `IStatRules.MaxResources`/`WithRecalculatedResources` follow pinned status_calc_maxhp_pc/maxsp_pc: job table x (1+VIT/INT%), JOBL_UPPER/primary-fourth x1.25, + param_equip VIT/INT, + bMaxHP/SP and passive-skill FIX terms, equip rate then status rate, floor 1. Fixture VF-24 (real pinned runs: Novice/Lord Knight/Dragon Knight, Clip+carded gear, CR_TRUST/HP_MEDITATIO/SL_KAINA/NV_BREAKTHROUGH) and VF-16 (now incl. 5 trans jobs) match exactly. `MapClientSession.ReconcileMaxResourcesAsync` rebuilds and persists the maxima (current only clamped down) at login after rental expiry, after equip/unequip, after skill learn; level-up/stat-up use the same context. Refine/grade/switch have no session wiring yet, so their changes are picked up at the next of those triggers. The 0x00B0 max resend stays Protocol-pending-capture (S8) |
 | S5 | Script execution scope (equipment) | Complete for the in-scope constructs | `1cec909`, `7efa739`: locals, if/else, operators, equipment and wearer context, explore-validated branches |
 | S5 | Recalculation on change | Complete | Stats re-resolved from the inventory on every read; equip-time `CanResolveAfter` gate; switch/drop/refine all re-resolve |
 | S6 | Refine, enchant grade (multiplier, upgrade) | Complete | `df77795`, `60ee647`, `4e7841a` |
@@ -238,9 +238,8 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 | S9 | Coverage reporting | Complete | `EquipmentBonusCoverageTests`: NoScript excluded, Live/AwaitingConsumer/NoEffect/Deferred/Unsupported with blocker owners |
 
 ### Remaining genuine Feature 16 gaps (server side)
-1. Equipment Max HP/SP not applied (S5, above).
-2. Equipment-script constructs still unsupported but F16-owned: `eaclass`/`BaseJob`/`BaseClass` (~480 scripts; need a generated MAPID job table), trait-stat `readparam` (~70; traits unmodeled), `getequipweaponlv`/`getequiparmorlv`/`getitempos`, `switch`, string locals.
-3. Map flags (MF_NODROP and the GvG/PvP/zone NoEquip bits) - no map-flag runtime exists.
+1. Equipment-script constructs still unsupported but F16-owned: `eaclass`/`BaseJob`/`BaseClass` (~480 scripts; need a generated MAPID job table), trait-stat `readparam` (~70; traits unmodeled), `getequipweaponlv`/`getequiparmorlv`/`getitempos`, `switch`, string locals.
+2. Map flags (MF_NODROP and the GvG/PvP/zone NoEquip bits) - no map-flag runtime exists.
 
 ### Owned elsewhere (contract named)
 F17: every Feature17Combat parameter in `EquipmentBonusParameters` and all bonus2..5 tables (`EquipmentStats.FlatBonuses`,
