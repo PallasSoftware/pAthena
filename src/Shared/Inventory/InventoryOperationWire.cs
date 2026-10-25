@@ -13,7 +13,9 @@ namespace Athena.Net.Shared.Inventory;
 // Items are never merged by CharServer: the caller names the target row (AddToStack) or asks for a new row (AddNew), because
 // stackability and stack limits are item rules, not persistence.
 
-public enum InventoryContainer : byte { Inventory = 0, Cart = 1, Storage = 2, GuildStorage = 3 }
+// PendingGroundDrop (owner = the character) holds units a player dropped while World's ground item is not yet confirmed - see
+// PendingGroundDrop below. They stay durable player-owned rows until the drop is settled, never deleted on a guess.
+public enum InventoryContainer : byte { Inventory = 0, Cart = 1, Storage = 2, GuildStorage = 3, PendingGroundDrop = 4 }
 
 public enum InventoryOperationKind : byte
 {
@@ -115,8 +117,21 @@ public sealed record UpdateRowMutation(InventoryContainer Container, uint Durabl
 // pinned pc_payzeny-before-anything-else ordering (clif.cpp:22746: zeny is checked/paid before any item is
 // touched). Precondition failure here (stale balance OR insufficient funds) rejects the WHOLE operation; nothing
 // is mutated, matching every other precondition in this contract.
+//
+// RecordPendingDrop / ResolvesPendingDrop make a player drop a transactional outbox (CharacterItemDropService): the operation that
+// moves units into the PendingGroundDrop container also writes this record in the same transaction, and the ONE operation that
+// settles it (units consumed by a confirmed ground item, or returned to the inventory after World fenced the drop) deletes it in
+// its transaction - and is refused (PreconditionFailed) when the record is already gone, so a drop is settled exactly once.
 public sealed record InventoryOperationRequest(uint AccountId, uint CharId, Guid OperationId, InventoryOperationKind Kind, IReadOnlyList<InventoryMutation> Mutations,
-    uint ZenyCost = 0, uint ExpectedZeny = 0);
+    uint ZenyCost = 0, uint ExpectedZeny = 0, PendingGroundDrop? RecordPendingDrop = null, Guid ResolvesPendingDrop = default);
+
+// A player drop between "units left the inventory" and "World confirmed or fenced the ground item". DropId is World's drop
+// idempotency key; WorldEpoch the ground-item simulation epoch observed before the drop; ItemRowId the PendingGroundDrop
+// container row holding the units (assigned by CharServer, 0 in a request).
+public sealed record PendingGroundDrop(Guid DropId, string MapId, ushort X, ushort Y, Guid WorldEpoch, uint ItemRowId = 0)
+{
+    public const int MaxMapIdLength = 64;
+}
 
 public sealed record InventoryMutationResult(uint DurableId, bool Deleted, InventoryItemRow? Row);
 
@@ -142,11 +157,13 @@ public static class InventoryOperationWire
     public const int ResultLength = 4 + 1 + InventoryItemRow.WireLength;
 
     private const byte AddNewTag = 1, AddToStackTag = 2, RemoveTag = 3, UpdateTag = 4;
+    // Optional trailer after the mutations (the total length covers it, so the payload hash does too).
+    private const byte RecordPendingDropTag = 1, ResolvesPendingDropTag = 2;
 
     public static byte[] BuildRequest(InventoryOperationRequest request)
     {
         if (request.Mutations.Count is 0 or > MaxMutations) throw new ArgumentException($"An operation carries 1..{MaxMutations} mutations.", nameof(request));
-        var length = RequestHeaderLength + request.Mutations.Sum(MutationLength);
+        var length = RequestHeaderLength + request.Mutations.Sum(MutationLength) + TrailerLength(request);
         if (length > ushort.MaxValue) throw new ArgumentException("Inventory operation is too large.", nameof(request));
 
         var packet = new byte[length];
@@ -196,7 +213,31 @@ public static class InventoryOperationWire
             }
             offset += MutationLength(mutation);
         }
+        if (request.RecordPendingDrop is { } pending)
+        {
+            var span = packet.AsSpan(offset);
+            span[0] = RecordPendingDropTag;
+            pending.DropId.TryWriteBytes(span[1..], bigEndian: false, out _);
+            pending.WorldEpoch.TryWriteBytes(span[17..], bigEndian: false, out _);
+            BinaryPrimitives.WriteUInt16LittleEndian(span[33..], pending.X);
+            BinaryPrimitives.WriteUInt16LittleEndian(span[35..], pending.Y);
+            span[37] = (byte)pending.MapId.Length;
+            System.Text.Encoding.ASCII.GetBytes(pending.MapId, span[38..]);
+            offset += 38 + pending.MapId.Length;
+        }
+        if (request.ResolvesPendingDrop != Guid.Empty)
+        {
+            packet[offset] = ResolvesPendingDropTag;
+            request.ResolvesPendingDrop.TryWriteBytes(packet.AsSpan(offset + 1), bigEndian: false, out _);
+        }
         return packet;
+    }
+
+    private static int TrailerLength(InventoryOperationRequest request)
+    {
+        if (request.RecordPendingDrop is { MapId: var map } && (map.Length is 0 or > PendingGroundDrop.MaxMapIdLength || map.Any(c => c > 0x7F)))
+            throw new ArgumentException("A pending drop needs a 1..64 character ASCII map id.", nameof(request));
+        return (request.RecordPendingDrop is { } pending ? 38 + pending.MapId.Length : 0) + (request.ResolvesPendingDrop != Guid.Empty ? 17 : 0);
     }
 
     private static int MutationLength(InventoryMutation mutation) => mutation switch
@@ -246,12 +287,33 @@ public static class InventoryOperationWire
                     return false;
             }
         }
+        PendingGroundDrop? recordPendingDrop = null;
+        var resolvesPendingDrop = Guid.Empty;
+        if (offset < packet.Length && packet[offset] == RecordPendingDropTag)
+        {
+            if (offset + 38 > packet.Length) return false;
+            var span = packet[offset..];
+            var mapLength = span[37];
+            if (mapLength is 0 or > PendingGroundDrop.MaxMapIdLength || offset + 38 + mapLength > packet.Length) return false;
+            var mapBytes = span.Slice(38, mapLength);
+            foreach (var b in mapBytes) if (b is 0 or > 0x7F) return false;
+            recordPendingDrop = new PendingGroundDrop(new Guid(span.Slice(1, 16)), System.Text.Encoding.ASCII.GetString(mapBytes),
+                BinaryPrimitives.ReadUInt16LittleEndian(span[33..]), BinaryPrimitives.ReadUInt16LittleEndian(span[35..]), new Guid(span.Slice(17, 16)));
+            offset += 38 + mapLength;
+        }
+        if (offset < packet.Length && packet[offset] == ResolvesPendingDropTag)
+        {
+            if (offset + 17 > packet.Length) return false;
+            resolvesPendingDrop = new Guid(packet.Slice(offset + 1, 16));
+            offset += 17;
+        }
         if (offset != packet.Length) return false;
 
         request = new InventoryOperationRequest(
             BinaryPrimitives.ReadUInt32LittleEndian(packet[4..]), BinaryPrimitives.ReadUInt32LittleEndian(packet[8..]),
             new Guid(packet.Slice(12, 16)), (InventoryOperationKind)packet[28], mutations,
-            BinaryPrimitives.ReadUInt32LittleEndian(packet[30..]), BinaryPrimitives.ReadUInt32LittleEndian(packet[34..]));
+            BinaryPrimitives.ReadUInt32LittleEndian(packet[30..]), BinaryPrimitives.ReadUInt32LittleEndian(packet[34..]),
+            recordPendingDrop, resolvesPendingDrop);
         return true;
     }
 
@@ -366,6 +428,90 @@ public static class InventoryListWire
             list.Add(row);
         }
         rows = list;
+        return true;
+    }
+}
+
+/// <summary>
+/// Lists a character's unsettled player drops (see PendingGroundDrop) so a MapServer can settle them after a crash or outage.
+/// Request: opcode.W accountId.L charId.L. Response: opcode.W length.W result.B charId.L count.B, then per record dropId(16)
+/// epoch(16) x.W y.W itemRowId.L mapLen.B map.
+/// </summary>
+public static class PendingGroundDropListWire
+{
+    public const short RequestOpcode = 0x2b44;
+    public const short ResponseOpcode = 0x2b45;
+    public const int RequestLength = 10;
+    public const int ResponseHeaderLength = 10;
+    public const int MaxRecords = 255;
+
+    public static byte[] BuildRequest(uint accountId, uint charId)
+    {
+        var packet = new byte[RequestLength];
+        BinaryPrimitives.WriteInt16LittleEndian(packet, RequestOpcode);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(2), accountId);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(6), charId);
+        return packet;
+    }
+
+    public static bool TryParseRequest(ReadOnlySpan<byte> packet, out uint accountId, out uint charId)
+    {
+        accountId = charId = 0;
+        if (packet.Length != RequestLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != RequestOpcode) return false;
+        accountId = BinaryPrimitives.ReadUInt32LittleEndian(packet[2..]);
+        charId = BinaryPrimitives.ReadUInt32LittleEndian(packet[6..]);
+        return true;
+    }
+
+    /// <summary>result 0 = ok; any other value carries no records.</summary>
+    public static byte[] BuildResponse(byte result, uint charId, IReadOnlyList<PendingGroundDrop>? records)
+    {
+        var list = result == 0 ? (records ?? []).Take(MaxRecords).ToArray() : [];
+        var length = ResponseHeaderLength + list.Sum(r => 41 + r.MapId.Length);
+        var packet = new byte[length];
+        BinaryPrimitives.WriteInt16LittleEndian(packet, ResponseOpcode);
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(2), (ushort)length);
+        packet[4] = result;
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), charId);
+        packet[9] = (byte)list.Length;
+        var offset = ResponseHeaderLength;
+        foreach (var record in list)
+        {
+            var span = packet.AsSpan(offset);
+            record.DropId.TryWriteBytes(span, bigEndian: false, out _);
+            record.WorldEpoch.TryWriteBytes(span[16..], bigEndian: false, out _);
+            BinaryPrimitives.WriteUInt16LittleEndian(span[32..], record.X);
+            BinaryPrimitives.WriteUInt16LittleEndian(span[34..], record.Y);
+            BinaryPrimitives.WriteUInt32LittleEndian(span[36..], record.ItemRowId);
+            span[40] = (byte)record.MapId.Length;
+            System.Text.Encoding.ASCII.GetBytes(record.MapId, span[41..]);
+            offset += 41 + record.MapId.Length;
+        }
+        return packet;
+    }
+
+    public static bool TryParseResponse(ReadOnlySpan<byte> packet, out byte result, out uint charId, out IReadOnlyList<PendingGroundDrop> records)
+    {
+        result = 1; charId = 0; records = [];
+        if (packet.Length < ResponseHeaderLength || BinaryPrimitives.ReadInt16LittleEndian(packet) != ResponseOpcode) return false;
+        if (BinaryPrimitives.ReadUInt16LittleEndian(packet[2..]) != packet.Length) return false;
+        result = packet[4];
+        charId = BinaryPrimitives.ReadUInt32LittleEndian(packet[5..]);
+        var list = new List<PendingGroundDrop>(packet[9]);
+        var offset = ResponseHeaderLength;
+        for (var i = 0; i < packet[9]; i++)
+        {
+            if (offset + 41 > packet.Length) return false;
+            var span = packet[offset..];
+            var mapLength = span[40];
+            if (mapLength is 0 or > PendingGroundDrop.MaxMapIdLength || offset + 41 + mapLength > packet.Length) return false;
+            list.Add(new PendingGroundDrop(new Guid(span[..16]), System.Text.Encoding.ASCII.GetString(span.Slice(41, mapLength)),
+                BinaryPrimitives.ReadUInt16LittleEndian(span[32..]), BinaryPrimitives.ReadUInt16LittleEndian(span[34..]),
+                new Guid(span.Slice(16, 16)), BinaryPrimitives.ReadUInt32LittleEndian(span[36..])));
+            offset += 41 + mapLength;
+        }
+        if (offset != packet.Length) return false;
+        records = list;
         return true;
     }
 }

@@ -252,6 +252,16 @@ public sealed class OrleansWorldRuntime(IClusterClient clusterClient, IWorldPart
         finally { Duration(started, "poll-ground-item-feed", partitionId); }
     }
 
+    public async Task<WorldGroundItemDropResolutionResult> ResolveGroundItemDropAsync(WorldGroundItemDropResolution resolution, CancellationToken cancellationToken)
+    {
+        var mapId = WorldMapId.Normalize(resolution.MapId);
+        var partitionId = resolver.ResolvePartition(mapId);
+        var started = Stopwatch.GetTimestamp();
+        try { return await Grain(partitionId).ResolveGroundItemDropAsync(resolution with { MapId = mapId }).WaitAsync(cancellationToken); }
+        catch { Failure("resolve-ground-item-drop"); throw; }
+        finally { Duration(started, "resolve-ground-item-drop", partitionId); }
+    }
+
     public Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId, CancellationToken cancellationToken)
     {
         var normalized = WorldMapId.Normalize(mapId);

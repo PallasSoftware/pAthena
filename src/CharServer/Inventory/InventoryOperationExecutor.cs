@@ -101,6 +101,16 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
         var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => tracked.TryGetValue((container, id), out var entity) ? ItemRowMapper.ToRow(entity) : null, character?.Zeny ?? 0);
         if (evaluation.Status != InventoryOperationStatus.Applied) return Respond(evaluation.Status, request, evaluation.FailedIndex);
 
+        // Settling a pending drop requires its outbox record: a second settlement (complete after return, or the reverse) finds
+        // it gone and changes nothing.
+        CharPendingGroundDrop? settled = null;
+        if (request.ResolvesPendingDrop != Guid.Empty)
+        {
+            settled = await db.PendingGroundDrops.FirstOrDefaultAsync(p => p.DropId == request.ResolvesPendingDrop && p.CharId == request.CharId, cancellationToken);
+            if (settled is null) return Respond(InventoryOperationStatus.PreconditionFailed, request, -1);
+            db.PendingGroundDrops.Remove(settled);
+        }
+
         // The engine has already verified character.Zeny == request.ExpectedZeny and >= request.ZenyCost; applying
         // the deduction here, before the first SaveChangesAsync, means it commits atomically with every row change
         // and the operation-log row below - a stale-write race on THIS row would surface as a normal EF
@@ -144,6 +154,16 @@ internal sealed class InventoryOperationExecutor(Func<CharDbContext?> dbFactory,
 
         // First save: the item mutations (assigns generated ids; row-revision conflicts surface here).
         await db.SaveChangesAsync(cancellationToken);
+
+        if (request.RecordPendingDrop is { } pending)
+        {
+            var pendingRow = touched.Single(t => t.Entity is CharContainerItem { Container: (byte)InventoryContainer.PendingGroundDrop } && t.DurableId == 0).Entity;
+            db.PendingGroundDrops.Add(new CharPendingGroundDrop
+            {
+                DropId = pending.DropId, CharId = request.CharId, MapId = pending.MapId, X = pending.X, Y = pending.Y,
+                WorldEpoch = pending.WorldEpoch, ItemRowId = pendingRow.Id, CreatedAt = _time.GetUtcNow().ToUnixTimeSeconds(),
+            });
+        }
 
         var results = touched.Select(t => new InventoryMutationResult(t.Deleted ? t.DurableId : t.Entity.Id, t.Deleted, t.Deleted ? null : ItemRowMapper.ToRow(t.Entity))).ToList();
         var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results, character?.Zeny ?? 0);

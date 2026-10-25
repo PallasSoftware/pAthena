@@ -140,6 +140,49 @@ public sealed class WorldGroundItemFeedTests : IAsyncLifetime
         }
     }
 
+    // ---- drop resolution and fencing (player-drop outbox) ----
+
+    private async Task<WorldGroundItemDropResolutionResult> Resolve(Guid dropId, Guid? epoch = null) =>
+        await Grain.ResolveGroundItemDropAsync(new WorldGroundItemDropResolution("prontera", dropId, epoch ?? (await Grain.GetGroundItemsAsync("prontera")).Epoch.Value));
+
+    [Fact]
+    public async Task ResolvingAnUnknownDrop_FencesIt_SoTheDropCanNeverHappenAfterwards()
+    {
+        var dropId = Guid.NewGuid();
+
+        Assert.Equal(WorldGroundItemDropResolutionStatus.Fenced, (await Resolve(dropId)).Status);
+        Assert.Equal(WorldGroundItemDropStatus.Fenced, (await Drop(dropId)).Status);
+        Assert.Empty((await Grain.GetGroundItemsAsync("prontera")).Items);
+        Assert.Equal(WorldGroundItemDropResolutionStatus.Fenced, (await Resolve(dropId)).Status); // stable answer
+    }
+
+    [Fact]
+    public async Task ResolvablePlayerDrop_IsStillKnownAfterItWasPickedUpAndTheShortDedupWindowPassed()
+    {
+        var dropId = Guid.NewGuid();
+        var resolvable = await Grain.DropGroundItemAsync(new WorldGroundItemDrop("prontera", 150, 180, new WorldGroundItemContent(501, 1), new WorldGroundItemOwnership(null), dropId, Resolvable: true));
+        var plain = await Drop();
+        var reference = await Reference(resolvable.GroundItemId!.Value);
+        var claimId = Guid.NewGuid();
+        await Grain.ClaimGroundItemAsync(new WorldGroundItemClaim(reference, 1001, claimId));
+        await Grain.CompleteGroundItemClaimAsync(new WorldGroundItemClaimReference(reference, claimId));
+
+        Clock.Advance(TimeSpan.FromHours(2)); // past flooritem_lifetime and the 30s dedup window
+
+        var answer = await Resolve(dropId);
+        Assert.Equal((WorldGroundItemDropResolutionStatus.Dropped, resolvable.GroundItemId), (answer.Status, answer.GroundItemId));
+        Assert.NotNull(plain.GroundItemId);
+    }
+
+    [Fact]
+    public async Task UnknownDropAfterTheEpochChanged_IsReportedAsSuch_AndStillFenced()
+    {
+        var dropId = Guid.NewGuid();
+
+        Assert.Equal(WorldGroundItemDropResolutionStatus.EpochChanged, (await Resolve(dropId, Guid.NewGuid())).Status);
+        Assert.Equal(WorldGroundItemDropStatus.Fenced, (await Drop(dropId)).Status);
+    }
+
     public sealed class Configurator : ISiloConfigurator
     {
         public void Configure(ISiloBuilder siloBuilder)

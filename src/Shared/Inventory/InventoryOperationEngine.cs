@@ -19,6 +19,15 @@ public static class InventoryOperationEngine
     {
         badIndex = -1;
         if (request.CharId == 0 || request.AccountId == 0 || request.OperationId == Guid.Empty) return false;
+        // The PendingGroundDrop container only changes through its outbox record: units enter it together with RecordPendingDrop
+        // (exactly one new row) and leave it together with ResolvesPendingDrop - never an orphan pending row or record.
+        var pendingAdds = request.Mutations.Count(m => m is AddNewRowMutation { Container: InventoryContainer.PendingGroundDrop });
+        var pendingTouched = request.Mutations.Any(m => m.Container == InventoryContainer.PendingGroundDrop);
+        if (request.RecordPendingDrop is { } record
+            && (pendingAdds != 1 || record.DropId == Guid.Empty || record.MapId.Length is 0 or > PendingGroundDrop.MaxMapIdLength)) return false;
+        if (request.RecordPendingDrop is null && pendingAdds > 0) return false;
+        if (pendingTouched && request.RecordPendingDrop is null && request.ResolvesPendingDrop == Guid.Empty) return false;
+        if (request.ResolvesPendingDrop != Guid.Empty && request.RecordPendingDrop is not null) return false;
         var seen = new HashSet<(InventoryContainer, uint)>();
         for (var i = 0; i < request.Mutations.Count; i++)
         {

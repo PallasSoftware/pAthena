@@ -22,6 +22,7 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
     // spaces colliding or not, so sharing one counter is the simplest faithful choice).
     private readonly Dictionary<InventoryContainer, List<InventoryItemRow>> _containerRows = [];
     private readonly Dictionary<Guid, (byte[] Hash, InventoryOperationResponse Response)> _log = [];
+    private readonly Dictionary<Guid, PendingGroundDrop> _pendingDrops = [];
     private CharacterInventorySnapshot? _firstRead;
     private uint _nextId;
     private uint _zeny;
@@ -127,8 +128,24 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
     private List<InventoryItemRow> RowsFor(InventoryContainer container) =>
         container == InventoryContainer.Inventory ? _rows : _containerRows.TryGetValue(container, out var rows) ? rows : _containerRows[container] = [];
 
+    public IReadOnlyList<PendingGroundDrop> PendingDrops { get { lock (_gate) return [.. _pendingDrops.Values]; } }
+
+    public Task<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?> GetPendingGroundDropsAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (FailReads) return Task.FromResult<IReadOnlyList<(PendingGroundDrop, InventoryItemRow)>?>(null);
+            var rows = RowsFor(InventoryContainer.PendingGroundDrop);
+            return Task.FromResult<IReadOnlyList<(PendingGroundDrop, InventoryItemRow)>?>(
+                [.. _pendingDrops.Values.Select(record => (record, rows.Single(row => row.DurableId == record.ItemRowId)))]);
+        }
+    }
+
     private InventoryOperationResponse Apply(InventoryOperationRequest request, byte[] hash)
     {
+        // CharServer's outbox rule (InventoryOperationExecutor): settling requires the record, and removes it.
+        if (request.ResolvesPendingDrop != Guid.Empty && !_pendingDrops.ContainsKey(request.ResolvesPendingDrop))
+            return new(InventoryOperationStatus.PreconditionFailed, request.CharId, request.OperationId, -1, []);
         var evaluation = InventoryOperationEngine.Evaluate(request, (container, id) => RowsFor(container).FirstOrDefault(row => row.DurableId == id), _zeny);
         if (evaluation.Status != InventoryOperationStatus.Applied)
             return new(evaluation.Status, request.CharId, request.OperationId, evaluation.FailedIndex, []);
@@ -158,6 +175,12 @@ internal sealed class InMemoryInventoryOperations : ICharacterInventoryOperation
             }
         }
 
+        if (request.ResolvesPendingDrop != Guid.Empty) _pendingDrops.Remove(request.ResolvesPendingDrop);
+        if (request.RecordPendingDrop is { } pending)
+        {
+            var index = request.Mutations.ToList().FindIndex(m => m is AddNewRowMutation { Container: InventoryContainer.PendingGroundDrop });
+            _pendingDrops[pending.DropId] = pending with { ItemRowId = results[index].DurableId };
+        }
         var response = new InventoryOperationResponse(InventoryOperationStatus.Applied, request.CharId, request.OperationId, -1, results, request.ZenyCost > 0 ? _zeny : 0);
         _log[request.OperationId] = (hash, response);
         Applied.Add(request);

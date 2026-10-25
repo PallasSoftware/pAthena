@@ -69,14 +69,28 @@ Recorded in the S1 commit message and this section once measured.
 `CharacterItemDropService` implements pinned `pc_dropitem`/`pc_candrop` for a group-0 player: refuses unknown rows, bad
 amounts, switch-registered rows, rentals, bound rows (no can_trade_bounded) and Trade.NoDrop items below their Override
 level; equipped rows are refused too (divergence: pinned pc_delitem would unequip, the stock client never offers it).
-Ordering across the two authorities never duplicates an item: the durable removal commits first (operation id = drop
-id), then World drops under the same drop id (idempotent); a deterministic World refusal is compensated by granting the
-same instance back under a drop-derived id; an unanswered World drop is retried and otherwise lost (the existing
-ground-item bounded-loss policy). The dropped instance (refine, cards, options, grade, unique id) travels opaquely in
-`WorldGroundItemContent.InstanceRow` and is the pickup template, so a +7 carded weapon comes back intact. Not modeled:
-MF_NODROP (no map-flag runtime), sc.cant.drop, free-cell scatter. Wire (CZ_ITEM_THROW + delete ack): Protocol-pending-
-capture - capture a stock client dropping 3 of a 5-stack of Red Potion (501) and a single Knife, full packet sequence.
-Tests: `CharacterItemDropServiceTests` (12, real TestCluster).
+
+**Crash/outage safety (transactional outbox).** The first version removed the units durably and then asked World to drop
+them; exhausted World retries, a failed compensation or a MapServer crash between the steps destroyed the units, and World
+forgot drop ids 30s after the item left, so a late retry could also duplicate. Now:
+1. One CharServer operation moves the units into a `PendingGroundDrop` container row and writes a `pending_ground_drop`
+   record (drop id, map, cell, observed World epoch) in the same transaction. World is asked for its epoch first, so an
+   unreachable World costs nothing.
+2. World drops under the drop id with `Resolvable: true` (World remembers it for 7 days after the item leaves).
+3. Exactly one settlement operation deletes the record (refused once it is gone): complete (World has the item) or return
+   (World `ResolveGroundItemDropAsync` FENCED the id, so no delayed copy of the request can create it). An ambiguous World
+   answer is always resolved this way, never compensated on a guess.
+4. Unsettled drops are settled by `RecoverAsync` when the character next enters a map (any MapServer).
+A World restart between observation and resolution is settled as lost with the old epoch (the documented ground-item
+restart policy), never returned-and-possibly-duplicated, and logged as an error. Other cross-service item moves were
+checked: pickup (World claim -> CharServer grant keyed by the claim id), monster drops (World-only, idempotent) and every
+single-CharServer operation cannot lose or duplicate units.
+
+The dropped instance (refine, cards, options, grade, unique id) travels opaquely in `WorldGroundItemContent.InstanceRow`
+and is the pickup template. Not modeled: sc.cant.drop, free-cell scatter. Wire (CZ_ITEM_THROW + delete ack):
+Protocol-pending-capture - capture a stock client dropping 3 of a 5-stack of Red Potion (501) and a single Knife.
+Tests: `CharacterItemDropServiceTests` (21, real TestCluster with injected World/CharServer faults, restart and racing
+recovery), World fence tests, SQL Server outbox test.
 
 ## S4 equip switch and shared equip-position rules (implemented, server side)
 
@@ -199,7 +213,7 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 | S2 | Persistence, idempotency, ground claim | Complete | Atomic/idempotent operations incl. EquipSwitch kind 15 (SQL Server executor swap test); exactly-once claim (TestCluster) |
 | S3 | Inventory rules, consumption, containers | Complete | as before (`8b26d27`, `d8a650f`, cooldown/nouse gates) |
 | S3 | Ground items: monster drop, pickup | Complete | `9a436f6`/`06d5b78`; pickup now restores a dropped instance |
-| S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a` `CharacterItemDropService` (12 tests). Not modeled: MF_NODROP (no map-flag runtime), free-cell scatter |
+| S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a`, made crash/outage-safe with a CharServer outbox and World fencing (see S3 player item drop). Not modeled: free-cell scatter |
 | S4 | Eligibility (level, sex, broken, map, class_base) | Complete | `ee032e9`, `d3195dc` |
 | S4 | ClassUpper tier eligibility (pc_isItemClass) | Complete | Was **Missing** (data packed, never enforced); `GeneratedJobEquipClass.Tier` (pinned JOBL_* per MAPID group, generator + deterministic regeneration) and `ItemClassEligibility` (RENEWAL branch) on equip |
 | S3 | Item-use wearer gates (pc_isUseitem sex, elv/elvmax, job, tier) | Complete | Were **Missing** for every usable item (a level-1 Novice could open a level-5 First Aid Box); same `ItemClassEligibility`, and the dead check now covers containers too |

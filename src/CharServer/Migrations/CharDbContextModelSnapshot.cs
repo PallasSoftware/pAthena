@@ -357,6 +357,7 @@ namespace CharServer.Migrations
                         .HasColumnName("wis");
 
                     b.Property<long>("Zeny")
+                        .IsConcurrencyToken()
                         .HasColumnType("bigint")
                         .HasColumnName("zeny");
 
@@ -741,6 +742,53 @@ namespace CharServer.Migrations
                     b.HasIndex("CharId", "CreatedAt");
 
                     b.ToTable("inventory_operation", (string)null);
+                });
+
+            modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharPendingGroundDrop", b =>
+                {
+                    b.Property<Guid>("DropId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("drop_id");
+
+                    b.Property<long>("CharId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("char_id");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("ItemRowId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("item_row_id");
+
+                    b.Property<string>("MapId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .HasColumnName("map_id");
+
+                    b.Property<Guid>("WorldEpoch")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("world_epoch");
+
+                    b.Property<int>("X")
+                        .HasColumnType("int")
+                        .HasColumnName("x");
+
+                    b.Property<int>("Y")
+                        .HasColumnType("int")
+                        .HasColumnName("y");
+
+                    b.HasKey("DropId");
+
+                    b.HasIndex("CharId");
+
+                    b.HasIndex("ItemRowId")
+                        .IsUnique();
+
+                    b.ToTable("pending_ground_drop", (string)null);
                 });
 
             modelBuilder.Entity("Athena.Net.CharServer.Db.Entities.CharQuest", b =>

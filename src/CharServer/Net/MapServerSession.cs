@@ -26,6 +26,7 @@ public sealed class MapServerSession : IDisposable, ISession
         [PacketConstants.MapGameplayStateGetRequest] = MapCharacterGameplayStateProtocol.GetRequestLength,
         [PacketConstants.MapGameplayStateUpdateRequest] = MapCharacterGameplayStateProtocol.UpdateRequestLength,
         [InventoryListWire.RequestOpcode] = InventoryListWire.RequestLength,
+        [PendingGroundDropListWire.RequestOpcode] = PendingGroundDropListWire.RequestLength,
         [PacketConstants.MapSkillListGetRequest] = MapSkillListProtocol.GetRequestLength,
         [PacketConstants.MapSkillLearnRequest] = MapSkillLearnProtocol.RequestLength,
         [PacketConstants.MapSendUserCount] = 6,
@@ -160,6 +161,9 @@ public sealed class MapServerSession : IDisposable, ISession
                 break;
             case InventoryListWire.RequestOpcode:
                 await HandleInventoryListGetAsync(packet, cancellationToken);
+                break;
+            case PendingGroundDropListWire.RequestOpcode:
+                await HandlePendingGroundDropListAsync(packet, cancellationToken);
                 break;
             case PacketConstants.MapSkillListGetRequest:
                 await HandleSkillListGetAsync(packet, cancellationToken);
@@ -588,6 +592,32 @@ public sealed class MapServerSession : IDisposable, ISession
             }
         }
         await WriteAsync(InventoryListWire.BuildResponse(result, charId, container, rows), cancellationToken);
+    }
+
+    // A character's unsettled player drops (outbox records), oldest first, so a MapServer can settle them after a crash or outage.
+    private async Task HandlePendingGroundDropListAsync(byte[] packet, CancellationToken cancellationToken)
+    {
+        if (!PendingGroundDropListWire.TryParseRequest(packet, out var accountId, out var charId)) return;
+        List<PendingGroundDrop>? records = null; byte result = 1;
+        if (IsGameplayStateRequestAuthorized(_authenticated, _ownedCharacters, accountId, charId))
+        {
+            try
+            {
+                await using var db = _dbFactory();
+                if (db is not null)
+                {
+                    records = (await db.PendingGroundDrops.AsNoTracking().Where(p => p.CharId == charId).OrderBy(p => p.CreatedAt).ThenBy(p => p.DropId)
+                            .Take(PendingGroundDropListWire.MaxRecords).ToListAsync(cancellationToken))
+                        .Select(p => new PendingGroundDrop(p.DropId, p.MapId, p.X, p.Y, p.WorldEpoch, p.ItemRowId)).ToList();
+                    result = 0;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                CharLogger.Warning($"Pending ground-drop read rejected reason=database-error charId={charId} error={ex.GetType().Name}.");
+            }
+        }
+        await WriteAsync(PendingGroundDropListWire.BuildResponse(result, charId, records), cancellationToken);
     }
 
     private async Task HandleSkillListGetAsync(byte[] packet, CancellationToken cancellationToken)

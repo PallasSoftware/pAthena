@@ -6,7 +6,8 @@ namespace Athena.Net.World;
 // defaults - same rationale as WorldMonsterTouchedWindowOptions: lets a test inject much shorter
 // durations and observe the real expiry/unresolved-claim-reap/dedup behavior deterministically
 // within a bounded real-wall-clock wait, without the production defaults ever needing to change.
-public sealed record WorldGroundItemOptions(TimeSpan? Lifetime = null, TimeSpan? UnresolvedClaimDeadline = null, TimeSpan? DropDedupWindow = null);
+public sealed record WorldGroundItemOptions(TimeSpan? Lifetime = null, TimeSpan? UnresolvedClaimDeadline = null, TimeSpan? DropDedupWindow = null,
+    TimeSpan? ResolvableDropRetention = null, TimeSpan? FenceRetention = null);
 
 // Feature 16 S2/S3: one map's worth of World-authoritative ground-item state, owned entirely by
 // WorldPartitionGrain (never its own grain - same "one coarse WorldPartitionGrain, no
@@ -81,7 +82,9 @@ internal sealed class WorldGroundItemMapSimulation
     // window is assumed to have no more in-flight retries and is reaped (SweepExpired), so a
     // genuinely NEW drop that happens to reuse the same caller-chosen Guid (extremely unlikely,
     // caller's own responsibility) is never blocked forever.
-    private readonly Dictionary<Guid, (uint GroundItemId, DateTimeOffset DeadlineUtc)> _dropDedup = [];
+    // GroundItemId 0 is a FENCE (ResolveDrop declared the DropId never-dropped; actor ids are never 0). Resolvable marks a player
+    // drop whose record must outlive the item for ResolvableDropRetention, not just DropDedupWindow.
+    private readonly Dictionary<Guid, (uint GroundItemId, DateTimeOffset DeadlineUtc, bool Resolvable)> _dropDedup = [];
 
     // Visibility feed: same bounded-retention, epoch-fenced shape as WorldPlayerMapSimulation's feed.
     private readonly List<WorldGroundItemFeedEntry> _feed = [];
@@ -94,9 +97,17 @@ internal sealed class WorldGroundItemMapSimulation
     private readonly TimeSpan _lifetime;
     private readonly TimeSpan _unresolvedClaimDeadline;
     private readonly TimeSpan _dropDedupWindow;
+    private readonly TimeSpan _resolvableDropRetention;
+    private readonly TimeSpan _fenceRetention;
 
-    public WorldGroundItemMapSimulation(string mapId, TimeProvider timeProvider, TimeSpan? lifetime = null, TimeSpan? unresolvedClaimDeadline = null, TimeSpan? dropDedupWindow = null)
+    public WorldGroundItemMapSimulation(string mapId, TimeProvider timeProvider, TimeSpan? lifetime = null, TimeSpan? unresolvedClaimDeadline = null, TimeSpan? dropDedupWindow = null,
+        TimeSpan? resolvableDropRetention = null, TimeSpan? fenceRetention = null)
     {
+        // A player drop left unsettled by a crash is settled when the character next logs in; a week bounds the memory while
+        // covering any realistic return. A fence must outlive every in-flight copy of the original drop request (Orleans
+        // expires messages after its response timeout, 30s by default).
+        _resolvableDropRetention = resolvableDropRetention ?? TimeSpan.FromDays(7);
+        _fenceRetention = fenceRetention ?? TimeSpan.FromMinutes(10);
         MapId = mapId;
         Epoch = WorldSimulationEpoch.NewEpoch();
         _timeProvider = timeProvider;
@@ -142,7 +153,7 @@ internal sealed class WorldGroundItemMapSimulation
             // comment). A live item's own SweepExpired branch above (Available ExpiresAtUtc or
             // Claimed ClaimDeadlineUtc) is the sole authority for when it actually leaves the world;
             // only THAT event (via Remove) ever starts this record's real countdown.
-            if (_byId.ContainsKey(record.GroundItemId)) continue;
+            if (record.GroundItemId != 0 && _byId.ContainsKey(record.GroundItemId)) continue;
             if (record.DeadlineUtc <= now) (staleDedup ??= []).Add(dropId);
         }
         if (staleDedup is not null) foreach (var dropId in staleDedup) _dropDedup.Remove(dropId);
@@ -160,7 +171,7 @@ internal sealed class WorldGroundItemMapSimulation
         foreach (var (dropId, record) in _dropDedup)
         {
             if (record.GroundItemId != groundItemId) continue;
-            _dropDedup[dropId] = (groundItemId, _timeProvider.GetUtcNow() + _dropDedupWindow);
+            _dropDedup[dropId] = (groundItemId, _timeProvider.GetUtcNow() + (record.Resolvable ? _resolvableDropRetention : _dropDedupWindow), record.Resolvable);
             break;
         }
     }
@@ -184,7 +195,8 @@ internal sealed class WorldGroundItemMapSimulation
     // other call can interleave between the check and this commit).
     public WorldGroundItemDropResult Drop(WorldGroundItemDrop drop, uint groundItemId)
     {
-        if (_dropDedup.TryGetValue(drop.DropId, out var existing)) return new(WorldGroundItemDropStatus.AlreadyDropped, existing.GroundItemId);
+        if (_dropDedup.TryGetValue(drop.DropId, out var existing))
+            return existing.GroundItemId == 0 ? new(WorldGroundItemDropStatus.Fenced, null) : new(WorldGroundItemDropStatus.AlreadyDropped, existing.GroundItemId);
 
         var id = groundItemId;
         var now = _timeProvider.GetUtcNow();
@@ -202,9 +214,18 @@ internal sealed class WorldGroundItemMapSimulation
         // SweepExpired's dedup sweep skips any record whose GroundItemId still exists in _byId,
         // regardless of DeadlineUtc (see that method's own doc comment). Remove overwrites this with
         // the REAL post-removal deadline the instant the item actually leaves the world.
-        _dropDedup[drop.DropId] = (id, now + _dropDedupWindow);
+        _dropDedup[drop.DropId] = (id, now + _dropDedupWindow, drop.Resolvable);
         Append(WorldGroundItemFeedEntryKind.Appeared, id, View(_byId[id]), null);
         return new(WorldGroundItemDropStatus.Dropped, id);
+    }
+
+    // Answers whether DropId produced a ground item; when it did not, fences it so it never can (see _dropDedup).
+    public (bool Dropped, uint? GroundItemId) ResolveDrop(Guid dropId)
+    {
+        SweepExpired();
+        if (_dropDedup.TryGetValue(dropId, out var existing)) return existing.GroundItemId == 0 ? (false, null) : (true, existing.GroundItemId);
+        _dropDedup[dropId] = (0, _timeProvider.GetUtcNow() + _fenceRetention, false);
+        return (false, null);
     }
 
     public WorldGroundItemClaimResult Claim(WorldGroundItemClaim claim)

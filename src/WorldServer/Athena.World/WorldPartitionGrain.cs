@@ -120,7 +120,8 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     private WorldGroundItemMapSimulation GroundItemSimulation(string mapId)
     {
         if (_groundItemSimulations.TryGetValue(mapId, out var simulation)) return simulation;
-        simulation = new WorldGroundItemMapSimulation(mapId, timeProvider, groundItemOptions?.Lifetime, groundItemOptions?.UnresolvedClaimDeadline, groundItemOptions?.DropDedupWindow);
+        simulation = new WorldGroundItemMapSimulation(mapId, timeProvider, groundItemOptions?.Lifetime, groundItemOptions?.UnresolvedClaimDeadline, groundItemOptions?.DropDedupWindow,
+            groundItemOptions?.ResolvableDropRetention, groundItemOptions?.FenceRetention);
         _groundItemSimulations[mapId] = simulation;
         return simulation;
     }
@@ -826,7 +827,9 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
         var mapId = RequireOwnedMap(drop.MapId);
         var simulation = GroundItemSimulation(mapId);
         if (simulation.TryGetExistingDrop(drop.DropId, out var existingId))
-            return new WorldGroundItemDropResult(WorldGroundItemDropStatus.AlreadyDropped, existingId);
+            return existingId == 0
+                ? new WorldGroundItemDropResult(WorldGroundItemDropStatus.Fenced, null)
+                : new WorldGroundItemDropResult(WorldGroundItemDropStatus.AlreadyDropped, existingId);
 
         var groundItemId = await GroundItemActorIdAllocator.AllocateAsync();
         return simulation.Drop(drop with { MapId = mapId }, groundItemId);
@@ -863,6 +866,17 @@ public sealed class WorldPartitionGrain(IWorldPartitionResolver resolver, IMovem
     {
         mapId = RequireOwnedMap(mapId);
         return Task.FromResult(GroundItemSimulation(mapId).BuildSnapshot());
+    }
+
+    // Single uninterruptible grain turn (no await), so it serializes against DropGroundItemAsync's commit for the same map.
+    public Task<WorldGroundItemDropResolutionResult> ResolveGroundItemDropAsync(WorldGroundItemDropResolution resolution)
+    {
+        var simulation = GroundItemSimulation(RequireOwnedMap(resolution.MapId));
+        var (dropped, groundItemId) = simulation.ResolveDrop(resolution.DropId);
+        var status = dropped ? WorldGroundItemDropResolutionStatus.Dropped
+            : simulation.Epoch.Value == resolution.ExpectedEpoch ? WorldGroundItemDropResolutionStatus.Fenced
+            : WorldGroundItemDropResolutionStatus.EpochChanged;
+        return Task.FromResult(new WorldGroundItemDropResolutionResult(status, groundItemId));
     }
 
     public Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId)

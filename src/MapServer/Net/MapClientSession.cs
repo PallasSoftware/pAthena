@@ -869,6 +869,13 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // inventory read - never a second independent CharServer fetch.
         _inventoryService = new CharacterInventoryService(authOk.AccountId, authOk.CharId, _inventoryOperations, inventoryRead.Snapshot!, _rules.Inventory, GeneratedItems.ById, CurrentInventoryLimits);
         await ExpireDueRentalsAsync(_sessionCancellation.Token);
+        // Settle player drops a crash or outage left unsettled (CharacterItemDropService outbox) before the inventory is projected,
+        // so units World never received are back in the list the client gets.
+        if (_distributedWorld is not null)
+        {
+            foreach (var (dropId, outcome) in await new CharacterItemDropService(_inventoryService, _distributedWorld).RecoverAsync(GeneratedItems.ById, _sessionCancellation.Token))
+                MapLogger.Info($"[ITEM DROP] Recovered pending drop {dropId} charId={authOk.CharId}: {outcome}.");
+        }
         _equipment = CharacterEquipmentSnapshot.FromInventory(_inventoryService.Snapshot);
         _characterName = authOk.CharacterName;
         _sex = authOk.Sex;

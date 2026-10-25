@@ -19,6 +19,7 @@ public sealed class CharDbContext : DbContext
     public DbSet<CharQuest> Quests => Set<CharQuest>();
     public DbSet<CharContainerItem> ContainerItems => Set<CharContainerItem>();
     public DbSet<CharInventoryOperation> InventoryOperations => Set<CharInventoryOperation>();
+    public DbSet<CharPendingGroundDrop> PendingGroundDrops => Set<CharPendingGroundDrop>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -208,6 +209,20 @@ public sealed class CharDbContext : DbContext
         operations.Property(o => o.PayloadHash).HasColumnName("payload_hash").HasMaxLength(32);
         operations.Property(o => o.ResponseBytes).HasColumnName("response_bytes");
         operations.Property(o => o.CreatedAt).HasColumnName("created_at");
+
+        var pendingDrops = modelBuilder.Entity<CharPendingGroundDrop>();
+        pendingDrops.ToTable(_tableNames.PendingGroundDropTable);
+        pendingDrops.HasKey(p => p.DropId);
+        pendingDrops.HasIndex(p => p.CharId);
+        pendingDrops.HasIndex(p => p.ItemRowId).IsUnique();
+        pendingDrops.Property(p => p.DropId).HasColumnName("drop_id").ValueGeneratedNever();
+        pendingDrops.Property(p => p.CharId).HasColumnName("char_id");
+        pendingDrops.Property(p => p.MapId).HasColumnName("map_id").HasMaxLength(64).IsUnicode(false);
+        pendingDrops.Property(p => p.X).HasColumnName("x");
+        pendingDrops.Property(p => p.Y).HasColumnName("y");
+        pendingDrops.Property(p => p.WorldEpoch).HasColumnName("world_epoch");
+        pendingDrops.Property(p => p.ItemRowId).HasColumnName("item_row_id");
+        pendingDrops.Property(p => p.CreatedAt).HasColumnName("created_at");
 
         var skills = modelBuilder.Entity<CharSkill>();
         skills.ToTable(_tableNames.SkillTable);

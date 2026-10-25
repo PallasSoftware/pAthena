@@ -82,6 +82,9 @@ public interface IWorldPartitionGrain : IGrainWithStringKey
     // The per-map sequenced ground-item visibility feed (same epoch/sequence/snapshot-bootstrap shape as
     // PollPlayerFeedAsync): every MapServer replica polls it so a bystander on ANY replica learns a drop appeared or vanished.
     Task<WorldGroundItemFeedPage> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId);
+    // Settles an ambiguous drop: answers Dropped when this DropId was dropped, otherwise FENCES it (a late or retried drop with
+    // this id is refused from now on) and answers Fenced - so the caller may safely return the units to the player.
+    Task<WorldGroundItemDropResolutionResult> ResolveGroundItemDropAsync(WorldGroundItemDropResolution resolution);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -135,9 +138,13 @@ public sealed record WorldGroundItemDrop(
     // monster-death drop resolution retried after a transient RPC failure) must never create two
     // ground items for one logical drop. Deterministic and caller-chosen (e.g. derived from the
     // killed monster's WorldMonsterLifeReference + drop-table index), never a fresh Guid per retry.
-    [property: Id(5)] Guid DropId);
+    [property: Id(5)] Guid DropId,
+    // A player drop backed by a CharServer outbox record (see ResolveGroundItemDropAsync): World keeps remembering this
+    // DropId long after the item leaves the world, so a late resolution can still tell "it was dropped" from "it never was".
+    [property: Id(6)] bool Resolvable = false);
 
-public enum WorldGroundItemDropStatus { Dropped, AlreadyDropped, MapNotFound }
+// Fenced: ResolveGroundItemDropAsync already declared this DropId never-dropped; it can never be dropped afterwards.
+public enum WorldGroundItemDropStatus { Dropped, AlreadyDropped, MapNotFound, Fenced }
 
 [GenerateSerializer]
 public sealed record WorldGroundItemDropResult(
@@ -226,6 +233,23 @@ public sealed record WorldGroundItemSnapshot(
     [property: Id(0)] string MapId,
     [property: Id(1)] WorldSimulationEpoch Epoch,
     [property: Id(2)] IReadOnlyList<WorldGroundItemView> Items);
+
+[GenerateSerializer]
+public sealed record WorldGroundItemDropResolution(
+    [property: Id(0)] string MapId,
+    [property: Id(1)] Guid DropId,
+    // The ground-item epoch the caller observed before dropping. If the simulation has since been rebuilt (World restart), an
+    // unknown DropId cannot be told apart from "dropped, then lost with the old epoch" - see EpochChanged.
+    [property: Id(2)] Guid ExpectedEpoch);
+
+// Dropped: the DropId produced a ground item (GroundItemId). Fenced: it never did and now never will. EpochChanged: unknown in a
+// rebuilt simulation; it is fenced too, but whether the old epoch dropped it is unknowable.
+public enum WorldGroundItemDropResolutionStatus { Dropped, Fenced, EpochChanged }
+
+[GenerateSerializer]
+public sealed record WorldGroundItemDropResolutionResult(
+    [property: Id(0)] WorldGroundItemDropResolutionStatus Status,
+    [property: Id(1)] uint? GroundItemId);
 
 // Ground-item visibility feed. Appeared carries the full view; Removed only the id and why it left. A claim or a released
 // claim is not a visibility change (the item stays physically present until Complete), so neither appends an entry.

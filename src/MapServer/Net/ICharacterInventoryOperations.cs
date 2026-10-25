@@ -14,4 +14,9 @@ public interface ICharacterInventoryOperations
     // Sends one operation. Returns null when no answer arrived (disconnected, timeout): the outcome is then UNKNOWN - the operation may
     // or may not have been applied - and only re-sending the same request can find out.
     Task<InventoryOperationResponse?> ExecuteAsync(InventoryOperationRequest request, CancellationToken cancellationToken);
+
+    // The character's unsettled player drops (outbox records) with the PendingGroundDrop row holding each one's units; null when
+    // CharServer could not answer. Default: no outbox (narrow test doubles that never drop items).
+    Task<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?> GetPendingGroundDropsAsync(uint accountId, uint characterId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?>([]);
 }

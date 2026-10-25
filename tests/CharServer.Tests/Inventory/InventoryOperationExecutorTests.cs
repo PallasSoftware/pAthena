@@ -115,6 +115,43 @@ public sealed class InventoryOperationExecutorTests
         Assert.Equal([(0u, 0x2u), (0x2u, 0u)], (await fixture.InventoryAsync()).Select(r => (r.Equip, r.EquipSwitch)));
     }
 
+    // The player-drop outbox against real SQL Server: the units move into a PendingGroundDrop row and the record is written in
+    // one transaction; exactly one settlement (complete or return) deletes it; a second settlement changes nothing.
+    [SqlServerFact]
+    public async Task PendingDrop_IsRecordedAtomically_AndSettledExactlyOnce()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var seeded = await fixture.RunAsync(fixture.Op(AddNew(501, 5)));
+        var potion = seeded.Results[0].Row!;
+        var pending = new PendingGroundDrop(Guid.NewGuid(), "prontera", 150, 180, Guid.NewGuid());
+
+        var recorded = await fixture.RunAsync(new InventoryOperationRequest(AccountId, fixture.CharId, pending.DropId, InventoryOperationKind.Drop,
+            [new RemoveFromRowMutation(InventoryContainer.Inventory, potion.DurableId, 2, 5, potion.Revision),
+             new AddNewRowMutation(InventoryContainer.PendingGroundDrop, InventoryItemRow.New(501, 2))], RecordPendingDrop: pending));
+        Assert.Equal(InventoryOperationStatus.Applied, recorded.Status);
+        var pendingRow = recorded.Results[1].Row!;
+        await using (var db = fixture.Database.NewContext())
+        {
+            var record = Assert.Single(await db.PendingGroundDrops.AsNoTracking().ToListAsync());
+            Assert.Equal((pending.DropId, "prontera", (ushort)150, (ushort)180, pendingRow.DurableId), (record.DropId, record.MapId, record.X, record.Y, record.ItemRowId));
+        }
+
+        InventoryOperationRequest Settle(Guid opId) => new(AccountId, fixture.CharId, opId, InventoryOperationKind.Drop,
+            [new RemoveFromRowMutation(InventoryContainer.PendingGroundDrop, pendingRow.DurableId, 2, 2, pendingRow.Revision),
+             new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(501, 2))], ResolvesPendingDrop: pending.DropId);
+        var first = await fixture.RunAsync(Settle(Guid.NewGuid()));
+        var second = await fixture.RunAsync(Settle(Guid.NewGuid())); // a racing settler with its own id
+
+        Assert.Equal(InventoryOperationStatus.Applied, first.Status);
+        Assert.Equal(InventoryOperationStatus.PreconditionFailed, second.Status);
+        Assert.Equal(5u, (uint)(await fixture.InventoryAsync()).Sum(i => i.Amount));
+        await using (var db = fixture.Database.NewContext())
+        {
+            Assert.Empty(await db.PendingGroundDrops.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.ContainerItems.AsNoTracking().Where(i => i.Container == (byte)InventoryContainer.PendingGroundDrop).ToListAsync());
+        }
+    }
+
     [SqlServerFact]
     public async Task RepeatedOperationId_IsReplayedFromTheLog_AndAppliesNothingTwice()
     {

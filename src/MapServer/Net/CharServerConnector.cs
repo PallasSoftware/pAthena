@@ -38,6 +38,7 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterGameplayState?>> _pendingGameplayUpdates = new();
     private readonly ConcurrentDictionary<(uint CharId, InventoryContainer Container), TaskCompletionSource<(bool Succeeded, IReadOnlyList<InventoryItemRow> Rows)>> _pendingInventoryReads = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<InventoryOperationResponse?>> _pendingInventoryOperations = new();
+    private readonly ConcurrentDictionary<uint, TaskCompletionSource<IReadOnlyList<PendingGroundDrop>?>> _pendingDropReads = new();
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterSkillReadResult>> _pendingSkillReads = new();
     private readonly ConcurrentDictionary<uint, (TaskCompletionSource<CharacterSkillLearnResult?> Pending, ushort SkillId)> _pendingSkillLearns = new();
     private readonly MapServerServiceTokenProvider _serviceTokenProvider;
@@ -196,6 +197,25 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
         try { await connection.WriteAsync(InventoryListWire.BuildGetRequest(accountId, characterId, container), cancellationToken); return await pending.Task; }
         finally { _pendingInventoryReads.TryRemove(key, out _); }
+    }
+
+    public async Task<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?> GetPendingGroundDropsAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
+    {
+        var connection = _connection; if (connection is null) return null;
+        var pending = new TaskCompletionSource<IReadOnlyList<PendingGroundDrop>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingDropReads.TryAdd(characterId, pending)) return null;
+        IReadOnlyList<PendingGroundDrop>? records;
+        using (cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken)))
+        {
+            try { await connection.WriteAsync(PendingGroundDropListWire.BuildRequest(accountId, characterId), cancellationToken); records = await pending.Task; }
+            finally { _pendingDropReads.TryRemove(characterId, out _); }
+        }
+        if (records is null) return null;
+        if (records.Count == 0) return [];
+        var (succeeded, rows) = await GetContainerAsync(accountId, characterId, InventoryContainer.PendingGroundDrop, cancellationToken);
+        if (!succeeded) return null;
+        var byId = rows.ToDictionary(row => row.DurableId);
+        return [.. records.Where(record => byId.ContainsKey(record.ItemRowId)).Select(record => (record, byId[record.ItemRowId]))];
     }
 
     /// <summary>How long one attempt waits for CharServer's answer before the outcome is treated as unknown (null).</summary>
@@ -407,6 +427,8 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
                 return HandleGameplayStateResponse(packet, packetType, _pendingGameplayUpdates);
             case InventoryListWire.ResponseOpcode:
                 return HandleInventoryListGetResponse(packet);
+            case PendingGroundDropListWire.ResponseOpcode:
+                return HandlePendingGroundDropListResponse(packet);
             case InventoryOperationWire.ResponseOpcode:
                 return HandleInventoryOperationResponse(packet);
             case PacketConstants.MapSkillListGetResponse:
@@ -545,6 +567,13 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
     {
         if (!InventoryListWire.TryParseResponse(packet, out var result, out var charId, out var container, out var rows)) return false;
         if (_pendingInventoryReads.TryRemove((charId, container), out var pending)) pending.TrySetResult((result == 0, rows));
+        return true;
+    }
+
+    private bool HandlePendingGroundDropListResponse(byte[] packet)
+    {
+        if (!PendingGroundDropListWire.TryParseResponse(packet, out var result, out var charId, out var records)) return false;
+        if (_pendingDropReads.TryRemove(charId, out var pending)) pending.TrySetResult(result == 0 ? records : null);
         return true;
     }
 
@@ -738,6 +767,7 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         [PacketConstants.MapAuthOk] = 4,
         [InventoryListWire.ResponseOpcode] = InventoryListWire.ResponseHeaderLength,
         [InventoryOperationWire.ResponseOpcode] = InventoryOperationWire.ResponseHeaderLength,
+        [PendingGroundDropListWire.ResponseOpcode] = PendingGroundDropListWire.ResponseHeaderLength,
         [PacketConstants.MapSkillListGetResponse] = MapSkillListProtocol.ResponseHeaderLength,
     };
 

@@ -106,7 +106,9 @@ public sealed class CharacterInventoryService
         Func<CharacterInventorySnapshot, IReadOnlyList<InventoryMutation>?> plan,
         CancellationToken cancellationToken,
         Guid? operationId = null,
-        uint expectedZeny = 0) => await ExecuteAsync(kind, snapshot => (plan(snapshot), 0u), cancellationToken, operationId, expectedZeny);
+        uint expectedZeny = 0,
+        PendingGroundDrop? recordPendingDrop = null,
+        Guid resolvesPendingDrop = default) => await ExecuteAsync(kind, snapshot => (plan(snapshot), 0u), cancellationToken, operationId, expectedZeny, recordPendingDrop, resolvesPendingDrop);
 
     /// <summary>
     /// Overload for an operation whose zeny cost is itself decided BY the plan, against the SAME current
@@ -120,7 +122,9 @@ public sealed class CharacterInventoryService
         Func<CharacterInventorySnapshot, (IReadOnlyList<InventoryMutation>? Mutations, uint ZenyCost)> plan,
         CancellationToken cancellationToken,
         Guid? operationId = null,
-        uint expectedZeny = 0)
+        uint expectedZeny = 0,
+        PendingGroundDrop? recordPendingDrop = null,
+        Guid resolvesPendingDrop = default)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -131,7 +135,7 @@ public sealed class CharacterInventoryService
             var (mutations, zenyCost) = plan(Snapshot);
             if (mutations is null || mutations.Count == 0) return new(InventoryChangeStatus.Rejected, Snapshot, [], Guid.Empty);
 
-            var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations, zenyCost, expectedZeny);
+            var request = new InventoryOperationRequest(_accountId, _charId, operationId ?? Guid.NewGuid(), kind, mutations, zenyCost, expectedZeny, recordPendingDrop, resolvesPendingDrop);
             return await SendAsync(request, cancellationToken);
         }
         finally { _gate.Release(); }
@@ -200,6 +204,10 @@ public sealed class CharacterInventoryService
         }
         finally { _gate.Release(); }
     }
+
+    /// <summary>This character's unsettled player drops with their PendingGroundDrop rows (see CharacterItemDropService); null if unreadable.</summary>
+    public Task<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?> GetPendingGroundDropsAsync(CancellationToken cancellationToken) =>
+        _operations.GetPendingGroundDropsAsync(_accountId, _charId, cancellationToken);
 
     /// <summary>Discards the cache and reads the authoritative rows again (after a conflict, an in-doubt operation or a reconnect).</summary>
     public async Task<bool> ReloadAsync(CancellationToken cancellationToken)

@@ -79,6 +79,8 @@ public interface IWorldRuntime
         throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
     Task<WorldGroundItemSnapshot> GetGroundItemsAsync(string mapId, CancellationToken cancellationToken) =>
         throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
+    Task<WorldGroundItemDropResolutionResult> ResolveGroundItemDropAsync(WorldGroundItemDropResolution resolution, CancellationToken cancellationToken) =>
+        throw new NotSupportedException($"{GetType().Name} does not implement ground-item RPCs.");
     // The ground-item visibility feed (IWorldPartitionGrain.PollGroundItemFeedAsync). Null means "this runtime has no
     // ground-item feed" - the default for the narrow test doubles, so the tick loop simply skips the poll for them.
     Task<WorldGroundItemFeedPage?> PollGroundItemFeedAsync(WorldGroundItemFeedCursor? cursor, string mapId, CancellationToken cancellationToken) =>

@@ -206,4 +206,47 @@ public sealed class InventoryWireAndEngineTests
         Assert.Equal(InventoryOperationStatus.Invalid, InventoryOperationEngine.Evaluate(Op(new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(501, 0))), Rows()).Status);
         Assert.Equal(InventoryOperationStatus.Invalid, InventoryOperationEngine.Evaluate(new(0, 20, Id, InventoryOperationKind.Add, [new AddNewRowMutation(InventoryContainer.Inventory, InventoryItemRow.New(501, 1))]), Rows()).Status);
     }
+
+    // ---- player-drop outbox (PendingGroundDrop) ----
+
+    private static readonly PendingGroundDrop Pending = new(Guid.Parse("aaaaaaaa-0000-0000-0000-000000000001"), "prontera", 150, 180, Guid.Parse("bbbbbbbb-0000-0000-0000-000000000002"));
+
+    private static InventoryOperationRequest Record(params InventoryMutation[] mutations) => new(10, 20, Id, InventoryOperationKind.Drop, mutations, RecordPendingDrop: Pending);
+
+    [Fact]
+    public void Request_RoundTripsThePendingDropTrailers()
+    {
+        var record = Record(new RemoveFromRowMutation(InventoryContainer.Inventory, 5, 2, 5, 1), new AddNewRowMutation(InventoryContainer.PendingGroundDrop, FullRow() with { DurableId = 0 }));
+        var settle = new InventoryOperationRequest(10, 20, Id, InventoryOperationKind.Drop, [new RemoveFromRowMutation(InventoryContainer.PendingGroundDrop, 9, 2, 2, 1)], ResolvesPendingDrop: Pending.DropId);
+
+        Assert.True(InventoryOperationWire.TryParseRequest(InventoryOperationWire.BuildRequest(record), out var parsedRecord));
+        Assert.True(InventoryOperationWire.TryParseRequest(InventoryOperationWire.BuildRequest(settle), out var parsedSettle));
+        Assert.Equal(Pending, parsedRecord.RecordPendingDrop);
+        Assert.Equal(Pending.DropId, parsedSettle.ResolvesPendingDrop);
+        Assert.Null(parsedSettle.RecordPendingDrop);
+    }
+
+    [Fact]
+    public void PendingContainer_ChangesOnlyThroughItsOutboxRecord()
+    {
+        var add = new AddNewRowMutation(InventoryContainer.PendingGroundDrop, FullRow() with { DurableId = 0 });
+        var remove = new RemoveFromRowMutation(InventoryContainer.PendingGroundDrop, 9, 1, 1, 1);
+
+        Assert.True(InventoryOperationEngine.IsWellFormed(Record(add), out _));
+        Assert.False(InventoryOperationEngine.IsWellFormed(Record(), out _));        // a record with no pending row
+        Assert.False(InventoryOperationEngine.IsWellFormed(Record(add, add), out _)); // two pending rows for one record
+        Assert.False(InventoryOperationEngine.IsWellFormed(new(10, 20, Id, InventoryOperationKind.Drop, [add]), out _));    // orphan pending row
+        Assert.False(InventoryOperationEngine.IsWellFormed(new(10, 20, Id, InventoryOperationKind.Drop, [remove]), out _)); // unsettled removal
+        Assert.True(InventoryOperationEngine.IsWellFormed(new(10, 20, Id, InventoryOperationKind.Drop, [remove], ResolvesPendingDrop: Pending.DropId), out _));
+    }
+
+    [Fact]
+    public void PendingDropList_RoundTrips()
+    {
+        var records = new[] { Pending with { ItemRowId = 9 }, Pending with { DropId = Guid.NewGuid(), MapId = "izlude", ItemRowId = 10 } };
+
+        Assert.True(PendingGroundDropListWire.TryParseResponse(PendingGroundDropListWire.BuildResponse(0, 20, records), out var result, out var charId, out var parsed));
+        Assert.Equal((0, 20u), (result, charId));
+        Assert.Equal(records, parsed);
+    }
 }
