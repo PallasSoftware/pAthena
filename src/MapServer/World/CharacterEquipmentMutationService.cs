@@ -370,8 +370,12 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
         // pc_checkequip(sd, position, true) == -1: nothing worn on any slot of the target mask (pc.cpp:7472-7490).
         if (!EquipSlots.Bitmask.Values.Any(slot => (position & slot) != 0 && work.Occupant(slot, switchSet: false) is not null))
         {
+            // Pinned removes the row from the switch set, then ignores pc_equipitem's result: a row that cannot be worn (e.g. after
+            // a job change) is simply left in neither set. TryEquip validates before it changes anything, so a failure leaves no
+            // partial state.
             work.Set(target, equipSwitch: 0);
-            return TryEquip(work, work.Current(target), position, wearer, toSwitch: false, out _);
+            TryEquip(work, work.Current(target), position, wearer, toSwitch: false, out _);
+            return EquipMutationResult.Success;
         }
 
         // Unequip everything worn on the target mask, remembering each row's own worn mask (pc.cpp:12517-12534).
@@ -392,8 +396,7 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if ((allPosition & slot) == 0 || work.Occupant(slot, switchSet: true) is not { } exchange) continue;
             var exchangePosition = exchange.Details.EquipSwitch;
             work.Set(exchange, equipSwitch: 0);
-            var result = TryEquip(work, work.Current(exchange), exchangePosition, wearer, toSwitch: false, out _);
-            if (result != EquipMutationResult.Success) return result;
+            TryEquip(work, work.Current(exchange), exchangePosition, wearer, toSwitch: false, out _); // result ignored, as pinned
         }
 
         // The rows taken off become the new loadout at the positions they were worn at (pc.cpp:12556-12575).

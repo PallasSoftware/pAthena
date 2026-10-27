@@ -32,7 +32,7 @@ public sealed class CharacterItemDropService(CharacterInventoryService inventory
     // Dropped: on the ground. Returned: World refused it, the units are back in the inventory. Pending: the units are held in
     // the outbox and will be settled by RecoverAsync. WorldUnavailable/PersistenceFailed: nothing changed. LostToWorldRestart:
     // settled as lost because World restarted before confirming it (see the type comment).
-    public enum DropResult { Dropped, UnknownRow, InvalidAmount, Equipped, RegisteredForEquipSwitch, NotDroppable, NoDropMap, PersistenceFailed, WorldUnavailable, Returned, Pending, LostToWorldRestart }
+    public enum DropResult { Dropped, UnknownRow, InvalidAmount, RegisteredForEquipSwitch, NotDroppable, NoDropMap, PersistenceFailed, WorldUnavailable, Returned, Pending, LostToWorldRestart }
 
     // Pinned conf/groups.yml group 0 (every new account): level 0, can_trade, no can_trade_bounded.
     private const int PlayerGroupLevel = 0;
@@ -149,8 +149,8 @@ public sealed class CharacterItemDropService(CharacterInventoryService inventory
     {
         if (row is null || !items.TryGetValue(row.ItemId, out var definition)) return DropResult.UnknownRow;
         if (amount == 0 || amount > row.Amount) return DropResult.InvalidAmount;
-        // Divergence: pinned pc_delitem would unequip a worn row; the stock client never offers it, so it is refused here.
-        if (row.Equip != 0) return DropResult.Equipped;
+        // A worn row is droppable: pinned pc_dropitem has no equip check, and pc_delitem unequips the row once its amount reaches
+        // 0 (removing the whole row here); a partial ammo drop leaves the remainder worn. The floor instance is unequipped.
         if (row.Details.EquipSwitch != 0) return DropResult.RegisteredForEquipSwitch;
         if (row.Details.ExpireTime != 0 || row.Bound != 0) return DropResult.NotDroppable; // rental; bound without can_trade_bounded
         if (definition.Meta is { NoDrop: true } meta && PlayerGroupLevel < meta.TradeOverride) return DropResult.NotDroppable;

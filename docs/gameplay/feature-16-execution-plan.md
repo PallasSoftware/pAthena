@@ -68,7 +68,7 @@ Recorded in the S1 commit message and this section once measured.
 
 `CharacterItemDropService` implements pinned `pc_dropitem`/`pc_candrop` for a group-0 player: refuses unknown rows, bad
 amounts, switch-registered rows, rentals, bound rows (no can_trade_bounded) and Trade.NoDrop items below their Override
-level; equipped rows are refused too (divergence: pinned pc_delitem would unequip, the stock client never offers it).
+level. A worn row is droppable as in pinned (pc_dropitem has no equip check; pc_delitem unequips at amount 0); the only remaining difference is that a drop returned after World refused or fenced it comes back unequipped (re-wearing it could collide with what was put on meanwhile).
 
 **Crash/outage safety (transactional outbox).** The first version removed the units durably and then asked World to drop
 them; exhausted World retries, a failed compensation or a MapServer crash between the steps destroyed the units, and World
@@ -101,8 +101,9 @@ skill_db Cooldown 10000 ms) and `SwitchSingleAsync` (clif_parse_equipswitch_requ
 `InventoryItemRow.EquipSwitch` column only; the pinned `equip_switch_index[]` cache is derived from rows on every plan (as
 pc_load does), so CharServer stays the single durable owner. Every operation is ONE `InventoryOperationKind.EquipSwitch` (15)
 batch through the existing operation-id/revision contract: atomic, idempotent under lost acks, stale writers rejected.
-Deliberate divergence (stricter than pinned): pc_equipswitch ignores a failing pc_equipitem and silently drops that row from
-both sets; here any rejected step rejects the whole switch and nothing changes. Storage/cart transfer refuses a registered
+Parity with pinned pc_equipswitch (was stricter): a registered row whose pc_equipitem fails (e.g. after a job change) is
+removed from the switch set and left unworn, and the rest of the switch proceeds - still as ONE atomic operation. The one
+remaining stricter rule is project-wide: a resulting worn set with an unsupported script is rejected whole (CanResolveAfter). Storage/cart transfer refuses a registered
 row (pinned MSI_SWAP_EQUIPITEM_UNREGISTER_FIRST).
 
 Pre-existing S4 defects found and fixed while sharing the planner (all pinned pc_equipitem/pc_equippoint behavior):

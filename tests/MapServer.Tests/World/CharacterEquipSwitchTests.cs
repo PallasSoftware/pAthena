@@ -251,20 +251,20 @@ public sealed class CharacterEquipSwitchTests
     }
 
     [Fact]
-    public async Task SwitchAll_IneligibleRegisteredRow_RejectsTheWholeSwitch_NothingChanges()
+    public async Task SwitchAll_IneligibleRegisteredRow_IsDroppedFromBothSets_AndTheRestSwitchesLikePinned()
     {
-        // A Ring registered for a Novice (e.g. registered before a job change): pinned would drop it from both sets; here
-        // the whole switch is rejected atomically and the worn Clip stays worn.
+        // A Ring registered for a Novice (e.g. registered before a job change). Pinned pc_equipswitch takes the Clip off, removes
+        // the Ring from the switch set and ignores its failing pc_equipitem: the Ring ends up in neither set, the Clip moves to
+        // the switch set, the Knife is worn - all in one atomic operation here.
         var f = Setup(Row(1, Clip, equip: AccR), Row(2, Knife, equipSwitch: HandR), Row(3, Ring, equipSwitch: AccR));
 
-        var (outcome, updated) = await SwitchAll(f, Cooldown(out _));
+        var (outcome, _) = await SwitchAll(f, Cooldown(out _));
 
-        Assert.Equal(EquipMutationResult.Fail, outcome!.Value.Result);
-        Assert.Null(updated);
-        Assert.Empty(f.Operations.Requests);
-        Assert.Equal((AccR, 0u), State(f, 1));
-        Assert.Equal((0u, HandR), State(f, 2));
-        Assert.Equal((0u, AccR), State(f, 3));
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+        Assert.Single(f.Operations.Applied);
+        Assert.Equal((0u, AccR), State(f, 1));
+        Assert.Equal((HandR, 0u), State(f, 2));
+        Assert.Equal((0u, 0u), State(f, 3));
     }
 
     [Fact]
@@ -312,6 +312,18 @@ public sealed class CharacterEquipSwitchTests
         Assert.Equal((0u, HandR), State(f, 1));
         Assert.Equal((HandR, 0u), State(f, 2));
         Assert.Equal((0u, AccR), State(f, 3)); // the other registration is untouched
+    }
+
+    [Fact]
+    public async Task SwitchSingle_RegisteredRowTheWearerCanNoLongerWear_LeavesBothSets()
+    {
+        // Nothing worn at the Ring's slot: pinned pc_equipswitch removes it from the switch set, then its pc_equipitem fails.
+        var f = Setup(Row(1, Ring, equipSwitch: AccR));
+
+        var (outcome, _) = await f.Service.SwitchSingleAsync(0, Items, 99, Male, JobClass.Novice, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+        Assert.Equal((0u, 0u), State(f, 1));
     }
 
     [Fact]

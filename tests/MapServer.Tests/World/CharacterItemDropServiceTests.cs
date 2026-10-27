@@ -133,7 +133,21 @@ public sealed class CharacterItemDropServiceTests : IAsyncLifetime
         Assert.Equal((Knife, (byte)7, (uint)ThiefBugCard, 0u, 0u), (picked.ItemId, picked.Refine, picked.Details.Card0, picked.Equip, picked.Details.EquipSwitch));
     }
 
-    public static TheoryData<string> Refusals => new() { "equipped", "switch", "bound", "rental", "nodrop", "nodropmap", "amount", "unknown" };
+    // Pinned pc_dropitem does not refuse a worn row; pc_delitem unequips it (whole row gone), the floor copy is unequipped.
+    [Fact]
+    public async Task WornRow_IsDropped_AndLeavesTheEquipment()
+    {
+        var f = Setup(Row(1, Knife, equip: 0x2, refine: 4));
+
+        var (result, _) = await f.Service.DropAsync(0, 1, Map, 150, 180, Items, CancellationToken.None);
+
+        Assert.Equal(DropResult.Dropped, result);
+        Assert.DoesNotContain(f.Operations.Rows, r => r.ItemId == Knife);
+        var ground = Assert.Single(await Ground(f));
+        Assert.Equal((0u, 4), (PickupTemplate(ground.Content)!.Equip, PickupTemplate(ground.Content)!.Refine));
+    }
+
+    public static TheoryData<string> Refusals => new() { "switch", "bound", "rental", "nodrop", "nodropmap", "amount", "unknown" };
 
     [Theory]
     [MemberData(nameof(Refusals))]
@@ -142,7 +156,6 @@ public sealed class CharacterItemDropServiceTests : IAsyncLifetime
         var noDrop = Items.Values.First(i => i is EtcItemDefinition && i.Meta is { NoDrop: true, TradeOverride: > 0 });
         var row = refusal switch
         {
-            "equipped" => Row(1, Knife, equip: 0x2),
             "switch" => Row(1, Knife, equipSwitch: 0x2),
             "bound" => Row(1, Knife, bound: 4),
             "rental" => Row(1, Knife, expire: 2_000_000_000),
