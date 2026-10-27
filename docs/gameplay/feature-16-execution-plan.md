@@ -198,7 +198,7 @@ Previously remaining blockers were dominated by control flow and locals (`.@r = 
 If + ~1,200 non-constant values) - the evaluator increment below - then F18 `skill` grants (~410), client-only `hateffect`
 (~130), F20 general-script deferrals (~25) and one invalid pinned skill name (`WZ_METEORSTORM`).
 
-## S9 completion audit - reconciled (measured against commit 668ea12, 2026-10-23)
+## S9 completion audit - reconciled (final server-side pass, 2026-10-27; earlier baseline 668ea12)
 
 Supersedes the 2199654 audit. That audit called S0-S6 Complete while S4 lacked equip switch; re-checking every stage
 against the pinned functions (not against the earlier summary) found more of the same kind, listed per stage below.
@@ -214,45 +214,51 @@ with the contract named), **Protocol-pending-capture** (server done; wire waits 
 | S2 | Persistence, idempotency, ground claim | Complete | Atomic/idempotent operations incl. EquipSwitch kind 15 (SQL Server executor swap test); exactly-once claim (TestCluster) |
 | S3 | Inventory rules, consumption, containers | Complete | as before (`8b26d27`, `d8a650f`, cooldown/nouse gates) |
 | S3 | Ground items: monster drop, pickup | Complete | `9a436f6`/`06d5b78`; pickup now restores a dropped instance |
-| S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a`, made crash/outage-safe with a CharServer outbox and World fencing (see S3 player item drop). Not modeled: free-cell scatter |
-| S4 | Eligibility (level, sex, broken, map, class_base) | Complete | `ee032e9`, `d3195dc` |
+| S3 | Ground items: player drop (pc_dropitem) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `46c700a`, crash/outage-safe via a CharServer outbox and World fencing (`18ccddd`, see S3 player item drop). Worn rows droppable as pinned and MF_NODROP read from the map's flags (`157212d`, `3143d4e`). Not modeled: free-cell scatter |
+| S4 | Eligibility (level, sex, broken, map, class_base) | Complete | `ee032e9`, `d3195dc`; map restriction follows allow_equip_restricted_item: yes - worn, scripts skipped on that map (`3143d4e`) |
 | S4 | ClassUpper tier eligibility (pc_isItemClass) | Complete | Was **Missing** (data packed, never enforced); `GeneratedJobEquipClass.Tier` (pinned JOBL_* per MAPID group, generator + deterministic regeneration) and `ItemClassEligibility` (RENEWAL branch) on equip |
 | S3 | Item-use wearer gates (pc_isUseitem sex, elv/elvmax, job, tier) | Complete | Were **Missing** for every usable item (a level-1 Novice could open a level-5 First Aid Box); same `ItemClassEligibility`, and the dead check now covers containers too |
 | S4 | Slot rules: EQP_ACC single slot, card-forced accessory, dual-wield EQP_ARMS, costume/shadow slots, bind-on-equip | Complete | Were **incorrect/missing**; fixed `be06e49` (30 tests) |
-| S4 | Equip switch (add/remove/full/single, cooldown) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `be06e49` |
+| S4 | Equip switch (add/remove/full/single, cooldown) | Complete (server); wire Protocol-pending-capture | Was **Missing**; `be06e49`; failing rows now handled as pinned pc_equipswitch (`157212d`) |
 | S4 | Ammo equip (pc_isequip EQP_AMMO) | Complete (server); wire Protocol-pending-capture (0x013C) | Was **Missing**; `668ea12`. Cannonball mount checks assume unmounted |
 | S4 | Unequip side effects (status cancels, ammo) | Owned elsewhere (status effects) | status-change interactions belong to the SC system |
 | S5 | Bonus model: param/HP/SP family, 150 single-value pc_bonus cases, bonus2..5 | Complete for accumulation | `152866b`: per-case pinned combine rules, lr_flag hands, skill-name sub-keys |
 | S5 | Live consumption in derived stats | Partial | Live: primary stats, bHit, bFlee, bFlee2, bCritical, bDef, bDef2, bMdef2. **Typed (downstream)** for F17/F18: ATK/MATK/ASPD/rates/race-element tables (`EquipmentStats.FlatBonuses/ExtendedBonuses/MultiBonuses`) |
 | S5 | Equipment Max HP/SP (bMaxHP/SP[rate], equip VIT +1 HP) | Complete (server side); client resend Protocol-pending-capture | `IStatRules.MaxResources`/`WithRecalculatedResources` follow pinned status_calc_maxhp_pc/maxsp_pc: job table x (1+VIT/INT%), JOBL_UPPER/primary-fourth x1.25, + param_equip VIT/INT, + bMaxHP/SP and passive-skill FIX terms, equip rate then status rate, floor 1. Fixture VF-24 (real pinned runs: Novice/Lord Knight/Dragon Knight, Clip+carded gear, CR_TRUST/HP_MEDITATIO/SL_KAINA/NV_BREAKTHROUGH) and VF-16 (now incl. 5 trans jobs) match exactly. `MapClientSession.ReconcileMaxResourcesAsync` rebuilds and persists the maxima (current only clamped down) at login after rental expiry, after equip/unequip, after skill learn; level-up/stat-up use the same context. Refine/grade/switch have no session wiring yet, so their changes are picked up at the next of those triggers. The 0x00B0 max resend stays Protocol-pending-capture (S8) |
 | S5 | Script execution scope (equipment) | Complete for the in-scope constructs | `1cec909`, `7efa739`: locals, if/else, operators, equipment and wearer context, explore-validated branches |
-| S5 | Recalculation on change | Complete | Stats re-resolved from the inventory on every read; equip-time `CanResolveAfter` gate; switch/drop/refine all re-resolve |
+| S5 | Recalculation on change | Complete | Stats re-resolved from the inventory (and the current map's restrictions) on every read; equip-time `CanResolveAfter` gate. Persisted Max HP/SP rebuilt at login, map load, equip/unequip, skill learn, level-up and stat-up; refine/grade/switch/drop have no session wiring yet (wire pending), so a session caller added later must call `ReconcileMaxResourcesAsync` |
 | S6 | Refine, enchant grade (multiplier, upgrade) | Complete | `df77795`, `60ee647`, `4e7841a` |
 | S7 | Cards (insert, bonus) | Complete | card scripts now see the carrying row's refine (pinned status.cpp:4100), forged/brewed/pet rows skip cards |
-| S7 | Combos | Complete for activation; scripts 90.1% resolve | 4,609 / 5,114; remainder in the coverage table |
+| S7 | Combos | Complete for activation; scripts 96.0% resolve | 4,911 / 5,114 (was 4,609); remainder in the coverage table |
 | S7 | Random options | Complete | 248 / 249 (one `for` loop, F20) |
-| S7 | Equipment scripts overall | Partial (measured) | Weapon 94.0%, Armor 88.7%, Card 94.2% of scripted items resolve; every unresolved item is unequippable, never silently partial |
+| S7 | Equipment scripts overall | Partial (measured) | Weapon 97.4% (2,322/2,384), Armor 93.3% (5,137/5,508), Card 96.7% (4,914/5,083) of scripted items resolve (`7d49499`); every unresolved item is unequippable, never silently partial; remaining blockers are owned elsewhere or listed below |
+| S4 | Map flags (nouse, noequip zones, MF_NODROP) | Complete (static flags) | Was **assumed normal everywhere**; generated `GeneratedMapFlags` + pinned itemdb_isNoEquip (`3143d4e`); runtime `setmapflag`/WoE toggles not represented (no such system yet) |
 | S8 | Triggered-effect registration | Complete; dispatch Owned elsewhere (F17 pc_exeautobonus) | `3dd9148` |
 | S8 | Cross-replica ground-item visibility | Complete (server); wire Protocol-pending-capture (0x0ADD) | Was **Missing**; `9ffdc17` (World feed + replica mirror + per-session AREA_SIZE visibility) |
 | S8 | Equip/unequip stat resend | Protocol-pending-capture | `DerivedStatComparer` (`2199654`) |
 | S8 | Client effects (hateffect, specialeffect2) | Typed; wire Protocol-pending-capture | `EquipmentStats.ClientEffects` |
 | S9 | Coverage reporting | Complete | `EquipmentBonusCoverageTests`: NoScript excluded, Live/AwaitingConsumer/NoEffect/Deferred/Unsupported with blocker owners |
 
-### Remaining genuine Feature 16 gaps (server side)
+### Remaining genuine Feature 16 gaps (server side) - all resolved or decided in the final pass
 1. Equipment-script constructs (S7 evaluator), resolved in the final pass: `eaclass()`/`eaclass(job)`, `BaseJob`, `BaseClass`, `Upper` via the generated `GeneratedJobMapId` (parsed from pinned pc_jobid2mapid/pc_mapid2jobid and the e_mapid enum, cross-checked against `GeneratedJobEquipClass`); `getequipweaponlv`/`getequiparmorlv`/`getitempos` over the evaluating row (current_equip_item_index; a combo has none and stays unsupported, as pinned errors); C-style `switch` with fallthrough/break; statement `++`/`--` on locals; integer `.@` arrays; buildins called in statement form (`hateffect(...)`); `autobonus3`'s skill argument. Resolved scripted entries: Weapon 2,241 -> 2,322, Armor 4,884 -> 5,137, Card 4,790 -> 4,914, Combo 4,609 -> 4,911 (floors raised). Still unsupported, by decision: trait-stat `readparam` (POW..CRT, ~82 scripts) because trait stats are not persisted and pinned keeps allocated traits when leaving a trait job (pc.cpp:10966-10971), so "0 outside fourth jobs" is not a safe invariant; `getpetinfo` (pets not modeled; also blocks the 3 `switch` items), `gettime`/`rand` (non-deterministic status input), `readparam(Hp/MaxHp)` (in-progress status_calc values), `strcharinfo`, `isequipped`, `geteleminfo`, `checkmadogear`, `heal` in an equip script. Each rejects the equipment with a named blocker - never a silent partial effect.
 2. Map flags (resolved in the final pass): `compile-map-flags` generates `GeneratedMapFlags` from every `mapflag` line of the active Renewal npc graph in load order, with pinned `off` and mutual exclusions (pvp vs gvg*/battleground, castle vs te_castle) and `restricted <zone>` bits; 337 maps. `MapFlagSet.IsNoEquip` is pinned itemdb_isNoEquip (normal = not any PVP/GvG/BG type, typed bits, zone bits under MF_RESTRICTED). Enforced: item use (nouse, no consume/grant), equipment status (item, ammo, card, combo-member and option-carrier scripts skipped on a restricted map; base DEF/ATK/refine kept; status recalculated at map load), and `MF_NODROP` in `CharacterItemDropService` (no static Renewal map sets it; the check reads the map's flags). Divergence fixed: restricted items were refused at equip; pinned `allow_equip_restricted_item: yes` (conf/battle/items.conf:92) wears them with no script effect, which is now the behavior. Not represented: flags set at runtime by scripts (`setmapflag`, WoE `agit_start` toggling `gvg`), since neither exists in this server yet; client rejection messages (MSI_IMPOSSIBLE_USEITEM_AREA) stay Protocol-pending-capture.
 
 ### Owned elsewhere (contract named)
 F17: every Feature17Combat parameter in `EquipmentBonusParameters` and all bonus2..5 tables (`EquipmentStats.FlatBonuses`,
 `ExtendedBonuses`, `MultiBonuses`), autobonus dispatch (`TriggeredBonusesOrEmpty`), weapon refine ATK (`WeaponAttack`).
-F18: Feature18Skill parameters, `skill` grants in equipment scripts (~410 scripts, unequippable until F18). F20: `for`,
+F18: Feature18Skill parameters, `skill` grants in equipment scripts (637 entries, unequippable until F18; `sc_start`/`sc_end` 14, `itemskill` 1). F20: `for`,
 `setarray`, persistent variables in item scripts.
 
 ### Protocol-pending-capture (each with its capture request in this plan)
 Equip switch (0x0A97-0x0A9D, 0x0ACE); ammo equip ack (0x013C); player drop (CZ_ITEM_THROW + ack); bystander ground-item
-appearance/removal (0x0ADD fields, 0x00A1 for bystanders); equip/unequip stat resend (0x00B0 var ids); the older
-list in "Outstanding iRO captures".
+appearance/removal (0x0ADD fields, 0x00A1 for bystanders); equip/unequip stat resend (0x00B0 var ids), including the
+max HP/SP resend (var 6/8) after equip/unequip, skill learn, map load and stat-up; the map-restriction rejection messages
+(MSI_IMPOSSIBLE_USEITEM_AREA for nouse, msg 271 for MF_NODROP); the older list in "Outstanding iRO captures".
 
-**Overall: Feature 16 is not complete.** Every previously-missing mechanic found in this re-audit (equip switch, player
-drop, ammo, cross-replica visibility, accessory/dual-wield/costume/shadow slots, arrow/card script context) now exists
-server side with tests, as do ClassUpper tier eligibility and the item-use wearer gates; the items above remain.
+**Overall: Feature 16 is not complete.** Server side, every F16-owned mechanic now exists with tests: player drop
+(outbox + fencing), equipment/passive-skill Max HP/SP (pinned fixture VF-24), job-lineage and evaluating-row script
+constructs, static map flags (nouse, noequip zones, MF_NODROP), and pinned equip-switch/worn-drop semantics. What is left:
+(1) the Protocol-pending-capture projections above - no client projection is claimed until captured; (2) equipment
+scripts that stay unsupported by decision (trait-stat reads need persisted trait stats; `getpetinfo` needs pets;
+`gettime`/`rand`/`readparam(Hp)` would vary between reads, unlike pinned's per-status_calc evaluation) - each rejects the
+item with a named blocker; (3) the F17/F18/F20 consumers named above.

@@ -4070,9 +4070,10 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         // base paired with a fresh plus or vice versa. This remains an explicit, documented
         // PARTIAL match of the capture's full derived-status burst - the capture also shows
         // additional combat-stat packets (ATK/DEF/FLEE/HIT/ASPD-related) this project does not
-        // yet compute anywhere (no derived-combat-stat engine exists, and MaxHP/MaxSP
-        // recalculation only exists for the level-up formula path), so those remain deliberately
-        // NOT sent here rather than fabricated. See ai/iro-2026-wire.md for the full scope note.
+        // yet compute anywhere (no derived-combat-stat engine exists). MaxHP/MaxSP ARE recalculated and
+        // persisted by IncreaseStatAsync (pinned status_calc_maxhp_pc/maxsp_pc), but their 0x00B0 resend
+        // is part of that same uncaptured-in-full cascade, so it is deliberately NOT sent here rather than
+        // fabricated. See ai/iro-2026-wire.md for the full scope note.
         // Every response field comes from ONE snapshot of the state this request committed (result.After) paired with the
         // statuses active at that instant - not from gameplayState.State, which a concurrent mutation may already have moved.
         // plus = battle_status - status.* (clif_couplestatus), so it carries job bonuses and temporary buffs alike.
