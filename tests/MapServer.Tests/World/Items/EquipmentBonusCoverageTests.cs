@@ -1,3 +1,4 @@
+using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.MapServer.World.Items;
 using Athena.Net.Shared.Inventory;
@@ -32,13 +33,13 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
         BaseExperience: 0, JobExperience: 0, CurrentHp: 1, CurrentSp: 1, MaxHp: 1, MaxSp: 1, StatPoints: 0, SkillPoints: 0,
         Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1), CharacterSkillSnapshot.Empty, 1);
 
-    private static Classified Classify(PackScript? script, InventoryOption option = default)
+    private static Classified Classify(PackScript? script, InventoryOption option = default, CharacterInventoryItem? current = null)
     {
         if (script is null) return new(Category.NoScript, null);
         if (script.Support == PackScriptSupport.Deferred) return new(Category.Deferred, $"deferred:{script.DeferredOwner}:{script.DeferredConstruct}");
         var bonuses = new EquipmentBonusAccumulator();
         // Nothing else worn (getequip* see empty slots), a base-1 Novice wearer with no skills; every branch is still validated.
-        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option, EquippedAt: _ => null, Items: ItemCatalog.Current.ById, Character: ProbeWearer), bonuses); }
+        try { EquipmentBonusResolver.Accumulate(script, new EquipmentScriptContext(Option: option, EquippedAt: _ => null, Items: ItemCatalog.Current.ById, Character: ProbeWearer, Current: current), bonuses); }
         catch (EquipmentBonusResolver.UnsupportedEquipScriptException ex) { return new(Category.Unsupported, ex.Message); }
 
         var p = bonuses.Param;
@@ -62,18 +63,20 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
         _ => "F16 evaluator (control flow / locals / context)",
     };
 
-    private static IEnumerable<(string Population, PackScript? Script, InventoryOption Option)> Populations(ItemCatalog catalog)
+    // The evaluating row (current_equip_item_index) is the item itself, worn at its own location; a combo has none.
+    private static IEnumerable<(string Population, PackScript? Script, InventoryOption Option, CharacterInventoryItem? Current)> Populations(ItemCatalog catalog)
     {
-        foreach (var def in catalog.ById.Values)
+        foreach (var (id, def) in catalog.ById)
             if (def is WeaponItemDefinition or ArmorItemDefinition or CardItemDefinition)
-                yield return (def switch { WeaponItemDefinition => "Weapon", ArmorItemDefinition => "Armor", _ => "Card" }, def.Meta?.Script, default);
-        foreach (var (id, script) in catalog.RandomOptions) yield return ("RandomOption", script, new InventoryOption((short)id, 10, 0));
-        foreach (var combo in catalog.Combos) yield return ("Combo", combo.Script, default);
+                yield return (def switch { WeaponItemDefinition => "Weapon", ArmorItemDefinition => "Armor", _ => "Card" }, def.Meta?.Script, default,
+                    new CharacterInventoryItem(1, 0, id, 1, def is IEquippableItemDefinition equippable ? equippable.EquipLocation : 0, true, 0, 0, 0));
+        foreach (var (id, script) in catalog.RandomOptions) yield return ("RandomOption", script, new InventoryOption((short)id, 10, 0), null);
+        foreach (var combo in catalog.Combos) yield return ("Combo", combo.Script, default, null);
     }
 
     private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyList<Classified>>> Measured = new(() =>
         Populations(ItemCatalog.Current).GroupBy(p => p.Population)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<Classified>)[.. g.Select(p => Classify(p.Script, p.Option))]));
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<Classified>)[.. g.Select(p => Classify(p.Script, p.Option, p.Current))]));
 
     private static int Count(string population, params Category[] categories) => Measured.Value[population].Count(c => categories.Contains(c.Category));
 
@@ -100,11 +103,11 @@ public sealed class EquipmentBonusCoverageTests(ITestOutputHelper output)
     // Measured after the S7 evaluator increments (locals, if/else, equipment and wearer context). These must only rise; a drop means a
     // construct regressed - investigate it, never lower the bound.
     [Theory]
-    [InlineData("Weapon", 2241)]
-    [InlineData("Armor", 4884)]
-    [InlineData("Card", 4790)]
+    [InlineData("Weapon", 2322)]
+    [InlineData("Armor", 5137)]
+    [InlineData("Card", 4914)]
     [InlineData("RandomOption", 248)]
-    [InlineData("Combo", 4609)]
+    [InlineData("Combo", 4911)]
     public void Coverage_ResolvedScriptedEntries_NeverRegressBelowTheVerifiedFloor(string population, int floor)
     {
         var resolved = Count(population, Category.Live, Category.AwaitingConsumer, Category.NoEffect);

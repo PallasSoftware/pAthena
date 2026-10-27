@@ -435,7 +435,7 @@ public sealed class CompilerTests
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(firstDir)));
             Assert.Equal(0, await WorldDataImporterCli.RunAsync(Arguments(secondDir)));
             static string[] Files(string root) => Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories).Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')).Order(StringComparer.Ordinal).ToArray();
-            var expected = new[] { "Jobs/GeneratedJobEquipClass.cs", "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedJobWeight.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
+            var expected = new[] { "Jobs/GeneratedJobEquipClass.cs", "Jobs/GeneratedJobMapId.cs", "Jobs/GeneratedJobRegistry.cs", "Progression/GeneratedJobAspd.cs", "Progression/GeneratedJobWeight.cs", "Progression/GeneratedProgressionData.cs", "Progression/GeneratedProgressionRegistry.cs", "Skills/GeneratedSkillRegistry.cs", "Skills/GeneratedSkillTreeRegistry.cs", "Skills/GeneratedSkillTrees.cs" };
             Assert.Equal(expected, Files(firstDir)); Assert.Equal(expected, Files(secondDir));
             var checkedIn = Path.Combine(repository, "src/MapServer/Generated");
             foreach (var relative in expected)
@@ -832,7 +832,8 @@ public sealed class CompilerTests
         File.ReadAllText(Path.Combine(root, "db/re/job_exp.yml")), File.ReadAllText(Path.Combine(root, "db/re/job_basepoints.yml")),
         File.ReadAllText(Path.Combine(root, "db/re/job_stats.yml")), File.ReadAllText(Path.Combine(root, "db/re/statpoint.yml")),
         File.ReadAllText(Path.Combine(root, "db/re/skill_db.yml")), File.ReadAllText(Path.Combine(root, "db/re/skill_tree.yml")),
-        File.ReadAllText(Path.Combine(root, "conf/battle/player.conf")), File.ReadAllText(Path.Combine(root, "db/re/job_aspd.yml")));
+        File.ReadAllText(Path.Combine(root, "conf/battle/player.conf")), File.ReadAllText(Path.Combine(root, "db/re/job_aspd.yml")),
+        File.ReadAllText(Path.Combine(root, "src/map/pc.cpp")), File.ReadAllText(Path.Combine(root, "src/map/map.hpp")));
     private static string ReplaceFirst(string source, string oldValue, string newValue)
     {
         var index = source.IndexOf(oldValue, StringComparison.Ordinal);

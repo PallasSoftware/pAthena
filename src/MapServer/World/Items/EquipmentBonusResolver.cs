@@ -56,9 +56,10 @@ public readonly record struct EquipmentMultiBonus(long Param, IReadOnlyList<long
 // EquippedAt answers pinned pc_checkequip(sd, equip_bitmask[eqi]) for the getequip* builtins (the row worn on that EQI
 // slot, or null); Items resolves item ids for getiteminfo. Both are read-only: nothing a script reads here can change.
 // Character is the wearer, read-only (pinned sd->status during status_calc_pc): without it, character reads are unsupported.
+// Current is the row at current_equip_item_index (the item itself, or the row carrying the card/option); null for a combo.
 public readonly record struct EquipmentScriptContext(byte Refine = 0, int EnchantGrade = -1, InventoryOption Option = default,
     EquipmentBonusHand Hand = EquipmentBonusHand.Right, Func<int, CharacterInventoryItem?>? EquippedAt = null,
-    IReadOnlyDictionary<int, ItemDefinition>? Items = null, EquipmentCharacter? Character = null);
+    IReadOnlyDictionary<int, ItemDefinition>? Items = null, EquipmentCharacter? Character = null, CharacterInventoryItem? Current = null);
 
 // The wearer as equipment scripts see it: base (allocated) stats and levels from sd->status, learned skill levels for
 // pc_checkskill, the account sex byte (0 female, 1 male).
@@ -193,6 +194,20 @@ public static class EquipmentBonusResolver
                 case IrKind.Assign:
                     Assign(node);
                     return;
+                case IrKind.ExprStmt when node.Items is [{ Kind: IrKind.Postfix or IrKind.Unary, Items: [{ Kind: IrKind.Local, Text: { } local }] } step]
+                    && (IrOp)step.Number is IrOp.PostInc or IrOp.PostDec or IrOp.PreInc or IrOp.PreDec && !local.EndsWith('$'):
+                    // `.@i++;` / `--.@i;` as a statement: only the side effect on the integer local matters.
+                    _locals[local] = _locals.GetValueOrDefault(local) + ((IrOp)step.Number is IrOp.PostInc or IrOp.PreInc ? 1 : -1);
+                    return;
+                case IrKind.Switch:
+                    Switch(node);
+                    return;
+                case IrKind.Break when _switchDepth > 0:
+                    throw new BreakSignal();
+                case IrKind.ExprStmt when node.Items is [{ Kind: IrKind.Call } call]:
+                    // `hateffect(...);`: a buildin called in statement position is the same buildin as its command form.
+                    Statement(call with { Kind = IrKind.Command });
+                    return;
                 case IrKind.Empty:
                     return;
                 case IrKind.Command when node.Text is "bonus" or "bonus2" or "bonus3" or "bonus4" or "bonus5":
@@ -210,6 +225,32 @@ public static class EquipmentBonusResolver
                 default:
                     throw new UnsupportedEquipScriptException($"statement:{node.Kind}");
             }
+        }
+
+        private sealed class BreakSignal : Exception;
+        private int _switchDepth;
+
+        // Pinned switch (script.cpp parse_syntax: lowered to C-style jumps): the first case whose value equals the selector,
+        // else `default`, then fall through the following cases until a break. The explore pass runs every case body alone.
+        private void Switch(IrNode node)
+        {
+            var selector = Value(node.Items[0]);
+            var cases = node.Items.Skip(1).ToList();
+            if (explore) foreach (var label in cases.Where(c => c.Number == 0)) Value(label.Items[0]);
+            var start = cases.FindIndex(c => c.Number == 0 && Value(c.Items[0]) == selector);
+            if (start < 0) start = cases.FindIndex(c => c.Number == 1);
+            _switchDepth++;
+            try
+            {
+                if (explore)
+                    foreach (var body in cases)
+                        try { foreach (var statement in body.Items.Skip(1)) Statement(statement); }
+                        catch (BreakSignal) { }
+                if (!explore && start >= 0)
+                    try { foreach (var statement in cases.Skip(start).SelectMany(c => c.Items.Skip(1))) Statement(statement); }
+                    catch (BreakSignal) { }
+            }
+            finally { _switchDepth--; }
         }
 
         // Pinned BUILDIN_FUNC(bonus) for every arity (script.cpp): the argument count after the parameter picks pc_bonus
@@ -275,9 +316,18 @@ public static class EquipmentBonusResolver
             var bonusScript = ResolveNestedBonusScript(node.Items[0]);
             var rate = (int)Value(node.Items[1]);
             var duration = (uint)Value(node.Items[2]);
-            var attackType = node.Items.Count > 3 ? (int)Value(node.Items[3]) : 0;
+            // autobonus3's 4th argument is a skill (name or id: BUILDIN_FUNC(autobonus3), script.cpp:10220-10234), not an atk_type.
+            var attackType = node.Items.Count <= 3 ? 0 : node.Text == "autobonus3" ? AutoBonusSkill(node.Items[3]) : (int)Value(node.Items[3]);
             var otherScript = node.Items.Count > 4 ? NestedScript(node.Items[4], ItemScriptOwner.ClientEffect, PackScriptUses.ClientEffect) : null;
             return new TriggeredBonusDefinition(bonusScript, rate, duration, attackType, otherScript);
+        }
+
+        // Pinned: an unknown skill name or id fails the script (ShowError + SCRIPT_CMD_FAILURE); kept unsupported, never guessed.
+        private int AutoBonusSkill(IrNode node)
+        {
+            var skill = node.Kind == IrKind.Str ? node.Text! : Value(node).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            try { return node.Kind == IrKind.Str ? Generated.Skills.GeneratedSkillRegistry.GetByName(skill).SkillId : Generated.Skills.GeneratedSkillRegistry.GetById((ushort)Value(node)).SkillId; }
+            catch (NotSupportedException) { throw new UnsupportedEquipScriptException($"autobonus3-unknown-skill:{skill}"); }
         }
 
         // The nested bonus-script argument must be an already-lowered IrKind.Script; it is validated here by resolving it
@@ -296,11 +346,20 @@ public static class EquipmentBonusResolver
             return new PackScript(node.Text ?? string.Empty, PackScriptSupport.Lowered, null, owner, uses, program);
         }
 
+        // An integer `.@` local or one element of a `.@` array; pinned `.@r` and `.@r[0]` are the same variable.
+        private string? LocalKey(IrNode node) => node switch
+        {
+            { Kind: IrKind.Local, Text: { } name } when !name.EndsWith('$') => name,
+            { Kind: IrKind.Index, Text: { } name, Items: [var index] } when node.Number == (long)IrVarScope.Local && !name.EndsWith('$')
+                => Value(index) is var i and not 0 ? $"{name}[{i}]" : name,
+            _ => null,
+        };
+
         // `.@name = value;` and the compound forms. Only integer locals: a string local (.@name$), or any non-local target,
         // needs general script storage (Feature 20) - the importer already defers persistent variables.
         private void Assign(IrNode node)
         {
-            if (node.Items is not [{ Kind: IrKind.Local, Text: { } name }, var valueNode] || name.EndsWith('$'))
+            if (node.Items is not [var target, var valueNode] || LocalKey(target) is not { } name)
                 throw new UnsupportedEquipScriptException("assign-target-not-integer-local");
             var value = Value(valueNode);
             var current = _locals.GetValueOrDefault(name);
@@ -328,7 +387,7 @@ public static class EquipmentBonusResolver
                 case IrKind.Int:
                 case IrKind.Const:
                     return node.Number;
-                case IrKind.Local when node.Text is { } local && !local.EndsWith('$'):
+                case IrKind.Local or IrKind.Index when LocalKey(node) is { } local:
                     return _locals.GetValueOrDefault(local); // pinned: an unset variable reads as 0
                 case IrKind.Conditional:
                 {
@@ -392,6 +451,29 @@ public static class EquipmentBonusResolver
                     // BUILDIN_FUNC(getequipid): the item id worn on that EQI slot, -1 when empty. (The no-argument form reads
                     // current_equip_item_index, which this context does not carry for combos; it stays unsupported.)
                     return EquippedRow(node.Items[0])?.ItemId ?? -1;
+                case IrKind.Call when node.Text == "eaclass" && node.Items.Count is 0 or 1:
+                    // BUILDIN_FUNC(eaclass): pc_jobid2mapid of the given job id, or of the wearer's own class.
+                    return node.Items.Count == 1 ? Generated.Jobs.GeneratedJobMapId.JobIdToMapId(Value(node.Items[0])) : WearerMapId();
+                case IrKind.Call when node.Text is "getequipweaponlv" or "getequiparmorlv" && node.Items.Count is 0 or 1:
+                {
+                    // BUILDIN_FUNC(getequipweaponlv/getequiparmorlv): EQI_COMPOUND_ON (-1, the default) is the evaluating row,
+                    // otherwise the row worn on that EQI slot; 0 unless that row is a weapon/armor.
+                    var eqi = node.Items.Count == 1 ? Value(node.Items[0]) : EqiCompoundOn;
+                    CharacterInventoryItem? row;
+                    if (eqi == EqiCompoundOn) row = context.Current ?? throw new UnsupportedEquipScriptException($"{node.Text}-without-current-item");
+                    else if (eqi is >= 0 and < 21) row = EquippedRow(node.Items[0]);
+                    else if (node.Text == "getequiparmorlv") throw new UnsupportedEquipScriptException("getequiparmorlv-invalid-index"); // pinned ShowError + failure
+                    else row = null;
+                    if (row is null) return 0;
+                    if (context.Items is null) throw new UnsupportedEquipScriptException("item-context-unavailable");
+                    var definition = context.Items.GetValueOrDefault(row.ItemId);
+                    return node.Text == "getequipweaponlv"
+                        ? definition is WeaponItemDefinition weapon ? weapon.WeaponLevel : 0
+                        : definition is ArmorItemDefinition ? definition.Meta?.ArmorLevel ?? 0 : 0;
+                }
+                case IrKind.Call when node.Text == "getitempos" && node.Items.Count == 0:
+                    // BUILDIN_FUNC(getitempos): the evaluating row's equip bits; pinned errors outside an item script (a combo).
+                    return context.Current?.Equip ?? throw new UnsupportedEquipScriptException("getitempos-without-current-item");
                 case IrKind.Call when node.Text == "getiteminfo" && node.Items.Count == 2:
                     return ItemInfo(Value(node.Items[0]), Value(node.Items[1]));
                 case IrKind.Call when node.Text == "getrefine" && node.Items.Count == 0:
@@ -441,7 +523,8 @@ public static class EquipmentBonusResolver
         }
 
         // Pinned pc_readparam cases equipment scripts read (map.hpp enum _sp): BaseLevel 11, Str..Luk 13-18, Class 19, Sex 21,
-        // JobLevel 55. BaseJob/BaseClass/Upper need the MAPID job mapping, which is not generated, and stay unsupported.
+        // JobLevel 55, SP_UPPER 56 (JOBL_UPPER 1, JOBL_BABY 2, else 0), and SP_BASESECOND 119 (BaseJob) / SP_BASEFIRST 120
+        // (BaseClass): pc_mapid2jobid(sd->class_ & mask, sex).
         private long CharacterParam(long sp, string unsupported)
         {
             if (context.Character is not { } character) throw new UnsupportedEquipScriptException("character-context-unavailable");
@@ -453,8 +536,20 @@ public static class EquipmentBonusResolver
                 19 => state.JobClass,
                 21 => character.Sex,
                 55 => state.JobLevel,
+                56 => ((ulong)WearerMapId() & Generated.Jobs.GeneratedJobMapId.Upper) != 0 ? 1 : ((ulong)WearerMapId() & Generated.Jobs.GeneratedJobMapId.Baby) != 0 ? 2 : 0,
+                119 => Generated.Jobs.GeneratedJobMapId.MapIdToJobId((ulong)WearerMapId() & Generated.Jobs.GeneratedJobMapId.SecondMask, character.Sex),
+                120 => Generated.Jobs.GeneratedJobMapId.MapIdToJobId((ulong)WearerMapId() & Generated.Jobs.GeneratedJobMapId.FirstMask, character.Sex),
                 _ => throw new UnsupportedEquipScriptException($"{unsupported}:{sp}"),
             };
+        }
+
+        // sd->class_ = pc_jobid2mapid(sd->status.class_). A class without a case is reset by pc_authok before any script runs,
+        // which this context cannot reproduce, so it stays unsupported rather than guessed.
+        private long WearerMapId()
+        {
+            var character = context.Character ?? throw new UnsupportedEquipScriptException("character-context-unavailable");
+            var mapId = Generated.Jobs.GeneratedJobMapId.JobIdToMapId(character.State.JobClass);
+            return mapId >= 0 ? mapId : throw new UnsupportedEquipScriptException($"job-without-mapid:{character.State.JobClass}");
         }
 
         // The EQI argument of a getequip* builtin: pinned equip_index_check(num) && pc_checkequip(sd, equip_bitmask[num]).
@@ -484,6 +579,8 @@ public static class EquipmentBonusResolver
             };
         }
     }
+
+    private const long EqiCompoundOn = -1; // script.hpp EQI_COMPOUND_ON
 
     // script_constants.hpp ITEMINFO_* (enum e_iteminfo, script.hpp).
     private const long ItemInfoLocations = 5, ItemInfoSlot = 10, ItemInfoView = 11, ItemInfoEquipLevelMin = 12, ItemInfoWeaponLevel = 13, ItemInfoArmorLevel = 19, ItemInfoSubType = 20;

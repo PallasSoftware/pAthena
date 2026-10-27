@@ -366,7 +366,7 @@ internal static partial class WorldDataImporterCli
         {
             "src/common/mmo.hpp", "src/map/script_constants.hpp", "db/re/job_exp.yml", "db/re/job_basepoints.yml",
             "db/re/job_stats.yml", "db/re/statpoint.yml", "db/re/skill_db.yml", "db/re/skill_tree.yml",
-            "conf/battle/player.conf", "db/re/job_aspd.yml",
+            "conf/battle/player.conf", "db/re/job_aspd.yml", "src/map/pc.cpp", "src/map/map.hpp",
         };
         foreach (var relative in required) if (!File.Exists(Path.Combine(root, relative))) throw new ArgumentException($"Required pinned source file is missing: {relative}.");
         return CharacterDataCompiler.Compile(new(
@@ -374,7 +374,8 @@ internal static partial class WorldDataImporterCli
             await File.ReadAllTextAsync(Path.Combine(root, required[2])), await File.ReadAllTextAsync(Path.Combine(root, required[3])),
             await File.ReadAllTextAsync(Path.Combine(root, required[4])), await File.ReadAllTextAsync(Path.Combine(root, required[5])),
             await File.ReadAllTextAsync(Path.Combine(root, required[6])), await File.ReadAllTextAsync(Path.Combine(root, required[7])),
-            await File.ReadAllTextAsync(Path.Combine(root, required[8])), await File.ReadAllTextAsync(Path.Combine(root, required[9]))), commit);
+            await File.ReadAllTextAsync(Path.Combine(root, required[8])), await File.ReadAllTextAsync(Path.Combine(root, required[9])),
+            await File.ReadAllTextAsync(Path.Combine(root, required[10])), await File.ReadAllTextAsync(Path.Combine(root, required[11]))), commit);
     }
 
     // Stateless/deterministic: fully regenerates the shared global GeneratedMobs partial class from

@@ -171,4 +171,117 @@ public sealed class EquipmentBonusConditionalTests
         var script = Script(Bonus("bStr", new IrNode(IrKind.Param, Text: "BaseLevel", Number: 11)));
         Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => Run(new EquipmentScriptContext(), script));
     }
+
+    // ---- job lineage (pinned pc_jobid2mapid/pc_mapid2jobid, generated from pc.cpp/map.hpp) ----
+
+    private static EquipmentCharacter Job(ushort jobClass, byte sex = 1) =>
+        Wearer() with { State = Wearer().State with { JobClass = jobClass }, Sex = sex };
+
+    private static IrNode BaseJob => new(IrKind.Param, Text: "BaseJob", Number: 119);
+    private static IrNode BaseClass => new(IrKind.Param, Text: "BaseClass", Number: 120);
+    private static IrNode Upper => new(IrKind.Param, Text: "Upper", Number: 56);
+
+    [Theory]
+    [MemberData(nameof(Regions))]
+    public void RuneKnightSeyrenCard_AppliesItsThirdJobKnightBranch_OnlyToThirdJobKnights(GameplayRegion region)
+    {
+        // 4679: `if (eaclass()&EAJL_THIRD && BaseJob == Job_Knight) { bonus bAspd,2; ... }` carried by Cotton_Shirt.
+        var rules = TestGameplayRules.Services(region);
+        int Aspd(ushort job)
+        {
+            Assert.True(rules.Stats.TryResolveEquipment(new([Row(1, 2301, 0x10, card0: 4679)]), Items, out var equipment, Job(job)));
+            return equipment.FlatBonusesOrEmpty.Get("bAspd");
+        }
+
+        // bAspd,2 is held as pinned sd->bonus.aspd_add -= 10*val.
+        Assert.Equal(-20, Aspd(4054)); // Rune Knight: MAPID 0x1101 has JOBL_THIRD, & SECONDMASK = Knight
+        Assert.Equal(-20, Aspd(4060)); // Rune Knight (trans)
+        Assert.Equal(0, Aspd(4008)); // Lord Knight: not third
+        Assert.Equal(0, Aspd(4066)); // Royal Guard: third, but the Crusader line
+    }
+
+    [Theory]
+    [InlineData(4054, 1, 7, 1)]     // Rune Knight -> Knight / Swordman
+    [InlineData(4066, 1, 14, 1)]    // Royal Guard -> Crusader / Swordman
+    [InlineData(4068, 1, 19, 3)]    // Minstrel (male) -> Bard / Archer
+    [InlineData(4069, 0, 20, 3)]    // Wanderer (female) -> Dancer / Archer
+    [InlineData(0, 1, 0, 0)]        // Novice
+    public void BaseJobAndBaseClass_FollowPinnedMapIdMasksAndSex(ushort job, byte sex, int baseJob, int baseClass)
+    {
+        var bonuses = Run(new EquipmentScriptContext(Character: Job(job, sex)), Script(Bonus("bStr", BaseJob), Bonus("bAgi", BaseClass)));
+        Assert.Equal((baseJob, baseClass), (bonuses.Param.Strength, bonuses.Param.Agility));
+    }
+
+    [Theory]
+    [InlineData(7, 0)]      // Knight
+    [InlineData(4008, 1)]   // Lord Knight: JOBL_UPPER
+    [InlineData(4030, 2)]   // Baby Knight: JOBL_BABY
+    public void Upper_ReadsTheUpperOrBabyBit(ushort job, int upper) =>
+        Assert.Equal(upper, Run(new EquipmentScriptContext(Character: Job(job)), Script(Bonus("bStr", Upper))).Param.Strength);
+
+    [Fact]
+    public void Eaclass_WithAJobArgument_IsThatJobsMapId_AndAnUnknownJobIsMinusOne()
+    {
+        var bonuses = Run(new EquipmentScriptContext(), Script(Bonus("bMaxHP", Call("eaclass", Int(4008))), Bonus("bMaxSP", Call("eaclass", Int(13)))));
+        Assert.Equal((0x100101, -1), (bonuses.Param.MaxHp, bonuses.Param.MaxSp)); // MAPID_LORD_KNIGHT; JOB_KNIGHT2 has no case
+    }
+
+    // ---- the evaluating row (current_equip_item_index) ----
+
+    [Fact]
+    public void GetEquipWeaponLvArmorLvAndItemPos_ReadTheEvaluatingRow()
+    {
+        var script = Script(Bonus("bStr", Call("getequipweaponlv")), Bonus("bAgi", Call("getequiparmorlv")), Bonus("bVit", Call("getitempos")));
+        var knife = Run(new EquipmentScriptContext(Items: Items, Current: Row(1, 1201, 0x02)), script);
+        var shirt = Run(new EquipmentScriptContext(Items: Items, Current: Row(1, 2301, 0x10)), script);
+
+        Assert.Equal((1, 0, 0x02), (knife.Param.Strength, knife.Param.Agility, knife.Param.Vitality)); // Knife: weapon level 1
+        Assert.Equal((0, 1, 0x10), (shirt.Param.Strength, shirt.Param.Agility, shirt.Param.Vitality)); // Cotton Shirt: armor level 1
+        // A combo has no evaluating row: pinned errors, so it stays unsupported rather than reading 0.
+        Assert.Throws<EquipmentBonusResolver.UnsupportedEquipScriptException>(() => Run(new EquipmentScriptContext(Items: Items), script));
+    }
+
+    // ---- switch and statement increments ----
+
+    private static IrNode Case(long? value, params IrNode[] body) =>
+        new(IrKind.Case, Number: value is null ? 1 : 0, Children: [value is { } v ? Int(v) : new IrNode(IrKind.Empty), .. body]);
+    private static readonly IrNode Break = new(IrKind.Break);
+    private static IrNode Increment(string local) => new(IrKind.ExprStmt, Children: [new IrNode(IrKind.Postfix, Number: (long)IrOp.PostInc, Children: [Local(local)])]);
+
+    [Theory]
+    [InlineData(1, 1)]   // case 1: body, break
+    [InlineData(2, 5)]   // case 2 falls through into case 3 (+1 +4)
+    [InlineData(3, 4)]
+    [InlineData(9, 10)]  // default
+    public void Switch_MatchesFallsThroughAndBreaksLikePinned(int selector, int strength)
+    {
+        var script = Script(new IrNode(IrKind.Switch, Children:
+        [
+            Int(selector),
+            Case(1, Bonus("bStr", Int(1)), Break),
+            Case(2, Bonus("bStr", Int(1))),
+            Case(3, Bonus("bStr", Int(4)), Break),
+            Case(null, Bonus("bStr", Int(10))),
+        ]));
+        Assert.Equal(strength, Run(new EquipmentScriptContext(), script).Param.Strength);
+    }
+
+    [Fact]
+    public void PostIncrementStatement_StepsTheLocal()
+    {
+        // 28645: `.@val = 3; if (.@r>=12) .@val++; ...`
+        var script = Script(Set(".@val", Int(3)), Increment(".@val"), Increment(".@val"), Bonus("bStr", Local(".@val")));
+        Assert.Equal(5, Run(new EquipmentScriptContext(), script).Param.Strength);
+    }
+
+    [Fact]
+    public void LocalArrayElements_AreIntegerLocals_AndElementZeroIsTheBareName()
+    {
+        // Goibne set combo: `.@r[0] = ...; .@r[1] = ...; .@sum = .@r[0]+.@r[1]...` (item_combos.yml).
+        static IrNode Element(int i) => new(IrKind.Index, Text: ".@r", Number: (long)IrVarScope.Local, Children: [Int(i)]);
+        static IrNode SetElement(int i, long v) => new(IrKind.ExprStmt, Children: [new IrNode(IrKind.Assign, Number: (long)IrOp.Set, Children: [Element(i), Int(v)])]);
+        var script = Script(SetElement(0, 7), SetElement(1, 9), Bonus("bStr", Binary(IrOp.Add, Element(0), Element(1))), Bonus("bAgi", Local(".@r")));
+        var bonuses = Run(new EquipmentScriptContext(), script);
+        Assert.Equal((16, 7), (bonuses.Param.Strength, bonuses.Param.Agility));
+    }
 }

@@ -331,7 +331,7 @@ public sealed class IroStatRules : IStatRules
         var slotMasks = EquipSlots.Bitmask.Values.ToArray();
         CharacterInventoryItem? EquippedAt(int eqi) => eqi < slotMasks.Length ? equipped.FirstOrDefault(r => (r.Equip & slotMasks[eqi]) != 0) : null;
         EquipmentScriptContext Context(CharacterInventoryItem row, EquipmentBonusHand hand) =>
-            new(row.Refine, row.Details.EnchantGrade, default, hand, EquippedAt, items, character);
+            new(row.Refine, row.Details.EnchantGrade, default, hand, EquippedAt, items, character, row);
         try
         {
             foreach (var row in equipped)

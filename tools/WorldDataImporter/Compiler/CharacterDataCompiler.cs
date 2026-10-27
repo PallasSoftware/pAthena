@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Athena.WorldCompiler.Generation;
 
-internal sealed record CharacterDataSources(string MmoHeader, string ScriptConstants, string JobExperience, string JobBasePoints, string JobStats, string StatPoints, string SkillDatabase, string SkillTree, string PlayerConfig, string JobAspd);
+internal sealed record CharacterDataSources(string MmoHeader, string ScriptConstants, string JobExperience, string JobBasePoints, string JobStats, string StatPoints, string SkillDatabase, string SkillTree, string PlayerConfig, string JobAspd, string PcSource, string MapHeader);
 internal sealed record CharacterDataArtifact(string RelativePath, string Source);
 internal sealed record CharacterDataCompilation(IReadOnlyList<CharacterDataArtifact> Artifacts, CharacterDataCounts Counts, IReadOnlyList<string> Exclusions);
 internal sealed record CharacterDataCounts(int NumericJobIdentitiesDiscovered, int GeneratedJobDefinitions, int JobIdsWithProgression, int UniqueProgressionDefinitions, int CanonicalSkills, int DirectSkillTrees, int EffectiveSkillTrees);
@@ -98,6 +98,7 @@ internal static partial class CharacterDataCompiler
         {
             new("Jobs/GeneratedJobRegistry.cs", EmitJobs(jobs, commit)),
             new("Jobs/GeneratedJobEquipClass.cs", EmitJobEquipClass(jobs, commit)),
+            new("Jobs/GeneratedJobMapId.cs", EmitJobMapId(ParseJobEnum(sources.MmoHeader), sources.PcSource, sources.MapHeader, commit)),
             new("Progression/GeneratedProgressionData.cs", EmitProgressions(progressions, commit)),
             new("Progression/GeneratedProgressionRegistry.cs", EmitProgressionRegistry(progressions, commit)),
             new("Progression/GeneratedJobAspd.cs", EmitJobAspd(progressions, builders, commit)),
@@ -111,6 +112,14 @@ internal static partial class CharacterDataCompiler
     }
 
     private static IReadOnlyList<JobIdentity> ParseJobs(string header, string constants)
+    {
+        var values = ParseJobEnum(header);
+        var exported = ExportedJobRegex().Matches(constants).Select(match => match.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
+        return values.Where(pair => exported.Contains(pair.Key)).Select(pair => new JobIdentity(pair.Value, CanonicalJobName(pair.Key[4..]), pair.Key)).OrderBy(job => job.Id).ToArray();
+    }
+
+    // Every e_job enumerator (src/common/mmo.hpp), exported or not.
+    private static Dictionary<string, ushort> ParseJobEnum(string header)
     {
         var match = JobEnumRegex().Match(header);
         if (!match.Success) throw new ArgumentException("src/common/mmo.hpp does not contain enum e_job.");
@@ -126,8 +135,7 @@ internal static partial class CharacterDataCompiler
             if (current is < 0 or > ushort.MaxValue) throw new ArgumentException($"Job value for {entry.Groups[1].Value} is outside ushort range.");
             values.Add(entry.Groups[1].Value, (ushort)current);
         }
-        var exported = ExportedJobRegex().Matches(constants).Select(match => match.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
-        return values.Where(pair => exported.Contains(pair.Key)).Select(pair => new JobIdentity(pair.Value, CanonicalJobName(pair.Key[4..]), pair.Key)).OrderBy(job => job.Id).ToArray();
+        return values;
     }
 
     private static Dictionary<string, JobIdentity> BuildJobLookup(IReadOnlyList<JobIdentity> jobs, string constants)
@@ -976,6 +984,85 @@ internal static partial class CharacterDataCompiler
         return output.AppendLine("}").ToString();
     }
 
+    // Pinned pc_jobid2mapid / pc_mapid2jobid (src/map/pc.cpp) over the e_mapid enum and JOBL_/MAPID_ masks (src/map/map.hpp),
+    // parsed rather than hand-copied: the job-lineage values item scripts read through eaclass(), BaseJob (SP_BASESECOND) and
+    // BaseClass (SP_BASEFIRST).
+    private static string EmitJobMapId(IReadOnlyDictionary<string, ushort> jobIds, string pc, string mapHeader, string commit)
+    {
+        var defines = MapIdDefineRegex().Matches(mapHeader).ToDictionary(m => m.Groups[1].Value, m => Convert.ToUInt64(m.Groups[2].Value, 16), StringComparer.Ordinal);
+        var enumBody = MapIdEnumRegex().Match(mapHeader);
+        if (!enumBody.Success) throw new ArgumentException("src/map/map.hpp does not contain enum e_mapid.");
+        var mapIds = new Dictionary<string, ulong>(StringComparer.Ordinal);
+        ulong next = 0;
+        foreach (var raw in enumBody.Groups[1].Value.Split(','))
+        {
+            var text = Regex.Replace(raw, "//.*", "").Trim();
+            if (text.Length == 0) continue;
+            var entry = MapIdEntryRegex().Match(text);
+            if (!entry.Success) throw new ArgumentException($"Unsupported e_mapid entry '{text}'.");
+            if (entry.Groups[2].Value == "UINT64_MAX") continue; // MAPID_ALL: a filter value, never a job's class.
+            var value = entry.Groups[2].Success
+                ? entry.Groups[2].Value.Split('|').Select(term => term.Trim()).Aggregate(0UL, (acc, term) => acc | (term.StartsWith("0x", StringComparison.Ordinal) ? Convert.ToUInt64(term, 16)
+                    : defines.TryGetValue(term, out var define) ? define : mapIds.TryGetValue(term, out var earlier) ? earlier : throw new ArgumentException($"Unknown e_mapid term '{term}'.")))
+                : next;
+            mapIds.Add(entry.Groups[1].Value, value);
+            next = value + 1;
+        }
+
+        ushort Job(string name) => jobIds.TryGetValue(name, out var id) ? id : throw new ArgumentException($"pc.cpp names unknown job {name}.");
+        ulong MapId(string name) => mapIds.TryGetValue(name, out var id) ? id : throw new ArgumentException($"pc.cpp names unknown mapid {name}.");
+
+        var toMapId = new SortedDictionary<ushort, (ulong MapId, string Job, string Name)>();
+        var pending = new List<string>();
+        foreach (Match token in SwitchTokenRegex().Matches(Function(pc, "uint64 pc_jobid2mapid(uint16 b_class)")))
+        {
+            if (token.Groups[1].Success) { pending.Add(token.Groups[1].Value); continue; }
+            if (token.Groups[2].Value.Trim() != "-1")
+                foreach (var job in pending) toMapId.Add(Job(job), (MapId(token.Groups[2].Value.Trim()), job, token.Groups[2].Value.Trim()));
+            pending.Clear();
+        }
+
+        var toJob = new SortedDictionary<ulong, (ushort Male, ushort Female, string Text)>();
+        foreach (Match token in SwitchTokenRegex().Matches(Function(pc, "int32 pc_mapid2jobid(uint64 class_, int32 sex)")))
+        {
+            if (token.Groups[1].Success) { pending.Add(token.Groups[1].Value); continue; }
+            var result = token.Groups[2].Value.Trim();
+            if (result != "-1")
+            {
+                var bySex = SexJobRegex().Match(result);
+                var (male, female) = bySex.Success ? (Job(bySex.Groups[1].Value), Job(bySex.Groups[2].Value)) : (Job(result), Job(result));
+                foreach (var mapId in pending) toJob.Add(MapId(mapId), (male, female, $"{mapId} -> {result}"));
+            }
+            pending.Clear();
+        }
+        if (toMapId.Count == 0 || toJob.Count == 0) throw new ArgumentException("pc_jobid2mapid/pc_mapid2jobid produced no cases.");
+
+        var output = new StringBuilder(Header(commit, "src/map/pc.cpp", "src/map/map.hpp")).AppendLine("namespace Athena.Net.MapServer.Generated.Jobs;").AppendLine();
+        output.AppendLine("// Pinned pc_jobid2mapid / pc_mapid2jobid and the e_mapid enum: rAthena's job-lineage class (sd->class_).");
+        output.AppendLine("internal static class GeneratedJobMapId").AppendLine("{");
+        output.Append("    internal const ulong FirstMask = 0x").Append(defines["MAPID_FIRSTMASK"].ToString("x", CultureInfo.InvariantCulture)).Append(", SecondMask = 0x").Append(defines["MAPID_SECONDMASK"].ToString("x", CultureInfo.InvariantCulture))
+            .Append(", Upper = 0x").Append(defines["JOBL_UPPER"].ToString("x", CultureInfo.InvariantCulture)).Append(", Baby = 0x").Append(defines["JOBL_BABY"].ToString("x", CultureInfo.InvariantCulture)).AppendLine(";").AppendLine();
+        output.AppendLine("    private static readonly IReadOnlyDictionary<ushort, ulong> MapIdByJob = new Dictionary<ushort, ulong>").AppendLine("    {");
+        foreach (var (job, value) in toMapId) output.Append("        [").Append(job).Append("] = 0x").Append(value.MapId.ToString("x", CultureInfo.InvariantCulture)).Append(", // ").Append(value.Job).Append(" -> ").AppendLine(value.Name);
+        output.AppendLine("    };").AppendLine();
+        output.AppendLine("    private static readonly IReadOnlyDictionary<ulong, (ushort Male, ushort Female)> JobByMapId = new Dictionary<ulong, (ushort Male, ushort Female)>").AppendLine("    {");
+        foreach (var (mapId, value) in toJob) output.Append("        [0x").Append(mapId.ToString("x", CultureInfo.InvariantCulture)).Append("] = (").Append(value.Male).Append(", ").Append(value.Female).Append("), // ").AppendLine(value.Text);
+        output.AppendLine("    };").AppendLine();
+        output.AppendLine("    // pc_jobid2mapid(uint16 b_class); -1 (all bits, as the script engine pushes it) for an id with no case.");
+        output.AppendLine("    internal static long JobIdToMapId(long jobId) => MapIdByJob.TryGetValue((ushort)jobId, out var mapId) ? (long)mapId : -1;");
+        output.AppendLine("    // pc_mapid2jobid(class_, sex); -1 for a lineage with no case.");
+        output.AppendLine("    internal static int MapIdToJobId(ulong mapId, int sex) => JobByMapId.TryGetValue(mapId, out var job) ? sex != 0 ? job.Male : job.Female : -1;");
+        return output.AppendLine("}").ToString();
+    }
+
+    private static string Function(string source, string signature)
+    {
+        var start = source.IndexOf(signature, StringComparison.Ordinal);
+        var end = start < 0 ? -1 : source.IndexOf("\n}", start, StringComparison.Ordinal);
+        if (end < 0) throw new ArgumentException($"src/map/pc.cpp does not contain {signature}.");
+        return Regex.Replace(source[start..end], "//.*", "");
+    }
+
     private static string EmitProgressions(IReadOnlyList<Progression> progressions, string commit)
     {
         var output = new StringBuilder(Header(commit, "db/re/job_exp.yml", "db/re/job_basepoints.yml", "db/re/job_stats.yml", "db/re/statpoint.yml", "conf/battle/player.conf")).AppendLine("using Athena.Net.MapServer.Generated.Jobs;").AppendLine("using Athena.Net.MapServer.World;").AppendLine("namespace Athena.Net.MapServer.Generated.Progression;").AppendLine("internal static class GeneratedProgressionData").AppendLine("{");
@@ -1067,6 +1154,16 @@ internal static partial class CharacterDataCompiler
         return output.AppendLine("}").ToString();
     }
 
+    [GeneratedRegex(@"#define\s+(JOBL_\w+|MAPID_\w+MASK)\s+(0x[0-9a-fA-F]+)")]
+    private static partial Regex MapIdDefineRegex();
+    [GeneratedRegex(@"(?s)enum\s+e_mapid\s*:\s*uint64\s*\{(.*?)\};")]
+    private static partial Regex MapIdEnumRegex();
+    [GeneratedRegex(@"^(MAPID_[A-Z0-9_]+)(?:\s*=\s*(.+))?$")]
+    private static partial Regex MapIdEntryRegex();
+    [GeneratedRegex(@"case\s+(\w+)\s*:|return\s+([^;]+);")]
+    private static partial Regex SwitchTokenRegex();
+    [GeneratedRegex(@"^sex\s*\?\s*(JOB_\w+)\s*:\s*(JOB_\w+)$")]
+    private static partial Regex SexJobRegex();
     [GeneratedRegex(@"(?s)enum\s+e_job\s*\{(.*?)\};")]
     private static partial Regex JobEnumRegex();
     [GeneratedRegex(@"^(JOB_[A-Z0-9_]+)(?:\s*=\s*(\d+))?$")]
