@@ -6,6 +6,7 @@
     <Project Path="src/MapServer/MapServer.csproj" />
     <Project Path="src/WorldServer/Athena.World.Contracts/Athena.World.Contracts.csproj" />
     <Project Path="src/WorldServer/Athena.World/Athena.World.csproj" />
+    <Project Path="src/WorldServer/Athena.World.Runtime/Athena.World.Runtime.csproj" />
   </Folder>
 
   <Folder Name="/tests/">

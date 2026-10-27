@@ -109,7 +109,7 @@ public sealed class AthenaTestNpcScriptHostWiringTests
     [Fact]
     public async Task GetGameplayState_ReturnsTheSameInMemorySnapshotNoAdditionalPersistenceQuery()
     {
-        var initial = new CharacterGameplayState(CharId, 1, 0, 5, 3, 100, 200, 30, 8, 40, 11, 48, 2, 1, 1, 1, 1, 1, 1);
+        var initial = new CharacterGameplayState(CharId, 1, 0, 5, 3, 100, 200, 30, 8, 60, 15, 48, 2, 1, 1, 1, 1, 1, 1);
         var (client, session, _, run) = await SetupAsync(initial);
         var host = (INpcScriptHost)session;
 

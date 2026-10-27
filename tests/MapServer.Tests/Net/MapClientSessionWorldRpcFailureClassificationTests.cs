@@ -99,7 +99,7 @@ public sealed class MapClientSessionWorldRpcFailureClassificationTests
         var combatState = new MonsterAttackCadenceStore();
         var incarnation = new WorldMonsterIncarnationId(target.IncarnationId.Value);
         combatState.Register(target.Map, epoch, target.ActorId, incarnation);
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var fakeWorld = new FakeCombatWorldRuntime();
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
 
@@ -201,7 +201,7 @@ public sealed class MapClientSessionWorldRpcFailureClassificationTests
         var combatState = new MonsterAttackCadenceStore();
         var incarnation = new WorldMonsterIncarnationId(target.IncarnationId.Value);
         combatState.Register(target.Map, epoch, target.ActorId, incarnation);
-        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(questDrops, TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances);
 
         var gameplayPersistence = new RecordingGameplayStatePersistence(StrongAttacker());

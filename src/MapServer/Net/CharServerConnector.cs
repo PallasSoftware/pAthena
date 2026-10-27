@@ -6,10 +6,11 @@ using System.Text;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Logging;
 using Athena.Net.MapServer.World;
+using Athena.Net.Shared.Inventory;
 
 namespace Athena.Net.MapServer.Net;
 
-public sealed class CharServerConnector : ICharacterPositionPersistence, ICharacterQuestPersistence, ICharacterGameplayStatePersistence, ICharacterInventoryPersistence, ICharacterInventoryListPersistence, ICharacterSkillPersistence
+public sealed class CharServerConnector : ICharacterPositionPersistence, ICharacterQuestPersistence, ICharacterGameplayStatePersistence, ICharacterInventoryOperations, ICharacterSkillPersistence
 {
     private static readonly Dictionary<short, int> PacketLengths = new()
     {
@@ -20,11 +21,8 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         [PacketConstants.MapSavePointResponse] = MapSavePointProtocol.ResponseLength,
         [PacketConstants.MapGameplayStateGetResponse] = MapCharacterGameplayStateProtocol.ResponseLength,
         [PacketConstants.MapGameplayStateUpdateResponse] = MapCharacterGameplayStateProtocol.ResponseLength,
-        [PacketConstants.MapInventoryAddResponse] = MapInventoryAddProtocol.ResponseLength,
-        [PacketConstants.MapInventoryEquipUpdateResponse] = MapInventoryEquipUpdateProtocol.ResponseLength,
-        [PacketConstants.MapInventoryConsumeResponse] = MapInventoryConsumeProtocol.ResponseLength,
         [PacketConstants.MapSkillLearnResponse] = MapSkillLearnProtocol.ResponseLength,
-        // MapInventoryListGetResponse and MapSkillListGetResponse are variable-length - see
+        // The inventory list/operation responses and MapSkillListGetResponse are variable-length - see
         // VariableLengthMinLength below.
     };
 
@@ -38,10 +36,9 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<bool>> _pendingSavePoints = new();
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterGameplayState?>> _pendingGameplayReads = new();
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterGameplayState?>> _pendingGameplayUpdates = new();
-    private readonly ConcurrentDictionary<(uint CharId, int ItemId), TaskCompletionSource<InventoryAddPersistenceResult>> _pendingInventoryAdds = new();
-    private readonly ConcurrentDictionary<(uint CharId, uint DurableId), TaskCompletionSource<InventoryConsumePersistenceResult>> _pendingInventoryConsumes = new();
-    private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterInventoryReadResult>> _pendingInventoryReads = new();
-    private readonly ConcurrentDictionary<(uint CharId, uint DurableId), TaskCompletionSource<bool>> _pendingEquipUpdates = new();
+    private readonly ConcurrentDictionary<(uint CharId, InventoryContainer Container), TaskCompletionSource<(bool Succeeded, IReadOnlyList<InventoryItemRow> Rows)>> _pendingInventoryReads = new();
+    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<InventoryOperationResponse?>> _pendingInventoryOperations = new();
+    private readonly ConcurrentDictionary<uint, TaskCompletionSource<IReadOnlyList<PendingGroundDrop>?>> _pendingDropReads = new();
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<CharacterSkillReadResult>> _pendingSkillReads = new();
     private readonly ConcurrentDictionary<uint, (TaskCompletionSource<CharacterSkillLearnResult?> Pending, ushort SkillId)> _pendingSkillLearns = new();
     private readonly MapServerServiceTokenProvider _serviceTokenProvider;
@@ -186,12 +183,60 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
 
     public async Task<CharacterInventoryReadResult> GetInventoryAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
     {
-        var connection = _connection; if (connection is null) return CharacterInventoryReadResult.Failed();
-        var pending = new TaskCompletionSource<CharacterInventoryReadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pendingInventoryReads.TryAdd(characterId, pending)) return CharacterInventoryReadResult.Failed();
+        var (succeeded, rows) = await GetContainerAsync(accountId, characterId, InventoryContainer.Inventory, cancellationToken);
+        return succeeded ? CharacterInventoryReadResult.Success(CharacterInventorySnapshot.FromRows(rows)) : CharacterInventoryReadResult.Failed();
+    }
+
+    /// <summary>Reads any item container (inventory, cart, account storage, guild storage) in CharServer's stable order.</summary>
+    public async Task<(bool Succeeded, IReadOnlyList<InventoryItemRow> Rows)> GetContainerAsync(uint accountId, uint characterId, InventoryContainer container, CancellationToken cancellationToken)
+    {
+        var connection = _connection; if (connection is null) return (false, []);
+        var pending = new TaskCompletionSource<(bool, IReadOnlyList<InventoryItemRow>)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var key = (characterId, container);
+        if (!_pendingInventoryReads.TryAdd(key, pending)) return (false, []);
         using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
-        try { await connection.WriteAsync(MapInventoryListProtocol.BuildGetRequest(accountId, characterId), cancellationToken); return await pending.Task; }
-        finally { _pendingInventoryReads.TryRemove(characterId, out _); }
+        try { await connection.WriteAsync(InventoryListWire.BuildGetRequest(accountId, characterId, container), cancellationToken); return await pending.Task; }
+        finally { _pendingInventoryReads.TryRemove(key, out _); }
+    }
+
+    public async Task<IReadOnlyList<(PendingGroundDrop Record, InventoryItemRow Row)>?> GetPendingGroundDropsAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
+    {
+        var connection = _connection; if (connection is null) return null;
+        var pending = new TaskCompletionSource<IReadOnlyList<PendingGroundDrop>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingDropReads.TryAdd(characterId, pending)) return null;
+        IReadOnlyList<PendingGroundDrop>? records;
+        using (cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken)))
+        {
+            try { await connection.WriteAsync(PendingGroundDropListWire.BuildRequest(accountId, characterId), cancellationToken); records = await pending.Task; }
+            finally { _pendingDropReads.TryRemove(characterId, out _); }
+        }
+        if (records is null) return null;
+        if (records.Count == 0) return [];
+        var (succeeded, rows) = await GetContainerAsync(accountId, characterId, InventoryContainer.PendingGroundDrop, cancellationToken);
+        if (!succeeded) return null;
+        var byId = rows.ToDictionary(row => row.DurableId);
+        return [.. records.Where(record => byId.ContainsKey(record.ItemRowId)).Select(record => (record, byId[record.ItemRowId]))];
+    }
+
+    /// <summary>How long one attempt waits for CharServer's answer before the outcome is treated as unknown (null).</summary>
+    public TimeSpan InventoryOperationTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    public async Task<InventoryOperationResponse?> ExecuteAsync(InventoryOperationRequest request, CancellationToken cancellationToken)
+    {
+        var connection = _connection; if (connection is null) return null;
+        var pending = new TaskCompletionSource<InventoryOperationResponse?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The same OperationId can only be in flight once: a concurrent second send of it would race its own answer.
+        if (!_pendingInventoryOperations.TryAdd(request.OperationId, pending)) return null;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(InventoryOperationTimeout);
+        using var registration = timeout.Token.Register(() => pending.TrySetResult(null));
+        try
+        {
+            await connection.WriteAsync(InventoryOperationWire.BuildRequest(request), timeout.Token);
+            return await pending.Task;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
+        finally { _pendingInventoryOperations.TryRemove(request.OperationId, out _); }
     }
 
     public async Task<CharacterSkillReadResult> GetSkillsAsync(uint accountId, uint characterId, CancellationToken cancellationToken)
@@ -212,49 +257,6 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
         try { await connection.WriteAsync(MapSkillLearnProtocol.BuildRequest(accountId, expectedGameplayState, skillId, expectedCurrentLevel), cancellationToken); return await pending.Task; }
         finally { _pendingSkillLearns.TryRemove(expectedGameplayState.CharacterId, out _); }
-    }
-
-    public async Task<bool> SetItemEquipAsync(uint accountId, uint characterId, uint durableId, uint equip, CancellationToken cancellationToken)
-    {
-        var connection = _connection; if (connection is null) return false;
-        var key = (characterId, durableId);
-        var pending = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pendingEquipUpdates.TryAdd(key, pending)) return false;
-        using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
-        try { await connection.WriteAsync(MapInventoryEquipUpdateProtocol.BuildRequest(accountId, characterId, durableId, equip), cancellationToken); return await pending.Task; }
-        finally { _pendingEquipUpdates.TryRemove(key, out _); }
-    }
-
-    public async Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken)
-    {
-        var connection = _connection;
-        if (connection is null || itemId <= 0 || amount == 0) return InventoryAddPersistenceResult.Failed();
-        var key = (charId, itemId);
-        var pending = new TaskCompletionSource<InventoryAddPersistenceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pendingInventoryAdds.TryAdd(key, pending)) return InventoryAddPersistenceResult.Failed();
-        using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
-        try
-        {
-            await connection.WriteAsync(MapInventoryAddProtocol.BuildRequest(accountId, charId, itemId, amount), cancellationToken);
-            return await pending.Task;
-        }
-        finally { _pendingInventoryAdds.TryRemove(key, out _); }
-    }
-
-    public async Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken)
-    {
-        var connection = _connection;
-        if (connection is null || amount == 0) return InventoryConsumePersistenceResult.Failed();
-        var key = (charId, durableId);
-        var pending = new TaskCompletionSource<InventoryConsumePersistenceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pendingInventoryConsumes.TryAdd(key, pending)) return InventoryConsumePersistenceResult.Failed();
-        using var registration = cancellationToken.Register(() => pending.TrySetCanceled(cancellationToken));
-        try
-        {
-            await connection.WriteAsync(MapInventoryConsumeProtocol.BuildRequest(accountId, charId, durableId, amount), cancellationToken);
-            return await pending.Task;
-        }
-        finally { _pendingInventoryConsumes.TryRemove(key, out _); }
     }
 
     private async Task<CharacterQuestStatus?> SendQuestStateRequestAsync(uint accountId, uint charId, uint questId, CharacterQuestStatus operation, CancellationToken cancellationToken)
@@ -352,10 +354,8 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
             FailPendingQuestStates();
             FailPendingSavePoints();
             FailPendingGameplayStates();
-            FailPendingInventoryAdds();
             FailPendingInventoryReads();
-            FailPendingEquipUpdates();
-            FailPendingInventoryConsumes();
+            FailPendingInventoryOperations();
             FailPendingSkillReads();
             FailPendingSkillLearns();
 
@@ -425,14 +425,12 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
                 return HandleGameplayStateResponse(packet, packetType, _pendingGameplayReads);
             case PacketConstants.MapGameplayStateUpdateResponse:
                 return HandleGameplayStateResponse(packet, packetType, _pendingGameplayUpdates);
-            case PacketConstants.MapInventoryAddResponse:
-                return HandleInventoryAddResponse(packet);
-            case PacketConstants.MapInventoryListGetResponse:
+            case InventoryListWire.ResponseOpcode:
                 return HandleInventoryListGetResponse(packet);
-            case PacketConstants.MapInventoryEquipUpdateResponse:
-                return HandleInventoryEquipUpdateResponse(packet);
-            case PacketConstants.MapInventoryConsumeResponse:
-                return HandleInventoryConsumeResponse(packet);
+            case PendingGroundDropListWire.ResponseOpcode:
+                return HandlePendingGroundDropListResponse(packet);
+            case InventoryOperationWire.ResponseOpcode:
+                return HandleInventoryOperationResponse(packet);
             case PacketConstants.MapSkillListGetResponse:
                 return HandleSkillListGetResponse(packet);
             case PacketConstants.MapSkillLearnResponse:
@@ -543,19 +541,6 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         return true;
     }
 
-    private bool HandleInventoryAddResponse(byte[] packet)
-    {
-        if (!MapInventoryAddProtocol.TryParseResponse(
-                packet, out var charId, out var itemId, out var newAmount, out var durableId,
-                out var equip, out var identified, out var refine, out var favorite, out var bound, out var isNewRow, out var success))
-            return false;
-        if (_pendingInventoryAdds.TryRemove((charId, itemId), out var pending))
-            pending.TrySetResult(new InventoryAddPersistenceResult(success, newAmount, durableId, equip, identified, refine, favorite, bound, isNewRow));
-        if (success) MapLogger.Info($"Inventory-add succeeded charId={charId} itemId={itemId} newAmount={newAmount} durableId={durableId} isNewRow={isNewRow}.");
-        else MapLogger.Warning($"Inventory-add failed charId={charId} itemId={itemId}.");
-        return true;
-    }
-
     private bool HandleQuestStateResponse(byte[] packet)
     {
         if (!MapQuestStateProtocol.TryParseResponse(packet, out var charId, out var questId, out var state)) return false;
@@ -580,25 +565,22 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
 
     private bool HandleInventoryListGetResponse(byte[] packet)
     {
-        if (!MapInventoryListProtocol.TryParseResponse(packet, out _, out var charId, out var inventory)) return false;
-        if (_pendingInventoryReads.TryRemove(charId, out var pending)) pending.TrySetResult(inventory);
+        if (!InventoryListWire.TryParseResponse(packet, out var result, out var charId, out var container, out var rows)) return false;
+        if (_pendingInventoryReads.TryRemove((charId, container), out var pending)) pending.TrySetResult((result == 0, rows));
         return true;
     }
 
-    private bool HandleInventoryEquipUpdateResponse(byte[] packet)
+    private bool HandlePendingGroundDropListResponse(byte[] packet)
     {
-        if (!MapInventoryEquipUpdateProtocol.TryParseResponse(packet, out var success, out var charId, out var durableId)) return false;
-        if (_pendingEquipUpdates.TryRemove((charId, durableId), out var pending)) pending.TrySetResult(success);
+        if (!PendingGroundDropListWire.TryParseResponse(packet, out var result, out var charId, out var records)) return false;
+        if (_pendingDropReads.TryRemove(charId, out var pending)) pending.TrySetResult(result == 0 ? records : null);
         return true;
     }
 
-    private bool HandleInventoryConsumeResponse(byte[] packet)
+    private bool HandleInventoryOperationResponse(byte[] packet)
     {
-        if (!MapInventoryConsumeProtocol.TryParseResponse(packet, out var success, out var charId, out var durableId, out var newAmount, out var rowDeleted)) return false;
-        if (_pendingInventoryConsumes.TryRemove((charId, durableId), out var pending))
-            pending.TrySetResult(new InventoryConsumePersistenceResult(success, newAmount, rowDeleted));
-        if (success) MapLogger.Info($"Inventory-consume succeeded charId={charId} durableId={durableId} newAmount={newAmount} rowDeleted={rowDeleted}.");
-        else MapLogger.Warning($"Inventory-consume failed charId={charId} durableId={durableId}.");
+        if (!InventoryOperationWire.TryParseResponse(packet, out var response)) return false;
+        if (_pendingInventoryOperations.TryRemove(response.OperationId, out var pending)) pending.TrySetResult(response);
         return true;
     }
 
@@ -748,28 +730,17 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
         _pendingGameplayReads.Clear(); _pendingGameplayUpdates.Clear();
     }
 
-    private void FailPendingInventoryAdds()
-    {
-        foreach (var pending in _pendingInventoryAdds.Values) pending.TrySetResult(InventoryAddPersistenceResult.Failed());
-        _pendingInventoryAdds.Clear();
-    }
-
     private void FailPendingInventoryReads()
     {
-        foreach (var pending in _pendingInventoryReads.Values) pending.TrySetResult(CharacterInventoryReadResult.Failed());
+        foreach (var pending in _pendingInventoryReads.Values) pending.TrySetResult((false, []));
         _pendingInventoryReads.Clear();
     }
 
-    private void FailPendingEquipUpdates()
+    // A dropped connection leaves every in-flight operation's outcome UNKNOWN (null), never "failed": it may already be durable.
+    private void FailPendingInventoryOperations()
     {
-        foreach (var pending in _pendingEquipUpdates.Values) pending.TrySetResult(false);
-        _pendingEquipUpdates.Clear();
-    }
-
-    private void FailPendingInventoryConsumes()
-    {
-        foreach (var pending in _pendingInventoryConsumes.Values) pending.TrySetResult(InventoryConsumePersistenceResult.Failed());
-        _pendingInventoryConsumes.Clear();
+        foreach (var pending in _pendingInventoryOperations.Values) pending.TrySetResult(null);
+        _pendingInventoryOperations.Clear();
     }
 
     private void FailPendingSkillReads()
@@ -794,7 +765,9 @@ public sealed class CharServerConnector : ICharacterPositionPersistence, ICharac
     private static readonly Dictionary<short, int> VariableLengthMinLength = new()
     {
         [PacketConstants.MapAuthOk] = 4,
-        [PacketConstants.MapInventoryListGetResponse] = MapInventoryListProtocol.ResponseHeaderLength,
+        [InventoryListWire.ResponseOpcode] = InventoryListWire.ResponseHeaderLength,
+        [InventoryOperationWire.ResponseOpcode] = InventoryOperationWire.ResponseHeaderLength,
+        [PendingGroundDropListWire.ResponseOpcode] = PendingGroundDropListWire.ResponseHeaderLength,
         [PacketConstants.MapSkillListGetResponse] = MapSkillListProtocol.ResponseHeaderLength,
     };
 

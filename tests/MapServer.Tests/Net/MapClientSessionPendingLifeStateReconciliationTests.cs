@@ -22,7 +22,7 @@ public sealed class MapClientSessionPendingLifeStateReconciliationTests
 
     private static CharacterGameplayState AliveState(uint currentHp = 10) => new(
         CharacterId: CharId, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: currentHp, CurrentSp: 10, MaxHp: 10, MaxSp: 10,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: currentHp, CurrentSp: 10, MaxHp: 40, MaxSp: 11,
         StatPoints: 0, SkillPoints: 0, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
 
     private sealed class RecordingGameplayStatePersistence(CharacterGameplayState state) : ICharacterGameplayStatePersistence
@@ -74,7 +74,7 @@ public sealed class MapClientSessionPendingLifeStateReconciliationTests
             "int_land", 75, 51, WorldMapRegistry.Tutorial,
             gameplayStatePersistence: gameplayPersistence,
             accountId: AccountId, charId: CharId, monsterProjections: new MonsterFeedProjectionRegistry(),
-            combat: new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+            combat: new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
             combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "int_land", 75, 51, 0, 0, 0));

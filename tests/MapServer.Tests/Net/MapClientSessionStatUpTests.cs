@@ -321,7 +321,7 @@ public sealed class MapClientSessionStatUpTests
 
     private static CharacterGameplayState NoviceState(uint statPoints, ushort strength = 1) => new(
         CharacterId: CharId, Version: 0, JobClass: (ushort)JobClass.Novice, BaseLevel: 2, JobLevel: 2,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: 40, CurrentSp: 11, MaxHp: 40, MaxSp: 11,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: 45, CurrentSp: 12, MaxHp: 45, MaxSp: 12,
         StatPoints: statPoints, SkillPoints: 0, Strength: strength, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
 
     private static CharacterGameplayState NoviceState(uint statPoints, CharacterBaseStat stat, ushort value)

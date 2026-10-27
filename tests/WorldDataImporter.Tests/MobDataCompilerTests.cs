@@ -855,9 +855,9 @@ public sealed class MobDataCompilerTests
     // MD_* bit beyond the 26 pinned ones this project currently knows about).
     private static readonly Regex ModesEntryPattern = new(@"(?m)^      (?<key>[A-Za-z][A-Za-z0-9_]*):\s*(?:true|false)\s*$", RegexOptions.Compiled);
 
-    // Same column-0-comment tolerance as MobDataCompiler's own ModesBlock regex (see that field's
-    // doc comment in MobDataCompiler.cs for the real-data rationale: 14 real pinned mobs have their
-    // Modes: block interrupted by a column-0 `#...` line) - using a STRICTER indent-only scan here
+    // Same column-0-comment tolerance MobDataCompiler's RathenaYaml-based Modes: reader has (14 real
+    // pinned mobs have their Modes: block interrupted by a column-0 `#...` line; RathenaYaml treats
+    // such lines as blank) - using a STRICTER indent-only scan here
     // would make this schema-drift test itself under-count real entries and silently pass instead
     // of genuinely verifying full coverage.
     private static readonly Regex ModesBlockTolerant = new(@"(?m)^    Modes:\n((?:(?:      .+|#.*|)\n?)*)", RegexOptions.Compiled);

@@ -92,7 +92,7 @@ public sealed class MapClientSessionMonsterLoginVisibilityTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(monster.Map, epoch, monster.ActorId, new WorldMonsterIncarnationId(monster.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(monster.Map, epoch, combatState, registry.AllInstances, fakeWorld);
 
         var state = new CharacterGameplayState(

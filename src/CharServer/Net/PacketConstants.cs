@@ -62,20 +62,8 @@ public static class PacketConstants
     public const short MapGameplayStateGetResponse = 0x2b2e;
     public const short MapGameplayStateUpdateRequest = 0x2b2f;
     public const short MapGameplayStateUpdateResponse = 0x2b30;
-    public const short MapInventoryAddRequest = 0x2b31;
-    public const short MapInventoryAddResponse = 0x2b32;
-    // Renamed from MapEquipmentGet*: this reads every persisted CharInventory row for the
-    // character, not just the right-hand slot (see CharacterInventorySnapshot on the MapServer
-    // side).
-    public const short MapInventoryListGetRequest = 0x2b33;
-    public const short MapInventoryListGetResponse = 0x2b34;
-    // Persists a single CharInventory row's Equip bitmask (runtime equip/unequip mutation,
-    // CZ_REQ_WEAR_EQUIP/CZ_REQ_TAKEOFF_EQUIP). CharServer remains the durable owner of
-    // CharInventory.Equip - MapServer never mutates its own snapshot without a confirmed write.
-    public const short MapInventoryEquipUpdateRequest = 0x2b35;
-    public const short MapInventoryEquipUpdateResponse = 0x2b36;
-    public const short MapInventoryConsumeRequest = 0x2b37;
-    public const short MapInventoryConsumeResponse = 0x2b38;
+    // Inventory container reads (0x2b33/0x2b34) and atomic inventory operations (0x2b3e/0x2b3f) are defined once in
+    // Athena.Net.Shared.Inventory.InventoryListWire / InventoryOperationWire and shared with MapServer.
     public const short MapSkillListGetRequest = 0x2b39;
     public const short MapSkillListGetResponse = 0x2b3a;
     public const short MapSkillLearnRequest = 0x2b3b;

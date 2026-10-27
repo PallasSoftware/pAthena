@@ -6,5 +6,6 @@ namespace Athena.Net.MapServer.Gameplay.Rules;
 // level-up. Experience RATES (server configuration policy) stay in Gameplay.Rates and are not regional rules.
 public interface IExperienceRules
 {
-    CharacterProgressionResult CalculateProgression(CharacterGameplayState state, ulong baseAward, ulong jobAward);
+    // `resources` is the wearer whose new maxima a level-up computes (and fully heals to on a base level).
+    CharacterProgressionResult CalculateProgression(CharacterGameplayState state, ulong baseAward, ulong jobAward, MaxResourceContext resources = default);
 }

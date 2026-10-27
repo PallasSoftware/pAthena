@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.World;
+using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.Net;
 
@@ -20,9 +21,9 @@ public sealed class MapClientSessionEquipmentTests
             new CharacterInventoryItem(DurableId: 2, SlotIndex: 1, 2301, 1, 0x000010, true, 0, 0, 0), // equipped armor
         ]);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
-        var inventoryPersistence = new StubInventoryListPersistence(CharacterInventoryReadResult.Success(inventory));
+        var inventoryPersistence = new InMemoryInventoryOperations(inventory);
         await using var session = new MapClientSession(1, server, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), false,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryPersistence);
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence);
         var auth = new MapAuthOkData(7, 9, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0);
 
         await session.CompleteIroAuthenticationAsync(auth);
@@ -38,9 +39,9 @@ public sealed class MapClientSessionEquipmentTests
         using var client = new TcpClient(); var connecting = client.ConnectAsync(endpoint.Address, endpoint.Port); using var server = await listener.AcceptTcpClientAsync(); await connecting;
         var gameplayState = new CharacterGameplayState(9, 3, 0, 2, 4, 123, 456, 30, 8, 45, 11, 51, 3, 2, 3, 4, 5, 6, 7);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
-        var inventoryPersistence = new StubInventoryListPersistence(CharacterInventoryReadResult.Success(new CharacterInventorySnapshot([])));
+        var inventoryPersistence = new InMemoryInventoryOperations();
         await using var session = new MapClientSession(1, server, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), false,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryPersistence);
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence);
         var auth = new MapAuthOkData(7, 9, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0);
 
         await session.CompleteIroAuthenticationAsync(auth);
@@ -57,9 +58,9 @@ public sealed class MapClientSessionEquipmentTests
         using var client = new TcpClient(); var connecting = client.ConnectAsync(endpoint.Address, endpoint.Port); using var server = await listener.AcceptTcpClientAsync(); await connecting;
         var gameplayState = new CharacterGameplayState(9, 3, 0, 2, 4, 123, 456, 30, 8, 45, 11, 51, 3, 2, 3, 4, 5, 6, 7);
         var gameplayPersistence = new StubGameplayStatePersistence(gameplayState);
-        var inventoryPersistence = new StubInventoryListPersistence(CharacterInventoryReadResult.Failed());
+        var inventoryPersistence = new InMemoryInventoryOperations { FailReads = true };
         await using var session = new MapClientSession(1, server, new CharServerConnector(new MapConfigStore(new MapConfig(), "unused")), true,
-            gameplayStatePersistence: gameplayPersistence, inventoryListPersistence: inventoryPersistence);
+            gameplayStatePersistence: gameplayPersistence, inventoryOperations: inventoryPersistence);
         var auth = new MapAuthOkData(7, 9, 1, 2, 0, 0, false, "iz_int01", 18, 26, 0, 0, 0);
 
         await session.CompleteIroAuthenticationAsync(auth);
@@ -75,11 +76,5 @@ public sealed class MapClientSessionEquipmentTests
     {
         public Task<CharacterGameplayState?> GetAsync(uint a, uint c, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(a == 7 && c == 9 ? state : null);
         public Task<CharacterGameplayState?> UpdateAsync(uint a, CharacterGameplayState e, CharacterGameplayState u, CancellationToken t) => Task.FromResult<CharacterGameplayState?>(null);
-    }
-
-    private sealed class StubInventoryListPersistence(CharacterInventoryReadResult result) : ICharacterInventoryListPersistence
-    {
-        public Task<CharacterInventoryReadResult> GetInventoryAsync(uint a, uint c, CancellationToken t) => Task.FromResult(result);
-        public Task<bool> SetItemEquipAsync(uint a, uint c, uint durableId, uint equip, CancellationToken t) => Task.FromResult(false);
     }
 }

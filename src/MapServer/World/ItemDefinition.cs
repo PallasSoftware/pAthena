@@ -1,3 +1,5 @@
+using Athena.Net.MapServer.World.Items;
+
 namespace Athena.Net.MapServer.World;
 
 // Pinned rAthena enum weapon_type (map/pc.hpp:959) - values match exactly. This is the
@@ -57,7 +59,12 @@ public abstract record ItemDefinition(
     string Name,
     bool Stackable,
     int ClientViewId,
-    WorldSourceInfo Source);
+    WorldSourceInfo Source)
+{
+    // Everything else the pinned item loader stored for this item (price, weight, slots, level/job/sex restrictions, flags,
+    // trade restrictions, scripts). Null only for definitions composed by hand in tests; ItemCatalog always sets it.
+    public ItemMetadata? Meta { get; init; }
+}
 
 // Shared by every equip-capable concrete ItemDefinition (weapons, armor, and any future
 // equip-slot item type). EquipLocation is the item_db's possible-equip-location bitmask
@@ -189,4 +196,53 @@ public sealed record DelayConsumeItemDefinition(
     bool Stackable,
     int ClientViewId,
     WorldSourceInfo Source)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);
+
+// Pinned Type: Card. EquipLocations is the item_db `Locations` bitmask: the equipment positions the card may be compounded into
+// (pc_insert_card checks item_eq->equip & card->equip) - NOT a place the card itself is worn. Card behavior (compound, combos,
+// scripts) is Feature 16 stage S7; this type exists so every pinned card is representable authoritative inventory data.
+public sealed record CardItemDefinition(
+    int Id,
+    string AegisName,
+    string Name,
+    bool Stackable,
+    int ClientViewId,
+    WorldSourceInfo Source,
+    uint EquipLocations,
+    byte CardType)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);
+
+// Pinned Type: Ammo (arrows, bullets, kunai, ...). Stackable, equipped into EQP_AMMO; AmmoType is the pinned e_ammo_type subtype.
+public sealed record AmmoItemDefinition(
+    int Id,
+    string AegisName,
+    string Name,
+    bool Stackable,
+    int ClientViewId,
+    WorldSourceInfo Source,
+    int Attack,
+    byte AmmoType,
+    uint EquipLocation)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);
+
+// Pinned Type: ShadowGear (equipped into the EQP_SHADOW_* positions; Defense feeds hard DEF like armor).
+public sealed record ShadowGearItemDefinition(
+    int Id,
+    string AegisName,
+    string Name,
+    bool Stackable,
+    int ClientViewId,
+    WorldSourceInfo Source,
+    int Defense,
+    uint EquipLocation)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source), IEquippableItemDefinition;
+
+// Pinned Type: PetEgg / PetArmor / Cash. Plain data types; their behavior belongs to the pet and cash-shop systems.
+public sealed record PetEggItemDefinition(int Id, string AegisName, string Name, bool Stackable, int ClientViewId, WorldSourceInfo Source)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);
+
+public sealed record PetArmorItemDefinition(int Id, string AegisName, string Name, bool Stackable, int ClientViewId, WorldSourceInfo Source)
+    : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);
+
+public sealed record CashItemDefinition(int Id, string AegisName, string Name, bool Stackable, int ClientViewId, WorldSourceInfo Source)
     : ItemDefinition(Id, AegisName, Name, Stackable, ClientViewId, Source);

@@ -20,11 +20,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Readable full mob definitions written by generate-mobs next to the compiled facades: inspection only. -->
+    <Compile Remove="Generated/GameData/Mobs/Readable/**" />
     <Compile Remove="World/MapCollision.cs;World/MovementPathProvider.cs;World/RathenaCompatibleMovementPathProvider.cs;World/GridLineTraversal.cs;World/RathenaMapCacheFormat.cs;World/RathenaMapCacheLayers.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="Generated/Assets/Maps/AthenaMaps.bin" Link="MapData/AthenaMaps.bin" CopyToPublishDirectory="Always" />
+    <!-- Item data pack (~10 MB): small enough to copy to every build output so tests and the server load the same file. -->
+    <Content Include="Generated/Assets/Items/AthenaItems.bin" Link="MapData/AthenaItems.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <!-- Mob data pack: the runtime source of every MobDefinition; GeneratedMobs.<Name> are facades over MobCatalog. -->
+    <Content Include="Generated/Assets/Mobs/AthenaMobs.bin" Link="MapData/AthenaMobs.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
   <!-- Embed source revision for runtime build provenance. -->
@@ -40,6 +46,7 @@
 
   <ItemGroup>
     <Compile Include="../Shared/MapIdentity/CanonicalMapPolicy.cs" Link="Shared/MapIdentity/CanonicalMapPolicy.cs" />
+    <Compile Include="../Shared/Inventory/InventoryOperationWire.cs" Link="Shared/Inventory/InventoryOperationWire.cs" />
     <Compile Include="../Shared/MapIdentity/Generated/GeneratedCanonicalMapAliases.cs" Link="Shared/MapIdentity/Generated/GeneratedCanonicalMapAliases.cs" />
   </ItemGroup>
 </Project>

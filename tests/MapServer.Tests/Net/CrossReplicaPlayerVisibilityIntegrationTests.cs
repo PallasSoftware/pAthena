@@ -60,7 +60,7 @@ public sealed partial class CrossReplicaPlayerVisibilityIntegrationTests : IAsyn
     private Replica MakeReplica(string mapId)
     {
         var combatState = new MonsterAttackCadenceStore();
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var world = new MapServerWorld(
             WorldMapRegistry.Tutorial, [PoringSpawn(mapId)], combat,
             EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(),

@@ -46,7 +46,7 @@ public sealed class CanonicalMapMultiplayerIntegrationTests : IAsyncLifetime
         WorldMapRegistry.Tutorial,
         [new MobSpawnDefinition(GeneratedMobRegistry.Get(1002), CanonicalMap, 1, RespawnDelay: 60_000, RespawnRandomDelay: 0,
             new WorldSourceInfo("rAthena", "abc", "test", 0), SpawnName: "Poring", X: (short)MonsterX, Y: (short)MonsterY, Xs: 1, Ys: 1)],
-        new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
         EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     private sealed record Player(MapClientSession Session, TcpClient Client, NetworkStream Stream, Task Run);

@@ -9,6 +9,7 @@ using Athena.Net.MapServer.Net;
 using Athena.Net.MapServer.Tests.Net;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
+using MapServer.Tests.Testing;
 
 namespace Athena.Net.MapServer.Tests.World;
 
@@ -43,13 +44,6 @@ public sealed class PrtFild08dMonsterVisibilityAndRespawnIntegrationTests
             Task.FromResult<CharacterGameplayState?>(updated);
     }
 
-    private sealed class NoOpInventoryPersistence : ICharacterInventoryPersistence
-    {
-        public Task<InventoryAddPersistenceResult> AddStackableItemAsync(uint accountId, uint charId, int itemId, uint amount, CancellationToken cancellationToken) =>
-            Task.FromResult(new InventoryAddPersistenceResult(true, amount, 1, Equip: 0, Identified: true, Refine: 0, Favorite: 0, Bound: 0, IsNewRow: true));
-        public Task<InventoryConsumePersistenceResult> ConsumeItemAsync(uint accountId, uint charId, uint durableId, uint amount, CancellationToken cancellationToken) =>
-            Task.FromResult(InventoryConsumePersistenceResult.Failed());
-    }
 
     // Strong enough to kill ordinary Poring's 55 HP in very few hits - same rationale as
     // MapClientSessionMonsterCombatTests.StrongNovice.
@@ -101,7 +95,7 @@ public sealed class PrtFild08dMonsterVisibilityAndRespawnIntegrationTests
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver(Generated.GameData.Quests.GeneratedQuestDrops.All), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver(Generated.GameData.Quests.GeneratedQuestDrops.All), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var monsterProjections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances);
         Assert.Equal("prt_fild08", target.Map);
         Assert.Equal(GeneratedMobs.Poring.Id, target.Spawn.Mob.Id);
@@ -126,7 +120,7 @@ public sealed class PrtFild08dMonsterVisibilityAndRespawnIntegrationTests
             "prt_fild08", 500, 500, WorldMapRegistry.Tutorial,
             questPersistence: new NoOpQuestPersistence(), gameplayStatePersistence: new FixedGameplayStatePersistence(StrongNovice()),
             accountId: AccountId, charId: CharId, monsterProjections: monsterProjections, combat: combat,
-            inventoryPersistence: new NoOpInventoryPersistence(), combatState: combatState, distributedWorld: fakeWorld);
+            combatState: combatState, distributedWorld: fakeWorld);
         var run = session.RunAsync(CancellationToken.None);
         await session.CompleteIroAuthenticationAsync(new(AccountId, CharId, 1, 2, 0, 0, false, "prt_fild08", 500, 500, 0, 0, 0));
 

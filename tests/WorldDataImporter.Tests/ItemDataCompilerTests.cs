@@ -94,6 +94,16 @@ public sealed class ItemDataCompilerTests
             Script: |
               getitem 11518,10;
               sc_start SC_ASPDPOTION0,1800000,4;
+          - Id: 1116
+            AegisName: Katana
+            Name: Katana
+            Type: Weapon
+            SubType: 2hSword
+            Locations:
+              Both_Hand: true
+            Attack: 60
+            Range: 1
+            WeaponLevel: 1
         """;
 
     [Fact]
@@ -245,6 +255,14 @@ public sealed class ItemDataCompilerTests
         // Pinned EQP_HAND_R = 0x000002 (mmo.hpp:340).
         var knife = ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 1201);
         Assert.Equal(0x000002u, knife.EquipLocation);
+    }
+
+    [Fact]
+    public void ReadItemDefinition_BothHandLocation_ResolvesToArmsBitmask()
+    {
+        // Pinned EQP_ARMS = EQP_HAND_R|EQP_HAND_L = 0x000002|0x000020 (mmo.hpp:340-341,351).
+        var katana = ItemDataCompiler.ReadItemDefinition(ItemDbFixture, 1116);
+        Assert.Equal(0x000002u | 0x000020u, katana.EquipLocation);
     }
 
     [Fact]

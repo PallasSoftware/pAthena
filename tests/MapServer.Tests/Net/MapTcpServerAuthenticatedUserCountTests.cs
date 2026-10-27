@@ -23,7 +23,7 @@ public sealed class MapTcpServerAuthenticatedUserCountTests
     private static MapConfigStore ConfigStore() => new(new MapConfig(), "unused.conf");
 
     private static MapServerWorld MakeWorld() => new(
-        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat()),
+        WorldMapRegistry.Tutorial, [], new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat()),
         EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), new MonsterFeedProjectionRegistry(), new MonsterAttackCadenceStore(), rules: TestGameplayRules.Services());
 
     private static MapTcpServer MakeServer() => new(ConfigStore(), new CharServerConnector(ConfigStore()), MakeWorld());

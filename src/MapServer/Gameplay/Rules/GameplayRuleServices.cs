@@ -8,4 +8,5 @@ public sealed record GameplayRuleServices(
     IStatRules Stats,
     ITimingRules Timing,
     IStatusEffectRules StatusEffects,
-    IExperienceRules Experience);
+    IExperienceRules Experience,
+    IInventoryRules Inventory);

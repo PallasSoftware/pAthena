@@ -7,6 +7,7 @@ using System.Reflection;
 using Athena.Net.MapServer.Config;
 using Athena.Net.MapServer.Generated.GameData.Mobs;
 using Athena.Net.MapServer.Net;
+using Athena.Net.MapServer.Tests.Testing;
 using Athena.Net.MapServer.World;
 using Athena.Net.World.Contracts;
 
@@ -59,23 +60,25 @@ public sealed class PlayerAttackActionFanoutTests
         Strength: 9, Agility: 9, Vitality: 9, Intelligence: 9, Dexterity: 9, Luck: 9);
 
     private sealed record Fixture(MapTcpServer Server, MonsterFeedProjectionRegistry Projections, MonsterCombatCoordinator Combat, MonsterAttackCadenceStore CombatState,
-        FakeCombatWorldRuntime FakeWorld, MobInstance Target, WorldSimulationEpoch Epoch, PlayerPresenceRegistry Players, PlayerVisibilityCoordinator PlayerVisibility);
+        FakeCombatWorldRuntime FakeWorld, MobInstance Target, WorldSimulationEpoch Epoch, PlayerPresenceRegistry Players, PlayerVisibilityCoordinator PlayerVisibility,
+        ControllableTimeProvider Clock);
 
     private static Fixture MakeFixture()
     {
+        var clock = new ControllableTimeProvider();
         var allocator = new WorldActorIdAllocator();
         var spawnDefinition = new MobSpawnDefinition(GeneratedMobs.GPoring, MapId, 1, 5000, 0, new WorldSourceInfo("rAthena", "e985006171d2eb320ee512a653f4c83aea3d81b6", "test", 0));
-        var registry = new MonsterRegistry([spawnDefinition], allocator.Allocate, new FixedCellSelector(100, 100), TimeProvider.System);
+        var registry = new MonsterRegistry([spawnDefinition], allocator.Allocate, new FixedCellSelector(100, 100), clock);
         var target = registry.AllInstances[0];
         var epoch = WorldSimulationEpoch.NewEpoch();
         var combatState = new MonsterAttackCadenceStore();
         combatState.Register(target.Map, epoch, target.ActorId, new WorldMonsterIncarnationId(target.IncarnationId.Value));
-        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.Combat());
+        var combat = new MonsterCombatCoordinator(new QuestDropResolver([]), TestGameplayRules.NoMobDrops, TestGameplayRules.Combat());
         var fakeWorld = new FakeCombatWorldRuntime();
         var projections = WorldMonsterProjectionTestHelper.SeedProjection(target.Map, epoch, combatState, registry.AllInstances, fakeWorld);
         var world = new MapServerWorld(WorldMapRegistry.Tutorial, [], combat, EmptyMapCollisionProvider.Instance, new UnverifiedGridLineMovementPathProvider(), projections, combatState, rules: TestGameplayRules.Services());
         var server = new MapTcpServer(ConfigStore(), new CharServerConnector(ConfigStore()), world, fakeWorld);
-        return new Fixture(server, projections, combat, combatState, fakeWorld, target, epoch, world.Players, world.PlayerVisibility);
+        return new Fixture(server, projections, combat, combatState, fakeWorld, target, epoch, world.Players, world.PlayerVisibility, clock);
     }
 
     private static void InjectSession(MapTcpServer server, int sessionId, MapClientSession session)
@@ -103,7 +106,7 @@ public sealed class PlayerAttackActionFanoutTests
             accountId: accountId, charId: charId,
             monsterProjections: fixture.Projections, combat: fixture.Combat, combatState: fixture.CombatState,
             players: fixture.Players, playerVisibility: fixture.PlayerVisibility,
-            distributedWorld: fixture.FakeWorld,
+            distributedWorld: fixture.FakeWorld, timeProvider: fixture.Clock,
             playerAttackFanout: wireFanout ? fixture.Server.FanOutPlayerAttackActionAsync : null,
             lethalAttackGate: fixture.Server.LethalAttackGateForTest);
         var run = session.RunAsync(CancellationToken.None);
@@ -282,6 +285,52 @@ public sealed class PlayerAttackActionFanoutTests
 
         // World's damage authority was invoked exactly once for this hit, never once per observer.
         Assert.Equal(1, fixture.FakeWorld.ApplyMonsterDamageCallCount);
+    }
+
+    // Companion to the test above: with the fixture's clock now deterministic (ConnectAsync wires
+    // fixture.Clock into every MapClientSession here), a SECOND repeat-attack interval elapsing is
+    // no longer something that can happen by accident under CI jitter - it only happens when this
+    // test explicitly advances the clock past DMG_REPEAT's own scheduled NextAttackAt. This pins the
+    // repeat-attack-fires-again coverage that the previous real-wall-clock version of this file was
+    // (unintentionally) also exercising: the second scheduled hit calls World's damage authority
+    // again, and that second action fans out to the observer exactly like the first.
+    [Fact]
+    public async Task NonLethalHit_ASecondScheduledRepeatAttack_AlsoFansOutToTheObserver()
+    {
+        var fixture = MakeFixture();
+        var (attacker, observer, monsterActorId) = await ConnectAttackerAndObserverAsync(fixture);
+        using var _a = attacker.Client;
+        using var _o = observer.Client;
+
+        await attacker.Stream.WriteAsync(AttackPacket(monsterActorId));
+        await ReadFixposAsync(attacker.Stream, AttackerAccountId);
+        await ReadExact(attacker.Stream, PacketConstants.ZcNotifyAct3Length); // First (immediate) hit.
+        await ReadExact(attacker.Stream, PacketConstants.ZcHpInfoLength);
+        await FanOutSynthesizedPlayerAttackActionAsync(fixture, attacker.Session, AttackerAccountId);
+        await ReadExact(observer.Stream, PacketConstants.ZcNotifyAct3Length);
+        Assert.Equal(1, fixture.FakeWorld.ApplyMonsterDamageCallCount);
+
+        // Advance the clock, in bounded steps, until the server-owned repeat-attack loop (armed by
+        // this attacker's own DMG_REPEAT flag - see AttackPacket) fires its second turn on its own,
+        // with no further client packet. The exact AttackDelayMs for this fixture's unarmed
+        // 9/9/9/9/9/9 attacker is an implementation detail of ITimingRules - deliberately not
+        // hardcoded here (see WaitForNextDamagePacketAsync's own doc comment in
+        // MapClientSessionMonsterCombatTests.cs for the identical rationale).
+        for (var attempt = 0; attempt < 50 && fixture.FakeWorld.ApplyMonsterDamageCallCount < 2; attempt++)
+            await fixture.Clock.AdvanceAsync(TimeSpan.FromMilliseconds(100));
+        Assert.Equal(2, fixture.FakeWorld.ApplyMonsterDamageCallCount);
+
+        var secondAttackerAction = await ReadExact(attacker.Stream, PacketConstants.ZcNotifyAct3Length);
+        AssertAction(secondAttackerAction, AttackerAccountId, monsterActorId);
+        await ReadExact(attacker.Stream, PacketConstants.ZcHpInfoLength);
+
+        await FanOutSynthesizedPlayerAttackActionAsync(fixture, attacker.Session, AttackerAccountId);
+        var secondObserverAction = await ReadExact(observer.Stream, PacketConstants.ZcNotifyAct3Length);
+        AssertAction(secondObserverAction, AttackerAccountId, monsterActorId);
+        Assert.Equal(
+            BinaryPrimitives.ReadUInt32LittleEndian(secondAttackerAction.AsSpan(22)),
+            BinaryPrimitives.ReadUInt32LittleEndian(secondObserverAction.AsSpan(22)));
+        await AssertNothingMoreSentAsync(observer.Stream);
     }
 
     [Fact]
