@@ -1464,6 +1464,8 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
                             $"[iRO MAP DEBUG] Sending 0x08E2 navigation entityId='{navigation.EntityId}' current='{_mapName}'({_x},{_y}) -> dest='{navigation.DestinationMap}'({navigation.DestinationX},{navigation.DestinationY})");
                         await WriteAsync(IroNpcDialoguePackets.BuildNavigateTo(navigation.DestinationMap, navigation.DestinationX, navigation.DestinationY), cancellationToken);
                     }
+                    // Pinned clif_parse_LoadEndAck ends with status_calc_pc: map restrictions change which equipment scripts apply.
+                    await ReconcileMaxResourcesAsync(cancellationToken);
                     break;
                 }
 
@@ -1712,7 +1714,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private Athena.Net.MapServer.World.Items.EquipmentParamBonus CurrentEquipmentParamBonus()
     {
         if (_inventory is not { } inventory) return default;
-        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment, EquipmentWearer())) return equipment.ParamBonus;
+        if (_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out var equipment, EquipmentWearer(), NoEquipHere)) return equipment.ParamBonus;
         MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; equipment stat bonus is not applied to this status read.");
         return default;
     }
@@ -1722,7 +1724,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
     private MaxResourceContext CurrentResourceContext()
     {
         EquipmentStats equipment = default;
-        if (_inventory is { } inventory && !_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out equipment, EquipmentWearer())) equipment = default;
+        if (_inventory is { } inventory && !_rules.Stats.TryResolveEquipment(inventory, GeneratedItems.ById, out equipment, EquipmentWearer(), NoEquipHere)) equipment = default;
         return new MaxResourceContext(equipment, _gameplayState?.Skills, _sex);
     }
 
@@ -1735,6 +1737,9 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
         var context = CurrentResourceContext();
         await gameplay.MutateIfChangedAsync(state => _rules.Stats.WithRecalculatedResources(state, context), cancellationToken, reason: "max-resources");
     }
+
+    // Pinned itemdb_isNoEquip(item, sd->m) for the map this session is on.
+    private bool NoEquipHere(ItemDefinition item) => item.Meta is { NoEquip: not 0 } meta && MapFlagSet.For(_mapName).IsNoEquip(meta.NoEquip);
 
     // The wearer equipment scripts read (BaseLevel, readparam, getskilllv) - the authoritative session state.
     private Athena.Net.MapServer.World.Items.EquipmentCharacter? EquipmentWearer() =>
@@ -3492,7 +3497,7 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             // condition - fall back to EquipmentStats.default (no DEF/weapon/param contribution)
             // rather than returning null, with a loud diagnostic so the degradation is actionable,
             // never silent.
-            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats, EquipmentWearer()))
+            if (_inventory is null || !_rules.Stats.TryResolveEquipment(_inventory, GeneratedItems.ById, out var equipmentStats, EquipmentWearer(), NoEquipHere))
             {
                 MapLogger.Warning("[iRO MAP DEBUG] Equipped items did not resolve to supported armor/weapon definitions; combat snapshot omits equipment contribution.");
                 equipmentStats = default;
@@ -3811,16 +3816,14 @@ public sealed class MapClientSession : IAsyncDisposable, INpcScriptHost, IPlayer
             _itemUseCooldowns.Start(meta.DelayGroupKey, TimeSpan.FromMilliseconds(meta.DelayDurationMilliseconds));
         }
 
-        // Pinned nouse_mapflag gate (itemdb_isNoEquip, pc.cpp:6510-6517): an item whose item_db no_equip bitmask
-        // restricts "normal maps" (bit 1) is rejected outright - no consume, no grant, no script run - on every map
-        // this project can currently place a character on (no PVP/GvG/Battleground/WOE:TE/zone map-flag state exists
-        // yet, so every reachable map is "normal" in rAthena's own sense; see ItemMetadata.RestrictedOnNormalMaps).
+        // Pinned nouse_mapflag gate (itemdb_isNoEquip, pc.cpp:6510-6517): an item whose item_db no_equip bitmask restricts it on
+        // this map's type or zone (MapFlagSet) is rejected outright - no consume, no grant, no script run.
         // shortcut: the client-visible clif_msg(MSI_IMPOSSIBLE_USEITEM_AREA) rejection reply is not sent - no verified
         // stock-iRO capture of that packet exists yet (ai/iro-2026-wire.md has no evidence for it). The server-side
         // rejection itself (no consume, no grant) is enforced regardless; upgrade once a real capture exists.
-        if (itemDefinition.Meta is { RestrictedOnNormalMaps: true })
+        if (itemDefinition.Meta is { } restrictedMeta && MapFlagSet.For(_mapName).IsNoEquip(restrictedMeta.NoEquip))
         {
-            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} is restricted on normal maps (nouse_mapflag).");
+            MapLogger.Warning($"[iRO MAP DEBUG] Item-use rejected: itemId={row.ItemId} is restricted on map {_mapName} (nouse_mapflag).");
             return;
         }
 

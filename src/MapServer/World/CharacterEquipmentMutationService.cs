@@ -187,9 +187,8 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
 
     // Pinned pc_equipitem (pc.cpp:12015-12172), restricted to this service's modeled checks, in pinned order:
     //   1. pc_isequip's own eligibility gate (pc.cpp:1850-1908): EquipLevelMin/Max -> FAILLEVEL,
-    //      Sex mismatch -> FAIL, broken (Attribute != 0) -> FAIL, restricted-map -> FAIL (see
-    //      ItemMetadata.RestrictedOnNormalMaps's own doc comment for this project's current
-    //      "every reachable map is normal" scope).
+    //      Sex mismatch -> FAIL, broken (Attribute != 0) -> FAIL (restricted-map items are allowed:
+    //      allow_equip_restricted_item: yes).
     //   2. pc_job_can_use_item's class_base job-eligibility gate -> FAIL (pc.cpp:1771-1790,
     //      called from pc_equipitem:1961-1962 - AFTER pc_isequip's own checks, before the final
     //      OK return; see GeneratedJobEquipClass's own doc comment for the full pinned derivation).
@@ -458,10 +457,9 @@ public sealed class CharacterEquipmentMutationService(CharacterInventoryService 
             if (meta.Sex != ItemMetadata.BothSexes && meta.Sex != wearer.Sex) return EquipMutationResult.Fail;
         }
         if (target.Details.IsBroken) return EquipMutationResult.Fail;
-        // shortcut: allow_equip_restricted_item (always-false default) is not modeled as a conf
-        // toggle - this project enforces the restriction unconditionally, matching the pinned
-        // DEFAULT battle_config value; upgrade once a conf-override concept exists for this flag.
-        if (meta is { RestrictedOnNormalMaps: true }) return EquipMutationResult.Fail;
+        // No map-restriction gate here: pinned pc_isequip refuses an itemdb_isNoEquip item only when allow_equip_restricted_item is
+        // off (pc.cpp:1894), and the pinned default is yes (conf/battle/items.conf:92) - the item is worn, but TryResolveEquipment
+        // skips its scripts on that map.
         // Pinned pc_job_can_use_item then pc_isItemClass (pc.cpp:1961-1966): class_base and job tier (ItemClassEligibility).
         if (meta is not null && !ItemClassEligibility.CanUse(meta, wearer.JobClass)) return EquipMutationResult.Fail;
         return null;

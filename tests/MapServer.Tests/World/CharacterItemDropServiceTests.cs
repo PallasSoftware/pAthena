@@ -152,7 +152,7 @@ public sealed class CharacterItemDropServiceTests : IAsyncLifetime
         var f = Setup(row);
 
         var (result, _) = await f.Service.DropAsync(refusal == "unknown" ? 9u : 0u, refusal == "amount" ? 3u : 1u, Map, 150, 180, Items, CancellationToken.None,
-            noDropMap: refusal == "nodropmap");
+            mapFlags: refusal == "nodropmap" ? new MapFlagSet(MapFlag.NoDrop, 0) : null);
 
         Assert.NotEqual(DropResult.Dropped, result);
         Assert.Empty(f.Operations.Requests);

@@ -26,6 +26,7 @@ internal static partial class WorldDataImporterCli
                 "compile-actors" => await CompileActorsAsync(args[1..]),
                 "compile-navigation" => await CompileNavigationAsync(args[1..]),
                 "compile-character-data" => await CompileCharacterDataAsync(args[1..]),
+                "compile-map-flags" => await CompileMapFlagsAsync(args[1..]),
                 "compile-progression" => await CompileProgressionAsync(args[1..]),
                 "compile-mob-definitions" => await CompileMobDefinitionsAsync(args[1..]),
                 "generate-mobs" => await GenerateMobsAsync(args[1..]),
@@ -323,6 +324,24 @@ internal static partial class WorldDataImporterCli
         }
         finally { if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true); }
         Console.WriteLine($"Regenerated {compilation.Counts.JobIdsWithProgression} progression mappings. Use compile-character-data for jobs and skills too.");
+        return 0;
+    }
+
+    // Static map flags (MapFlagCompiler) from the active Renewal npc graph, in load order.
+    private static async Task<int> CompileMapFlagsAsync(string[] args)
+    {
+        var options = CliOptions.Parse(args);
+        var root = Path.GetFullPath(options.Required("rathena-root"));
+        var commit = options.Required("rathena-commit");
+        var output = Path.GetFullPath(options.Required("output"));
+        var files = new List<(string File, string Text)>();
+        foreach (var relative in RathenaScriptConfigGraph.ResolveActiveNpcFiles(root))
+            files.Add((relative, await File.ReadAllTextAsync(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)))));
+        var maps = MapFlagCompiler.Compile(files);
+        var path = Path.Combine(output, "MapFlags", "GeneratedMapFlags.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, MapFlagCompiler.Emit(maps, commit), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Map flags: {maps.Count} maps from {files.Count} active npc files.");
         return 0;
     }
 
@@ -1178,6 +1197,7 @@ internal static partial class WorldDataImporterCli
         Console.Error.WriteLine("WorldDataImporter compile-actors --source-root <folder> --rathena-commit <sha> --output <Actors.cs> --source-file <path> --map <map> --name <name> [--name <name>]");
         Console.Error.WriteLine("WorldDataImporter compile-navigation --source-root <folder> --output <Navigation.cs> --name <name> [--name <name>] [--namespace <ns>]");
         Console.Error.WriteLine("WorldDataImporter compile-character-data --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated directory>");
+        Console.Error.WriteLine("WorldDataImporter compile-map-flags --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated directory>");
         Console.Error.WriteLine("WorldDataImporter generate-mobs --rathena-root <folder> [--rathena-commit <sha>] --output <MapServer/Generated/GameData/Mobs directory> --pack <MapServer/Generated/Assets/Mobs/AthenaMobs.bin> [--custom-mobs <data/custom/mobs>]");
         Console.Error.WriteLine("WorldDataImporter compile-progression --rathena-root <folder> --rathena-commit <sha> --output <MapServer/Generated/Progression directory> (compatibility alias)");
         Console.Error.WriteLine("WorldDataImporter compile-mob-spawn --rathena-root <folder> --rathena-commit <sha> --mob-id <id> --name <spawn-name> --spawn-file <path> [--exclude-map <map>] --class-name <n> --constant-name <n> --spawn-class-name <n> --spawn-array-name <n> --output-definition <Mob.cs> --output-spawns <MobSpawns.cs>");

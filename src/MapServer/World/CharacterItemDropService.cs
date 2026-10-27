@@ -38,10 +38,10 @@ public sealed class CharacterItemDropService(CharacterInventoryService inventory
     private const int PlayerGroupLevel = 0;
 
     public async Task<(DropResult Result, uint? GroundItemId)> DropAsync(uint slotIndex, uint amount, string mapId, ushort x, ushort y,
-        IReadOnlyDictionary<int, ItemDefinition> items, CancellationToken cancellationToken, bool noDropMap = false)
+        IReadOnlyDictionary<int, ItemDefinition> items, CancellationToken cancellationToken, MapFlagSet? mapFlags = null)
     {
-        // Pinned pc_dropitem checks MF_NODROP before pc_candrop.
-        if (noDropMap) return (DropResult.NoDropMap, null);
+        // Pinned pc_dropitem checks MF_NODROP of the dropper's map before pc_candrop (no static Renewal map sets it; scripts can).
+        if ((mapFlags ?? MapFlagSet.For(mapId)).NoDrop) return (DropResult.NoDropMap, null);
         var precheck = Check(inventoryService.Snapshot.Items.FirstOrDefault(i => i.SlotIndex == slotIndex), amount, items);
         if (precheck != DropResult.Dropped) return (precheck, null);
 

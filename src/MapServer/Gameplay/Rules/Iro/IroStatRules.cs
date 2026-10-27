@@ -226,7 +226,8 @@ public sealed class IroStatRules : IStatRules
     // this distinction, equipping a single ammo/shadow-gear/left-hand-weapon row - all routine, common
     // gameplay states reachable through CharacterEquipmentMutationService's existing equip paths -
     // silently discarded every OTHER equipped item's DEF/refine/param-bonus contribution too.
-    public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null)
+    public bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null,
+        Func<ItemDefinition, bool>? noEquip = null)
     {
         var hardDefense = 0;
         WeaponItemDefinition? weapon = null;
@@ -340,17 +341,20 @@ public sealed class IroStatRules : IStatRules
                 if (definition is AmmoItemDefinition) continue;
                 // A left-hand WEAPON's own script runs as LR_FLAG_WEAPON (status.cpp:3948-3994).
                 var hand = definition is WeaponItemDefinition && row.Equip == EquipSlots.Bitmask[EquipSlot.HandLeft] ? EquipmentBonusHand.Left : EquipmentBonusHand.Right;
-                EquipmentBonusResolver.Accumulate(definition.Meta?.Script, Context(row, hand), bonuses);
+                // Pinned itemdb_isNoEquip on this map (allow_equip_restricted_item: yes): worn, but its script gives no effect.
+                if (noEquip?.Invoke(definition) != true) EquipmentBonusResolver.Accumulate(definition.Meta?.Script, Context(row, hand), bonuses);
             }
             // shortcut: pinned skips the ammo script for IG_THROWABLE items (status.cpp:4046); item groups are not
             // generated yet - upgrade when item_group_db is.
             foreach (var row in equipped)
-                if (items[row.ItemId] is AmmoItemDefinition ammo)
+                if (items[row.ItemId] is AmmoItemDefinition ammo && noEquip?.Invoke(ammo) != true)
                     EquipmentBonusResolver.Accumulate(ammo.Meta?.Script, Context(row, EquipmentBonusHand.Arrow), bonuses);
             // S7 combos (pinned pc_checkcombo, pc.cpp:11803-11900): every combo whose activation set (equip items and/or cards,
             // see ComboResolver) is satisfied runs its shared script with current_equip_item_index = -1 (status.cpp:4060).
+            // A combo with any restricted member runs no script on this map (status.cpp:4068-4082).
             foreach (var combo in ComboResolver.ActiveCombos(ItemCatalog.Current.Combos, presentItemIds))
-                EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items, Character: character), bonuses);
+                if (noEquip is null || combo.Alternatives.Any(set => ComboResolver.IsSatisfied(set, presentItemIds) && !set.Any(id => items.TryGetValue((int)id, out var member) && noEquip(member))))
+                    EquipmentBonusResolver.Accumulate(combo.Script, new EquipmentScriptContext(EquippedAt: EquippedAt, Items: items, Character: character), bonuses);
             // Pinned memcpy(param_equip, param_bonus) right after the combo pass (status.cpp:4083): VIT/INT from item scripts,
             // ammo and combos - not cards or random options - also add +1 max HP/SP each (status_calc_maxhp_pc).
             paramEquip = bonuses.Param;
@@ -361,11 +365,11 @@ public sealed class IroStatRules : IStatRules
                 if (items[row.ItemId] is AmmoItemDefinition || IsSpecialCard0(row.Details.Card0)) continue;
                 var d = row.Details;
                 foreach (var cardId in (ReadOnlySpan<uint>)[d.Card0, d.Card1, d.Card2, d.Card3])
-                    if (cardId != 0) EquipmentBonusResolver.Accumulate(items[(int)cardId].Meta?.Script, Context(row, LeftHandOf(row)), bonuses);
+                    if (cardId != 0 && noEquip?.Invoke(items[(int)cardId]) != true) EquipmentBonusResolver.Accumulate(items[(int)cardId].Meta?.Script, Context(row, LeftHandOf(row)), bonuses);
             }
             foreach (var row in equipped)
             {
-                if (items[row.ItemId] is AmmoItemDefinition) continue;
+                if (items[row.ItemId] is AmmoItemDefinition || noEquip?.Invoke(items[row.ItemId]) == true) continue;
                 var d = row.Details;
                 foreach (var option in (ReadOnlySpan<InventoryOption>)[d.Option0, d.Option1, d.Option2, d.Option3, d.Option4])
                     if (option.Id != 0) EquipmentBonusResolver.Accumulate(GeneratedItems.RandomOptions[(uint)option.Id], Context(row, LeftHandOf(row)) with { Option = option }, bonuses);

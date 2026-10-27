@@ -33,7 +33,10 @@ public interface IStatRules
     // False when an equipped item cannot be accounted for (unknown or unsupported type) instead of assuming "no effect".
     // character is the wearer equipment scripts may read (BaseLevel, readparam, getskilllv); without it those scripts are
     // unsupported rather than evaluated against a made-up character.
-    bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null);
+    // noEquip: pinned itemdb_isNoEquip for the wearer's current map; a restricted item, card, combo member or option carrier stays
+    // worn but its script is skipped (allow_equip_restricted_item: yes).
+    bool TryResolveEquipment(CharacterInventorySnapshot inventory, IReadOnlyDictionary<int, ItemDefinition> items, out EquipmentStats equipment, EquipmentCharacter? character = null,
+        Func<ItemDefinition, bool>? noEquip = null);
 
     uint StatIncreaseCost(ushort currentValue, int increaseAmount);
     StatIncreaseValidationResult ValidateStatIncrease(CharacterGameplayState gameplay, CharacterBaseStat stat, int increaseAmount);

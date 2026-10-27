@@ -482,7 +482,7 @@ public sealed class MapClientSessionUseItemTests
     // Script items now also reach the gate and it is socket-tested with a real restricted potion
     // (UseHealItemRestrictedOnNormalMaps_RejectsWithoutMutation below); this guard stays for containers.
     // Documents a real, honestly-reported scope gap rather than hiding it: the nouse_mapflag gate
-    // (HandleIroUseItemRequestAsync, ItemMetadata.RestrictedOnNormalMaps) can only be socket-tested end to end against a
+    // (HandleIroUseItemRequestAsync, MapFlagSet.IsNoEquip) can only be socket-tested end to end against a
     // REAL pinned item that is BOTH a container with fully-resolvable Grants (the only ItemDefinition shape that reaches
     // the gate today - see the earlier "no source-backed use effect" rejection above it) AND restricted on normal maps
     // (db/re/item_noequip.txt bit 1). No such item exists in the pinned Renewal dataset as of commit
@@ -499,7 +499,7 @@ public sealed class MapClientSessionUseItemTests
         var reachesGate = GeneratedItems.ById.Values
             .OfType<UsableItemDefinition>()
             .Where(item => item.Grants is { Count: > 0 } grants && grants.All(g => GeneratedItems.ById.ContainsKey(g.ItemId)))
-            .Where(item => item.Meta!.RestrictedOnNormalMaps)
+            .Where(item => (item.Meta!.NoEquip & 1) != 0)
             .ToArray();
 
         Assert.Empty(reachesGate);

@@ -51,6 +51,20 @@ public sealed class CharacterEquipmentMutationServiceTests
         return (operations, service, new CharacterEquipmentMutationService(service, Rules.Stats));
     }
 
+    // Pinned conf/battle/items.conf:92 allow_equip_restricted_item: yes - pc_isequip does not refuse an itemdb_isNoEquip item
+    // (pc.cpp:1894); it is worn and status_calc_pc skips its script on that map. 2483 Siege_Greave is restricted on normal maps.
+    [Fact]
+    public async Task EquipAsync_MapRestrictedItem_IsWorn()
+    {
+        var real = ItemCatalog.Current.ById;
+        var location = ((IEquippableItemDefinition)real[2483]).EquipLocation;
+        var (_, _, service) = Setup(new([new CharacterInventoryItem(DurableId: 1, SlotIndex: 0, 2483, 1, 0, true, 0, 0, 0)]));
+
+        var (outcome, _) = await service.EquipAsync(0, requestedPosition: location, real, characterBaseLevel: 99, characterSex: ItemMetadata.BothSexes, JobClass.Knight, CancellationToken.None);
+
+        Assert.Equal(EquipMutationResult.Success, outcome!.Value.Result);
+    }
+
     [Fact]
     public async Task EquipAsync_UnequippedKnife_PersistsRightHandAndReturnsSuccess()
     {

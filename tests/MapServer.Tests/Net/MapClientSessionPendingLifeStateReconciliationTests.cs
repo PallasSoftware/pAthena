@@ -22,7 +22,7 @@ public sealed class MapClientSessionPendingLifeStateReconciliationTests
 
     private static CharacterGameplayState AliveState(uint currentHp = 10) => new(
         CharacterId: CharId, Version: 1, JobClass: 0, BaseLevel: 1, JobLevel: 1,
-        BaseExperience: 0, JobExperience: 0, CurrentHp: currentHp, CurrentSp: 10, MaxHp: 10, MaxSp: 10,
+        BaseExperience: 0, JobExperience: 0, CurrentHp: currentHp, CurrentSp: 10, MaxHp: 40, MaxSp: 11,
         StatPoints: 0, SkillPoints: 0, Strength: 1, Agility: 1, Vitality: 1, Intelligence: 1, Dexterity: 1, Luck: 1);
 
     private sealed class RecordingGameplayStatePersistence(CharacterGameplayState state) : ICharacterGameplayStatePersistence

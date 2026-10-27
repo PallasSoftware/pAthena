@@ -38,8 +38,7 @@ public sealed class CharacterStorageServiceTests
     }
 
     // Pinned itemdb_canstore_sub (itemdb.cpp:3298-3299): NoStorage blocks storage transfer unconditionally - this
-    // project has no GM trade-override-level concept yet, matching CharacterEquipmentMutationService's own
-    // RestrictedOnNormalMaps precedent for an unconditionally-enforced pinned flag.
+    // project has no GM trade-override-level concept yet.
     [Fact]
     public async Task TransferIn_NoStorageFlaggedItem_IntoStorage_RejectsAsNotStorable()
     {

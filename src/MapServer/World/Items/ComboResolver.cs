@@ -28,7 +28,7 @@ public static class ComboResolver
         return active;
     }
 
-    private static bool IsSatisfied(IReadOnlyList<uint> alternative, IReadOnlyList<uint> presentItemIds)
+    public static bool IsSatisfied(IReadOnlyList<uint> alternative, IReadOnlyList<uint> presentItemIds)
     {
         var remaining = new List<uint>(presentItemIds);
         foreach (var required in alternative)

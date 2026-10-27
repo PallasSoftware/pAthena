@@ -47,7 +47,7 @@ public static class ContainerPlanner
         if (!items.TryGetValue(sourceRow.ItemId, out var item)) return new(false, null, StorageTransferResult.Invalid);
         // Pinned itemdb_cancartstore_sub/itemdb_canstore_sub (itemdb.cpp:3294-3299): NoCart/NoStorage block the
         // transfer unless a GM's trade-override level clears it - this project has no GM-permission/trade-override
-        // concept yet, so (like RestrictedOnNormalMaps/CharacterEquipmentMutationService) the restriction is
+        // concept yet, so the restriction is
         // enforced unconditionally until that concept exists, never silently ignored.
         if (IsRestricted(item, targetContainer)) return new(false, null, StorageTransferResult.NotStorable);
 

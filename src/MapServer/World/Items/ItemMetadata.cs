@@ -25,20 +25,9 @@ public sealed record ItemMetadata(PackItem Data, PackScript? Script, PackScript?
     public int DelayGroupKey => Data.DelayStatus;
     public uint DelayDurationMilliseconds => Data.DelayDuration;
 
-    // Data.NoEquip itself (PackItem.NoEquip) carries the COMPLETE, unfiltered db/re/item_noequip.txt bitmask for this item -
-    // every bit (1 normal, 2 PVP, 4 GvG, 8 Battleground, 16 WOE:TE, 32+ zones) survives the loader/pack pipeline verbatim.
-    // Nothing is dropped or pre-filtered at the data layer; only the RUNTIME ENFORCEMENT below is scoped.
-    //
-    // Pinned itemdb_isNoEquip (itemdb.cpp:4442-4457): bit 1 ("restricted in normal maps", i.e. NOT PVP/GvG/Battleground/
-    // WOE:TE) is the only bit this accessor currently evaluates, because this project has no PVP/GvG/Battleground/WOE:TE/
-    // zone map-flag RUNTIME state yet - every map this project can currently place a character on is a "normal" map in
-    // rAthena's own sense, so bit 1 alone is already a sound, complete check for every reachable map today.
-    // KNOWN SCOPE GAP: bits 2/4/8/16/32+ are loaded into Data.NoEquip but NOT enforced by this accessor or the
-    // HandleIroUseItemRequestAsync gate - an item restricted only in GvG/WOE/a zone will incorrectly be USABLE everywhere
-    // right now, because this project cannot yet evaluate "is this map GvG/WOE/zone N". Upgrade this accessor (and the
-    // gate) to read the full Data.NoEquip bitmask once that map-flag/zone runtime concept exists - do not special-case
-    // any item to compensate; extend the generic bitmask evaluation against the new map-flag state instead.
-    public bool RestrictedOnNormalMaps => (Data.NoEquip & 1) != 0;
+    // The complete db/re/item_noequip.txt bitmask (1 normal, 2 PVP, 4 GvG, 8 Battleground, 16 WOE:TE, 32+ zones), evaluated against
+    // a map by MapFlagSet.IsNoEquip (pinned itemdb_isNoEquip).
+    public uint NoEquip => Data.NoEquip;
 
     // Pinned pc_isequip (pc.cpp:1882-1886) level-gate fields. 0 means "no gate" for each bound
     // independently - pinned source's own `if (item->elv && ...)` / `if (item->elvmax && ...)`
